@@ -135,7 +135,12 @@ class PersistentSimpleOffloadStore:
     ) -> None:
         self._upsert_index(self.scheduler_index, cpu_block_ids, block_hashes)
 
-    def lookup_block_hashes(self, block_hashes: list[str], limit: int) -> list[str]:
+    def lookup_block_hashes(
+        self,
+        block_hashes: list[str],
+        limit: int,
+        cache_ref: str | None = None,
+    ) -> list[str]:
         if not block_hashes or limit <= 0:
             return []
         available: set[str] = set()
@@ -185,6 +190,7 @@ class PersistentSimpleOffloadStore:
         cpu_block_ids: list[int],
         block_hashes: list[str],
         known_by_cpu_id: dict[int, str],
+        cache_refs: list[str | None] | None = None,
     ) -> dict[int, str]:
         restored: dict[int, str] = {}
         self._validate_pairs(cpu_block_ids, block_hashes)

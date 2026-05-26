@@ -27,6 +27,7 @@ class SimpleCPUOffloadMetadata(KVConnectorMetadata):
     load_gpu_blocks: list[int] = field(default_factory=list)
     load_cpu_blocks: list[int] = field(default_factory=list)
     load_block_hashes: list[str] = field(default_factory=list)
+    load_cache_refs: list[str | None] = field(default_factory=list)
     # Reverse map: load_event->req_ids, for tracking requests with finished load events
     load_event_to_reqs: dict[int, list[str]] = field(default_factory=dict)
 

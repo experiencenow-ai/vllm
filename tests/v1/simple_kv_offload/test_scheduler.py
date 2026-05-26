@@ -1443,6 +1443,7 @@ def test_persistent_api_materializes_and_commits_payload_paths(tmp_path) -> None
             if path == "/v1/kv/store/commit":
                 return {"ok": True}
             if path == "/v1/kv/materialize":
+                assert payload["blocks"][0]["cache_ref"] == "bundle-1"
                 blocks = []
                 for block in payload["blocks"]:
                     blocks.append(
@@ -1467,7 +1468,9 @@ def test_persistent_api_materializes_and_commits_payload_paths(tmp_path) -> None
     ]
 
     cpu_kv_caches["kv"].zero_()
-    restored = client.ensure_worker_blocks(cpu_kv_caches, [2], [hash_hex], {})
+    restored = client.ensure_worker_blocks(
+        cpu_kv_caches, [2], [hash_hex], {}, ["bundle-1"]
+    )
     assert restored == {2: hash_hex}
     assert cpu_kv_caches["kv"][2].tolist() == [7.0, 8.0]
 
@@ -1479,15 +1482,20 @@ def test_persistent_api_lookup_seeds_scheduler_hits(monkeypatch) -> None:
         def __init__(self, hits: set[str]) -> None:
             self.hits = hits
             self.lookups = []
+            self.cache_refs = []
 
         def load_scheduler_entries(self, num_cpu_blocks):  # type: ignore[no-untyped-def]
             return []
 
-        def lookup_block_hashes(self, block_hashes, limit):  # type: ignore[no-untyped-def]
+        def lookup_block_hashes(  # type: ignore[no-untyped-def]
+            self, block_hashes, limit, cache_ref=None
+        ):
             self.lookups.append(block_hashes)
+            self.cache_refs.append(cache_ref)
             return [h for h in block_hashes if h in self.hits][:limit]
 
     req = make_request(num_blocks=3)
+    req.kv_transfer_params = {"cache_ref": "bundle-1"}
     hits = {
         make_block_hash_with_group_id(block_hash, 0).hex()
         for block_hash in req.block_hashes[:3]
@@ -1507,6 +1515,17 @@ def test_persistent_api_lookup_seeds_scheduler_hits(monkeypatch) -> None:
     assert hit_tokens == 2 * BLOCK_SIZE
     assert is_async is True
     assert store.lookups
+    assert store.cache_refs == ["bundle-1"]
+
+    gpu_blocks = fix.gpu_block_pool.get_new_blocks(2)
+    kv_blocks = KVCacheBlocks(blocks=(gpu_blocks,))
+    fix.scheduler.update_state_after_alloc(
+        req, kv_blocks, num_external_tokens=hit_tokens
+    )
+    meta = fix.scheduler.build_connector_meta(
+        make_scheduler_output({req.request_id: 1})
+    )
+    assert meta.load_cache_refs == ["bundle-1", "bundle-1"]
 
 
 def test_persistent_scheduler_restore_uses_guarded_hits(tmp_path, monkeypatch) -> None:

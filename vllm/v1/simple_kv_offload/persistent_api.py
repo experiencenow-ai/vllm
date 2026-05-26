@@ -66,17 +66,22 @@ class PersistentSimpleOffloadAPIClient:
         # Worker startup indexes nothing locally; materialization is lazy.
         return []
 
-    def lookup_block_hashes(self, block_hashes: list[str], limit: int) -> list[str]:
+    def lookup_block_hashes(
+        self,
+        block_hashes: list[str],
+        limit: int,
+        cache_ref: str | None = None,
+    ) -> list[str]:
         if not block_hashes or limit <= 0:
             return []
-        response = self._post_json(
-            "/v1/kv/lookup",
-            {
-                **self._base_payload(),
-                "block_hashes": block_hashes,
-                "limit": int(limit),
-            },
-        )
+        payload = {
+            **self._base_payload(),
+            "block_hashes": block_hashes,
+            "limit": int(limit),
+        }
+        if cache_ref is not None:
+            payload["cache_ref"] = cache_ref
+        response = self._post_json("/v1/kv/lookup", payload)
         hits = _parse_hash_hits(response.get("hits", []))
         wanted = set(block_hashes)
         return [hash_hex for hash_hex in hits if hash_hex in wanted][:limit]
@@ -100,11 +105,16 @@ class PersistentSimpleOffloadAPIClient:
         cpu_block_ids: list[int],
         block_hashes: list[str],
         known_by_cpu_id: dict[int, str],
+        cache_refs: list[str | None] | None = None,
     ) -> dict[int, str]:
         restored: dict[int, str] = {}
         pairs = [
-            (int(cpu_id), hash_hex)
-            for cpu_id, hash_hex in zip(cpu_block_ids, block_hashes)
+            (int(cpu_id), hash_hex, cache_ref)
+            for cpu_id, hash_hex, cache_ref in zip(
+                cpu_block_ids,
+                block_hashes,
+                cache_refs or [None] * len(cpu_block_ids),
+            )
             if known_by_cpu_id.get(int(cpu_id)) != hash_hex
         ]
         if not pairs:
@@ -114,13 +124,13 @@ class PersistentSimpleOffloadAPIClient:
             {
                 **self._base_payload(),
                 "blocks": [
-                    {"cpu_block_id": cpu_id, "hash": hash_hex}
-                    for cpu_id, hash_hex in pairs
+                    _block_record(cpu_id, hash_hex, cache_ref)
+                    for cpu_id, hash_hex, cache_ref in pairs
                 ],
             },
         )
         payload_paths = _parse_payload_paths(response)
-        for cpu_id, hash_hex in pairs:
+        for cpu_id, hash_hex, _ in pairs:
             path = payload_paths.get(hash_hex)
             if path is None:
                 self._fail(
@@ -290,9 +300,20 @@ def _block_records(
     cpu_block_ids: list[int], block_hashes: list[str]
 ) -> list[dict[str, Any]]:
     return [
-        {"cpu_block_id": int(cpu_block_id), "hash": hash_hex}
+        _block_record(int(cpu_block_id), hash_hex)
         for cpu_block_id, hash_hex in zip(cpu_block_ids, block_hashes)
     ]
+
+
+def _block_record(
+    cpu_block_id: int,
+    hash_hex: str,
+    cache_ref: str | None = None,
+) -> dict[str, Any]:
+    record: dict[str, Any] = {"cpu_block_id": int(cpu_block_id), "hash": hash_hex}
+    if cache_ref is not None:
+        record["cache_ref"] = cache_ref
+    return record
 
 
 def _parse_hash_hits(raw_hits: Any) -> list[str]:
