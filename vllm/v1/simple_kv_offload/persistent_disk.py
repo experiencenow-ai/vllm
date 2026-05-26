@@ -132,45 +132,60 @@ class PersistentSimpleOffloadStore:
                 )
         self._upsert_index(self.worker_index, cpu_block_ids, block_hashes)
 
-    def restore_worker_blocks(
+    def ensure_worker_blocks(
         self,
         cpu_kv_caches: dict[str, torch.Tensor],
-        num_cpu_blocks: int,
+        cpu_block_ids: list[int],
+        block_hashes: list[str],
+        known_by_cpu_id: dict[int, str],
     ) -> dict[int, str]:
         restored: dict[int, str] = {}
-        for entry in self.load_worker_entries(num_cpu_blocks):
-            path = self._block_path(entry.hash_hex)
+        self._validate_pairs(cpu_block_ids, block_hashes)
+        for cpu_block_id, hash_hex in zip(cpu_block_ids, block_hashes):
+            cpu_id = int(cpu_block_id)
+            if known_by_cpu_id.get(cpu_id) == hash_hex:
+                continue
+            path = self._block_path(hash_hex)
             if not path.exists():
                 self._fail(
                     "persistent CPU offload block missing: "
-                    f"{_short_hash(entry.hash_hex)} at {path}"
+                    f"{_short_hash(hash_hex)} at {path}"
                 )
                 continue
             try:
-                payload = self._torch_load(path)
-                if payload.get("hash") != entry.hash_hex:
-                    raise ValueError("block hash mismatch")
-                tensors = payload.get("tensors")
-                if not isinstance(tensors, dict):
-                    raise ValueError("block payload has no tensor map")
-                for name, dst in cpu_kv_caches.items():
-                    if name not in tensors:
-                        raise ValueError(f"block payload missing tensor {name}")
-                    src = tensors[name]
-                    target = dst[entry.cpu_block_id]
-                    if tuple(src.shape) != tuple(target.shape):
-                        raise ValueError(
-                            f"tensor {name} shape mismatch "
-                            f"{tuple(src.shape)} != {tuple(target.shape)}"
-                        )
-                    target.copy_(src)
-                restored[entry.cpu_block_id] = entry.hash_hex
+                self._restore_worker_block(cpu_kv_caches, cpu_id, hash_hex, path)
+                restored[cpu_id] = hash_hex
             except Exception as exc:
                 self._fail(
-                    f"failed to restore CPU offload block {_short_hash(entry.hash_hex)}",
+                    f"failed to restore CPU offload block {_short_hash(hash_hex)}",
                     exc,
                 )
         return restored
+
+    def _restore_worker_block(
+        self,
+        cpu_kv_caches: dict[str, torch.Tensor],
+        cpu_block_id: int,
+        hash_hex: str,
+        path: Path,
+    ) -> None:
+        payload = self._torch_load(path)
+        if payload.get("hash") != hash_hex:
+            raise ValueError("block hash mismatch")
+        tensors = payload.get("tensors")
+        if not isinstance(tensors, dict):
+            raise ValueError("block payload has no tensor map")
+        for name, dst in cpu_kv_caches.items():
+            if name not in tensors:
+                raise ValueError(f"block payload missing tensor {name}")
+            src = tensors[name]
+            target = dst[cpu_block_id]
+            if tuple(src.shape) != tuple(target.shape):
+                raise ValueError(
+                    f"tensor {name} shape mismatch "
+                    f"{tuple(src.shape)} != {tuple(target.shape)}"
+                )
+            target.copy_(src)
 
     def validate_loaded_blocks(
         self,
@@ -234,6 +249,7 @@ class PersistentSimpleOffloadStore:
         self._validate_pairs(cpu_block_ids, block_hashes)
         data = self._read_json(path) or self._empty_index()
         blocks = data.setdefault("blocks", {})
+        stale_block_hashes: list[str] = []
         for cpu_block_id, hash_hex in zip(cpu_block_ids, block_hashes):
             cpu_id = int(cpu_block_id)
             for old_hash, old_entry in list(blocks.items()):
@@ -242,9 +258,14 @@ class PersistentSimpleOffloadStore:
                     and old_hash != hash_hex
                 ):
                     blocks.pop(old_hash, None)
+                    stale_block_hashes.append(old_hash)
             blocks[hash_hex] = {"cpu_block_id": cpu_id, "updated_at": time.time()}
         data["updated_at"] = time.time()
         self._write_json_atomic(path, data)
+        if path == self.worker_index:
+            for old_hash in stale_block_hashes:
+                if old_hash not in blocks:
+                    self._unlink_stale_block(old_hash)
 
     def _validate_pairs(
         self, cpu_block_ids: list[int], block_hashes: list[str]
@@ -305,6 +326,12 @@ class PersistentSimpleOffloadStore:
             return torch.load(path, map_location="cpu", weights_only=True)
         except TypeError:
             return torch.load(path, map_location="cpu")
+
+    def _unlink_stale_block(self, hash_hex: str) -> None:
+        try:
+            self._block_path(hash_hex).unlink(missing_ok=True)
+        except Exception as exc:
+            self._fail(f"failed to remove stale CPU offload block {hash_hex}", exc)
 
     def _fail(self, message: str, exc: Exception | None = None) -> None:
         if self.strict:
