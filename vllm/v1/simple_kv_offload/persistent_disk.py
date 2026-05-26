@@ -22,6 +22,9 @@ logger = init_logger(__name__)
 ROOT_ENV = "VLLM_SIMPLE_KV_OFFLOAD_PERSIST_ROOT"
 STRICT_ENV = "VLLM_SIMPLE_KV_OFFLOAD_PERSIST_STRICT"
 RANK_ENV = "VLLM_SIMPLE_KV_OFFLOAD_PERSIST_RANK"
+API_URL_ENV = "VLLM_SIMPLE_KV_OFFLOAD_PERSIST_API_URL"
+API_TOKEN_ENV = "VLLM_SIMPLE_KV_OFFLOAD_PERSIST_API_TOKEN"
+API_TIMEOUT_ENV = "VLLM_SIMPLE_KV_OFFLOAD_PERSIST_API_TIMEOUT"
 FORMAT_VERSION = 1
 
 
@@ -65,19 +68,47 @@ class PersistentSimpleOffloadStore:
         vllm_config: Any,
         num_cpu_blocks: int,
         tensor_names: list[str] | None = None,
-    ) -> "PersistentSimpleOffloadStore | None":
-        root = os.getenv(ROOT_ENV)
-        if not root:
-            return None
+    ) -> Any | None:
         rank_key = (
             os.getenv(RANK_ENV) or os.getenv("VLLM_HOST_IP") or socket.gethostname()
         )
+        model_key = _model_key(vllm_config)
+        strict = _env_bool(STRICT_ENV, True)
+        api_url = os.getenv(API_URL_ENV)
+        if api_url:
+            from vllm.v1.simple_kv_offload.persistent_api import (
+                PersistentSimpleOffloadAPIClient,
+            )
+
+            store = PersistentSimpleOffloadAPIClient(
+                api_url=api_url,
+                role=role,
+                rank_key=_safe_key(rank_key),
+                model_key=model_key,
+                num_cpu_blocks=int(num_cpu_blocks),
+                strict=strict,
+                tensor_names=tensor_names,
+                timeout=float(os.getenv(API_TIMEOUT_ENV, "5.0")),
+                token=os.getenv(API_TOKEN_ENV),
+            )
+            logger.info(
+                "DS4 persistent SimpleCPUOffload %s API enabled at %s "
+                "rank=%s strict=%s",
+                role,
+                api_url,
+                store.rank_key,
+                store.strict,
+            )
+            return store
+        root = os.getenv(ROOT_ENV)
+        if not root:
+            return None
         store = cls(
             root=Path(root),
             rank_key=_safe_key(rank_key),
-            model_key=_model_key(vllm_config),
+            model_key=model_key,
             num_cpu_blocks=int(num_cpu_blocks),
-            strict=_env_bool(STRICT_ENV, True),
+            strict=strict,
             tensor_names=tensor_names,
         )
         logger.info(
@@ -103,6 +134,22 @@ class PersistentSimpleOffloadStore:
         self, cpu_block_ids: list[int], block_hashes: list[str]
     ) -> None:
         self._upsert_index(self.scheduler_index, cpu_block_ids, block_hashes)
+
+    def lookup_block_hashes(self, block_hashes: list[str], limit: int) -> list[str]:
+        if not block_hashes or limit <= 0:
+            return []
+        available: set[str] = set()
+        for path in (self.scheduler_index, self.worker_index):
+            data = self._read_json(path)
+            if data:
+                available.update((data.get("blocks") or {}).keys())
+        hits: list[str] = []
+        for hash_hex in block_hashes:
+            if hash_hex in available:
+                hits.append(hash_hex)
+                if len(hits) >= limit:
+                    break
+        return hits
 
     def persist_worker_blocks(
         self,

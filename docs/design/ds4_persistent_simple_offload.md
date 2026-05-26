@@ -14,6 +14,9 @@ The current implementation is deliberately narrow:
   transfer completes;
 - restart restores scheduler metadata and advertises hits with one aligned HMA
   guard block withheld;
+- when `VLLM_SIMPLE_KV_OFFLOAD_PERSIST_API_URL` is set, the scheduler asks the
+  cache service only about hashes from the current request instead of loading
+  the lifetime cache index at startup;
 - worker tensor payloads are restored lazily, only when a scheduled load names
   the exact CPU block IDs and hashes to materialize.
 
@@ -51,6 +54,21 @@ Recommended endpoints:
 - `GET /v1/kv/stats`
   - output: bytes, block counts, hit/miss counters, corrupt records, evictions
 
+The initial client supports:
+
+- `VLLM_SIMPLE_KV_OFFLOAD_PERSIST_API_URL`
+- `VLLM_SIMPLE_KV_OFFLOAD_PERSIST_API_TOKEN`
+- `VLLM_SIMPLE_KV_OFFLOAD_PERSIST_API_TIMEOUT`
+
+When the API URL is set, vLLM uses:
+
+- `POST /v1/kv/lookup` before advertising a CPU prefix hit;
+- `POST /v1/kv/materialize` before CPU-to-GPU load;
+- `POST /v1/kv/store/prepare` and `POST /v1/kv/store/commit` after a completed
+  GPU-to-CPU offload;
+- `POST /v1/kv/scheduler/commit` after the scheduler observes that all workers
+  committed the store event.
+
 Failure policy should remain fail-closed for this DS4 path. If the service says
 a block exists but the worker cannot materialize the exact hash into the exact
 CPU slot that the scheduler selected, the request should visibly fail instead
@@ -68,3 +86,31 @@ The vLLM side should eventually reduce to three responsibilities:
 
 The cache service should own TTLs, leases, disk manifests, checksums, compaction,
 cross-process coordination, and admission/eviction policy.
+
+## Request-Submitted Cache Data
+
+Submitting cached data with a generation request is possible only as a two-step
+protocol:
+
+1. The caller uploads or registers the cache package with the external cache
+   service, receiving a committed cache generation or cache reference.
+2. The caller sends the normal vLLM generation request. vLLM derives the prompt
+   block hashes, calls `/v1/kv/lookup`, and only uses blocks the service can
+   materialize for the exact model, rank, dtype, tensor layout, and hash.
+
+The generation request should not carry raw KV tensors directly. KV payloads are
+model- and rank-specific and can be enormous. The safe request-level shape is a
+small cache reference or generation tag that the cache service has already
+validated. vLLM should still verify by hash before using any block.
+
+## Qwen27
+
+This API boundary is not DSV4-only. It can work for Qwen27 if Qwen27 is running
+through `SimpleCPUOffloadConnector` with matching block hashes, tensor names,
+dtype, tensor parallel rank, and tokenizer/model revision.
+
+It does not make dense Qwen27 KV small. Qwen27 does not get DSV4's compressed
+context-state advantage from this connector; it only gets durable/reusable CPU
+offload blocks. For Qwen27 today, node-sticky APC or normal prefix warming may
+still be the better first-line cache unless CPU offload is already enabled and
+the external service can keep the relevant blocks near the serving node.

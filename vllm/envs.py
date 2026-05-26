@@ -279,6 +279,9 @@ if TYPE_CHECKING:
     VLLM_SIMPLE_KV_OFFLOAD_PERSIST_ROOT: str | None = None
     VLLM_SIMPLE_KV_OFFLOAD_PERSIST_STRICT: bool = True
     VLLM_SIMPLE_KV_OFFLOAD_PERSIST_RANK: str | None = None
+    VLLM_SIMPLE_KV_OFFLOAD_PERSIST_API_URL: str | None = None
+    VLLM_SIMPLE_KV_OFFLOAD_PERSIST_API_TOKEN: str | None = None
+    VLLM_SIMPLE_KV_OFFLOAD_PERSIST_API_TIMEOUT: float = 5.0
     VLLM_LORA_ENABLE_DUAL_STREAM: bool = False
 
 
@@ -1968,6 +1971,18 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # Optional stable rank key for the per-worker persistent block index.
     "VLLM_SIMPLE_KV_OFFLOAD_PERSIST_RANK": lambda: os.getenv(
         "VLLM_SIMPLE_KV_OFFLOAD_PERSIST_RANK", None
+    ),
+    # Optional node-local cache service URL for persistent SimpleCPUOffload.
+    "VLLM_SIMPLE_KV_OFFLOAD_PERSIST_API_URL": lambda: os.getenv(
+        "VLLM_SIMPLE_KV_OFFLOAD_PERSIST_API_URL", None
+    ),
+    # Optional bearer token for the persistent SimpleCPUOffload cache service.
+    "VLLM_SIMPLE_KV_OFFLOAD_PERSIST_API_TOKEN": lambda: os.getenv(
+        "VLLM_SIMPLE_KV_OFFLOAD_PERSIST_API_TOKEN", None
+    ),
+    # Persistent SimpleCPUOffload cache service request timeout in seconds.
+    "VLLM_SIMPLE_KV_OFFLOAD_PERSIST_API_TIMEOUT": lambda: float(
+        os.getenv("VLLM_SIMPLE_KV_OFFLOAD_PERSIST_API_TIMEOUT", "5.0")
     ),
     # Whether to enable dual cuda streams for LoRA computation
     # (used by both BaseLinearLayerWithLoRA and FusedMoEWithLoRA to
