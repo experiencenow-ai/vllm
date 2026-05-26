@@ -40,6 +40,9 @@ from vllm.v1.outputs import KVConnectorOutput
 from vllm.v1.request import Request
 from vllm.v1.simple_kv_offload.manager import SimpleCPUOffloadScheduler
 from vllm.v1.simple_kv_offload.metadata import SimpleCPUOffloadWorkerMetadata
+from vllm.v1.simple_kv_offload.persistent_api import (
+    PersistentSimpleOffloadAPIClient,
+)
 from vllm.v1.simple_kv_offload.persistent_disk import PersistentSimpleOffloadStore
 
 # ---------------------------------------------------------------------------
@@ -1407,6 +1410,103 @@ def test_persistent_store_restores_worker_blocks_lazily(tmp_path) -> None:
     assert restored == {2: second_hash}
     assert cpu_kv_caches["kv"][1].tolist() == [0.0, 0.0]
     assert cpu_kv_caches["kv"][2].tolist() == [7.0, 8.0]
+
+
+def test_persistent_api_materializes_and_commits_payload_paths(tmp_path) -> None:
+    """Cache API uses service-provided file handles for tensor payloads."""
+
+    class FakeAPI(PersistentSimpleOffloadAPIClient):
+        def __init__(self) -> None:
+            super().__init__(
+                api_url="http://cache.local",
+                role="worker",
+                rank_key="rank0",
+                model_key="model",
+                num_cpu_blocks=4,
+                strict=True,
+                tensor_names=["kv"],
+            )
+            self.calls = []
+
+        def _post_json(self, path, payload):  # type: ignore[no-untyped-def]
+            self.calls.append((path, payload))
+            if path == "/v1/kv/store/prepare":
+                blocks = []
+                for block in payload["blocks"]:
+                    blocks.append(
+                        {
+                            "hash": block["hash"],
+                            "path": str(tmp_path / f"{block['hash']}.pt"),
+                        }
+                    )
+                return {"blocks": blocks}
+            if path == "/v1/kv/store/commit":
+                return {"ok": True}
+            if path == "/v1/kv/materialize":
+                blocks = []
+                for block in payload["blocks"]:
+                    blocks.append(
+                        {
+                            "hash": block["hash"],
+                            "path": str(tmp_path / f"{block['hash']}.pt"),
+                        }
+                    )
+                return {"blocks": blocks}
+            raise AssertionError(path)
+
+    client = FakeAPI()
+    hash_hex = "ab" * 32
+    cpu_kv_caches = {"kv": torch.zeros((4, 2), dtype=torch.float16)}
+    cpu_kv_caches["kv"][2] = torch.tensor([7, 8], dtype=torch.float16)
+
+    client.persist_worker_blocks(cpu_kv_caches, [2], [hash_hex])
+    assert (tmp_path / f"{hash_hex}.pt").exists()
+    assert [path for path, _ in client.calls] == [
+        "/v1/kv/store/prepare",
+        "/v1/kv/store/commit",
+    ]
+
+    cpu_kv_caches["kv"].zero_()
+    restored = client.ensure_worker_blocks(cpu_kv_caches, [2], [hash_hex], {})
+    assert restored == {2: hash_hex}
+    assert cpu_kv_caches["kv"][2].tolist() == [7.0, 8.0]
+
+
+def test_persistent_api_lookup_seeds_scheduler_hits(monkeypatch) -> None:
+    """Scheduler asks the API about request hashes instead of restoring all."""
+
+    class LookupStore:
+        def __init__(self, hits: set[str]) -> None:
+            self.hits = hits
+            self.lookups = []
+
+        def load_scheduler_entries(self, num_cpu_blocks):  # type: ignore[no-untyped-def]
+            return []
+
+        def lookup_block_hashes(self, block_hashes, limit):  # type: ignore[no-untyped-def]
+            self.lookups.append(block_hashes)
+            return [h for h in block_hashes if h in self.hits][:limit]
+
+    req = make_request(num_blocks=3)
+    hits = {
+        make_block_hash_with_group_id(block_hash, 0).hex()
+        for block_hash in req.block_hashes[:3]
+    }
+    store = LookupStore(hits)
+    monkeypatch.setattr(
+        PersistentSimpleOffloadStore,
+        "from_env",
+        classmethod(lambda cls, **kwargs: store),
+    )
+
+    fix = make_scheduler(num_cpu_blocks=8, num_gpu_blocks=16, lazy=False)
+    hit_tokens, is_async = fix.scheduler.get_num_new_matched_tokens(
+        req, num_computed_tokens=0
+    )
+
+    assert hit_tokens == 2 * BLOCK_SIZE
+    assert is_async is True
+    assert store.lookups
 
 
 def test_persistent_scheduler_restore_uses_guarded_hits(tmp_path, monkeypatch) -> None:

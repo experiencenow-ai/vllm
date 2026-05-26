@@ -17,6 +17,10 @@ from vllm.v1.core.kv_cache_coordinator import (
     KVCacheCoordinator,
     get_kv_cache_coordinator,
 )
+from vllm.v1.core.kv_cache_utils import (
+    BlockHashListWithBlockSize,
+    make_block_hash_with_group_id,
+)
 from vllm.v1.core.sched.output import SchedulerOutput
 from vllm.v1.kv_cache_interface import (
     FullAttentionSpec,
@@ -268,6 +272,7 @@ class SimpleCPUOffloadScheduler:
         max_hit_len = request.num_tokens - 1 - num_computed_tokens
         if max_hit_len <= 0:
             return 0, False
+        self._seed_persistent_hits(remaining_hashes, max_hit_len)
         cpu_hit_blocks, hit_length = self.cpu_coordinator.find_longest_cache_hit(
             remaining_hashes, max_hit_len
         )
@@ -303,6 +308,73 @@ class SimpleCPUOffloadScheduler:
             )
             return hit_length, True
         return 0, False
+
+    def _seed_persistent_hits(
+        self, remaining_hashes: list[bytes], max_hit_len: int
+    ) -> None:
+        if self._persistent_store is None:
+            return
+        lookup = getattr(self._persistent_store, "lookup_block_hashes", None)
+        if lookup is None:
+            return
+        num_free = self.cpu_block_pool.get_num_free_blocks()
+        if num_free <= 0:
+            return
+
+        candidates = self._persistent_lookup_candidates(remaining_hashes, max_hit_len)
+        hits = lookup(candidates, num_free)[:num_free]
+        if not hits:
+            return
+
+        cpu_blocks = self.cpu_block_pool.get_new_blocks(len(hits))
+        for cpu_block, hash_hex in zip(cpu_blocks, hits):
+            block_hash = bytes.fromhex(hash_hex)
+            cpu_block._block_hash = block_hash  # type: ignore[assignment]
+            self.cpu_block_pool.cached_block_hash_to_block.insert(
+                block_hash, cpu_block
+            )
+        self.cpu_block_pool.free_blocks(cpu_blocks)
+        logger.info(
+            "DS4 persistent SimpleCPUOffload API lookup seeded %d CPU hits",
+            len(hits),
+        )
+
+    def _persistent_lookup_candidates(
+        self, remaining_hashes: list[bytes], max_hit_len: int
+    ) -> list[str]:
+        kv_cache_groups = self.cpu_kv_cache_config.kv_cache_groups
+        per_group_hashes: list[list[bytes]] = []
+        max_group_blocks = 0
+        for group in kv_cache_groups:
+            spec = group.kv_cache_spec
+            if spec.block_size == self.hash_block_size:
+                group_hashes = remaining_hashes
+            else:
+                group_hashes = BlockHashListWithBlockSize(
+                    remaining_hashes, self.hash_block_size, spec.block_size
+                )
+            n_blocks = min(len(group_hashes), cdiv(max_hit_len, spec.block_size))
+            per_group_hashes.append(group_hashes[:n_blocks])
+            max_group_blocks = max(max_group_blocks, n_blocks)
+
+        candidates: list[str] = []
+        seen: set[str] = set()
+        cache_map = self.cpu_block_pool.cached_block_hash_to_block
+        for block_idx in range(max_group_blocks):
+            for group_id, group_hashes in enumerate(per_group_hashes):
+                if block_idx >= len(group_hashes):
+                    continue
+                block_hash = make_block_hash_with_group_id(
+                    group_hashes[block_idx], group_id
+                )
+                if cache_map.get_one_block(block_hash) is not None:
+                    continue
+                hash_hex = block_hash.hex()
+                if hash_hex in seen:
+                    continue
+                candidates.append(hash_hex)
+                seen.add(hash_hex)
+        return candidates
 
     # TODO(yifan): this API now only matches the suffix part of the prefix cache. A more
     # general API should scan blocks in both GPU and CPU block pool in a single pass.
