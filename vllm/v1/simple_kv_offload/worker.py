@@ -209,6 +209,7 @@ class SimpleCPUOffloadWorker:
                     metadata.load_cpu_blocks,
                     metadata.load_block_hashes,
                     self._persistent_known,
+                    metadata.load_cache_refs,
                 )
                 self._persistent_known.update(restored)
                 self._persistent_store.validate_loaded_blocks(

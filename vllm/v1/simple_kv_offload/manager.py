@@ -48,6 +48,7 @@ class TransferMeta:
     gpu_block_ids: list[int]
     cpu_block_ids: list[int]
     block_hashes: list[str] = field(default_factory=list)
+    cache_refs: list[str | None] = field(default_factory=list)
 
 
 @dataclass
@@ -169,7 +170,7 @@ class SimpleCPUOffloadScheduler:
         # Pending (cpu_hit_blocks, hit_length) tuples from find_longest_cache_hit,
         # kept pinned via touch() while awaiting update_state_after_alloc().
         self._pending_cpu_hits: dict[
-            str, tuple[tuple[list[KVCacheBlock], ...], int]
+            str, tuple[tuple[list[KVCacheBlock], ...], int, str | None]
         ] = {}
 
         # Store metadata
@@ -272,7 +273,8 @@ class SimpleCPUOffloadScheduler:
         max_hit_len = request.num_tokens - 1 - num_computed_tokens
         if max_hit_len <= 0:
             return 0, False
-        self._seed_persistent_hits(remaining_hashes, max_hit_len)
+        cache_ref = _request_cache_ref(request)
+        self._seed_persistent_hits(remaining_hashes, max_hit_len, cache_ref)
         cpu_hit_blocks, hit_length = self.cpu_coordinator.find_longest_cache_hit(
             remaining_hashes, max_hit_len
         )
@@ -305,12 +307,16 @@ class SimpleCPUOffloadScheduler:
             self._pending_cpu_hits[request.request_id] = (
                 cpu_hit_blocks,
                 hit_length,
+                cache_ref,
             )
             return hit_length, True
         return 0, False
 
     def _seed_persistent_hits(
-        self, remaining_hashes: list[bytes], max_hit_len: int
+        self,
+        remaining_hashes: list[bytes],
+        max_hit_len: int,
+        cache_ref: str | None,
     ) -> None:
         if self._persistent_store is None:
             return
@@ -322,7 +328,7 @@ class SimpleCPUOffloadScheduler:
             return
 
         candidates = self._persistent_lookup_candidates(remaining_hashes, max_hit_len)
-        hits = lookup(candidates, num_free)[:num_free]
+        hits = lookup(candidates, num_free, cache_ref=cache_ref)[:num_free]
         if not hits:
             return
 
@@ -425,7 +431,7 @@ class SimpleCPUOffloadScheduler:
             )
             return
 
-        cpu_hit_blocks_full, _ = pending
+        cpu_hit_blocks_full, _, cache_ref = pending
 
         # ``num_external_tokens`` is LCM-aligned (checked per-group below),
         # so this counts whole scheduler-aligned chunks of incoming tokens.
@@ -458,6 +464,7 @@ class SimpleCPUOffloadScheduler:
         gpu_block_ids: list[int] = []
         cpu_block_ids: list[int] = []
         cpu_block_hashes: list[str] = []
+        cpu_block_cache_refs: list[str | None] = []
         cpu_blocks_to_touch: list[KVCacheBlock] = []
 
         for g in range(num_groups):
@@ -482,6 +489,7 @@ class SimpleCPUOffloadScheduler:
                 cpu_block_ids.append(cpu_blk.block_id)
                 assert cpu_blk.block_hash is not None
                 cpu_block_hashes.append(cpu_blk.block_hash.hex())
+                cpu_block_cache_refs.append(cache_ref)
                 cpu_blocks_to_touch.append(cpu_blk)
 
         # Touch CPU blocks to prevent eviction during async load.
@@ -499,7 +507,10 @@ class SimpleCPUOffloadScheduler:
         self._reqs_to_load[req_id] = LoadRequestState(
             request=request,
             transfer_meta=TransferMeta(
-                gpu_block_ids, cpu_block_ids, cpu_block_hashes
+                gpu_block_ids,
+                cpu_block_ids,
+                cpu_block_hashes,
+                cpu_block_cache_refs,
             ),
         )
 
@@ -529,6 +540,7 @@ class SimpleCPUOffloadScheduler:
         load_gpu: list[int] = []
         load_cpu: list[int] = []
         load_hashes: list[str] = []
+        load_cache_refs: list[str | None] = []
         load_req_ids: list[str] = []
         for req_id, load_state in self._reqs_to_load.items():
             if load_state.load_event is not None:
@@ -537,6 +549,7 @@ class SimpleCPUOffloadScheduler:
             load_gpu.extend(load_state.transfer_meta.gpu_block_ids)
             load_cpu.extend(load_state.transfer_meta.cpu_block_ids)
             load_hashes.extend(load_state.transfer_meta.block_hashes)
+            load_cache_refs.extend(load_state.transfer_meta.cache_refs)
             load_req_ids.append(req_id)
         if load_req_ids:
             load_event = self._load_event_counter
@@ -550,6 +563,7 @@ class SimpleCPUOffloadScheduler:
             load_gpu_blocks=load_gpu,
             load_cpu_blocks=load_cpu,
             load_block_hashes=load_hashes,
+            load_cache_refs=load_cache_refs,
             load_event_to_reqs=self._load_event_to_reqs,
             store_event=store_event,
             store_gpu_blocks=store_gpu,
@@ -908,7 +922,7 @@ class SimpleCPUOffloadScheduler:
 
     def _free_pending_cpu_hit(self, pending: tuple) -> None:
         """Release the temporary CPU block pin taken in get_num_new_matched_tokens()."""
-        cpu_hit_blocks, _ = pending
+        cpu_hit_blocks = pending[0]
         blocks_to_free = [
             blk for grp in cpu_hit_blocks for blk in grp if not blk.is_null
         ]
@@ -966,3 +980,14 @@ class SimpleCPUOffloadScheduler:
 
     def take_events(self) -> Iterable[KVCacheEvent]:
         return self.cpu_block_pool.take_events()
+
+
+def _request_cache_ref(request: "Request") -> str | None:
+    params = request.kv_transfer_params
+    if not isinstance(params, dict):
+        return None
+    for key in ("cache_ref", "simple_kv_cache_ref", "ds4_cache_ref"):
+        value = params.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return None
