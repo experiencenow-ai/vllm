@@ -1368,7 +1368,7 @@ def test_persistent_store_roundtrip(tmp_path) -> None:
     store.persist_worker_blocks(cpu_kv_caches, [2], [hash_hex])
     cpu_kv_caches["kv"].zero_()
 
-    restored = store.restore_worker_blocks(cpu_kv_caches, 4)
+    restored = store.ensure_worker_blocks(cpu_kv_caches, [2], [hash_hex], {})
     assert restored == {2: hash_hex}
     assert cpu_kv_caches["kv"][2].tolist() == [7.0, 8.0]
 
@@ -1377,6 +1377,36 @@ def test_persistent_store_roundtrip(tmp_path) -> None:
     assert len(entries) == 1
     assert entries[0].cpu_block_id == 2
     assert entries[0].hash_hex == hash_hex
+
+
+def test_persistent_store_restores_worker_blocks_lazily(tmp_path) -> None:
+    """Persistent worker data is indexed at startup, not copied wholesale."""
+    store = PersistentSimpleOffloadStore(
+        root=tmp_path,
+        rank_key="rank0",
+        model_key="model",
+        num_cpu_blocks=4,
+        strict=True,
+        tensor_names=["kv"],
+    )
+    cpu_kv_caches = {"kv": torch.zeros((4, 2), dtype=torch.float16)}
+    first_hash = "ab" * 32
+    second_hash = "cd" * 32
+    cpu_kv_caches["kv"][1] = torch.tensor([1, 2], dtype=torch.float16)
+    cpu_kv_caches["kv"][2] = torch.tensor([7, 8], dtype=torch.float16)
+    store.persist_worker_blocks(cpu_kv_caches, [1, 2], [first_hash, second_hash])
+    cpu_kv_caches["kv"].zero_()
+
+    entries = store.load_worker_entries(4)
+    assert len(entries) == 2
+    assert cpu_kv_caches["kv"].tolist() == [[0.0, 0.0]] * 4
+
+    restored = store.ensure_worker_blocks(
+        cpu_kv_caches, [2], [second_hash], {}
+    )
+    assert restored == {2: second_hash}
+    assert cpu_kv_caches["kv"][1].tolist() == [0.0, 0.0]
+    assert cpu_kv_caches["kv"][2].tolist() == [7.0, 8.0]
 
 
 def test_persistent_scheduler_restore_uses_guarded_hits(tmp_path, monkeypatch) -> None:

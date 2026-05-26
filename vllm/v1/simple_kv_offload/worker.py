@@ -191,12 +191,11 @@ class SimpleCPUOffloadWorker:
             tensor_names=list(self.cpu_kv_caches.keys()),
         )
         if self._persistent_store is not None:
-            self._persistent_known = self._persistent_store.restore_worker_blocks(
-                self.cpu_kv_caches, self.num_cpu_blocks
-            )
+            entries = self._persistent_store.load_worker_entries(self.num_cpu_blocks)
             logger.info(
-                "SimpleCPUOffloadWorker: restored %d persistent CPU blocks",
-                len(self._persistent_known),
+                "SimpleCPUOffloadWorker: indexed %d persistent CPU blocks "
+                "for lazy restore",
+                len(entries),
             )
 
     def bind_connector_metadata(self, metadata: SimpleCPUOffloadMetadata) -> None:
@@ -204,6 +203,14 @@ class SimpleCPUOffloadWorker:
         if metadata.load_event >= 0:
             self._pending_load_event_indices.add(metadata.load_event)
             if metadata.load_cpu_blocks and self._persistent_store is not None:
+                assert self.cpu_kv_caches is not None
+                restored = self._persistent_store.ensure_worker_blocks(
+                    self.cpu_kv_caches,
+                    metadata.load_cpu_blocks,
+                    metadata.load_block_hashes,
+                    self._persistent_known,
+                )
+                self._persistent_known.update(restored)
                 self._persistent_store.validate_loaded_blocks(
                     metadata.load_cpu_blocks,
                     metadata.load_block_hashes,
