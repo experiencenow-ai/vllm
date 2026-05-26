@@ -155,6 +155,14 @@ class EngineCoreClient(ABC):
     def reset_encoder_cache(self) -> None:
         raise NotImplementedError
 
+    def trim_memory(
+        self,
+        reset_external: bool = True,
+        release_offload_memory: bool = True,
+        malloc_trim: bool = True,
+    ) -> dict[str, Any]:
+        raise NotImplementedError
+
     def sleep(self, level: int = 1, mode: PauseMode = "abort") -> None:
         raise NotImplementedError
 
@@ -230,6 +238,14 @@ class EngineCoreClient(ABC):
         raise NotImplementedError
 
     async def reset_encoder_cache_async(self) -> None:
+        raise NotImplementedError
+
+    async def trim_memory_async(
+        self,
+        reset_external: bool = True,
+        release_offload_memory: bool = True,
+        malloc_trim: bool = True,
+    ) -> dict[str, Any]:
         raise NotImplementedError
 
     async def sleep_async(self, level: int = 1, mode: PauseMode = "abort") -> None:
@@ -318,6 +334,16 @@ class InprocClient(EngineCoreClient):
 
     def reset_encoder_cache(self) -> None:
         self.engine_core.reset_encoder_cache()
+
+    def trim_memory(
+        self,
+        reset_external: bool = True,
+        release_offload_memory: bool = True,
+        malloc_trim: bool = True,
+    ) -> dict[str, Any]:
+        return self.engine_core.trim_memory(
+            reset_external, release_offload_memory, malloc_trim
+        )
 
     def sleep(self, level: int = 1, mode: PauseMode = "abort") -> None:
         if mode == "wait":
@@ -845,6 +871,16 @@ class SyncMPClient(MPClient):
     def reset_encoder_cache(self) -> None:
         self.call_utility("reset_encoder_cache")
 
+    def trim_memory(
+        self,
+        reset_external: bool = True,
+        release_offload_memory: bool = True,
+        malloc_trim: bool = True,
+    ) -> dict[str, Any]:
+        return self.call_utility(
+            "trim_memory", reset_external, release_offload_memory, malloc_trim
+        )
+
     def add_lora(self, lora_request: LoRARequest) -> bool:
         return self.call_utility("add_lora", lora_request)
 
@@ -1092,6 +1128,16 @@ class AsyncMPClient(MPClient):
 
     async def reset_encoder_cache_async(self) -> None:
         await self.call_utility_async("reset_encoder_cache")
+
+    async def trim_memory_async(
+        self,
+        reset_external: bool = True,
+        release_offload_memory: bool = True,
+        malloc_trim: bool = True,
+    ) -> dict[str, Any]:
+        return await self.call_utility_async(
+            "trim_memory", reset_external, release_offload_memory, malloc_trim
+        )
 
     async def sleep_async(self, level: int = 1, mode: PauseMode = "abort") -> None:
         await self.call_utility_async("sleep", level, mode)

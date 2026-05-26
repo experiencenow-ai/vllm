@@ -211,6 +211,15 @@ These endpoints are **only available when the environment variable `VLLM_SERVER_
 - `/is_sleeping` - Check if engine is sleeping
 - `/collective_rpc` - Execute arbitrary RPC methods on the engine (extremely dangerous)
 
+**Memory trim endpoint:**
+
+- `/v1/trim_memory` - Minimize process memory without unloading model weights.
+  This pauses generation, aborts or drains in-flight requests, clears
+  prefix/multimodal/encoder caches, resets connector cache state when
+  requested, and releases offloaded KV memory for connectors that support it.
+  Protect this endpoint with API-key authentication and network policy because
+  it can disrupt active requests.
+
 **Profiler endpoints (only when profiling is enabled via `--profiler-config`):**
 
 These endpoints are only available when profiling is enabled and should only be used for local development:
@@ -225,7 +234,7 @@ These endpoints are only available when profiling is enabled and should only be 
 An attacker who can reach the vLLM HTTP server can:
 
 1. **Bypass authentication** by using non-`/v1` endpoints like `/invocations`, `/inference/v1/generate`, `/generative_scoring`, `/pooling`, `/classify`, `/score`, or `/rerank` to run arbitrary inference without credentials
-2. **Cause denial of service** by calling `/pause`, `/scale_elastic_ep`, or `/abort_requests` without a token
+2. **Cause denial of service** by calling `/pause`, `/scale_elastic_ep`, `/abort_requests`, or `/v1/trim_memory` without a token
 3. **Access operational controls** to manipulate server state (e.g., pausing generation, updating model weights via `/update_weights`)
 4. **If `--enable-tokenizer-info-endpoint` is set:** Access sensitive tokenizer configuration including chat templates, which may reveal prompt engineering strategies or other implementation details
 5. **If `VLLM_SERVER_DEV_MODE=1` is set:** Execute arbitrary RPC commands via `/collective_rpc`, reset caches, put the engine to sleep, and access detailed server configuration

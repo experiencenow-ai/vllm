@@ -407,6 +407,63 @@ def test_eager_store_and_load_roundtrip() -> None:
     assert len(meta2.load_cpu_blocks) == len(meta2.load_gpu_blocks)
 
 
+def test_reset_cache_drops_completed_cpu_hits() -> None:
+    fix = make_scheduler(num_cpu_blocks=8, num_gpu_blocks=16, lazy=False)
+    sched = fix.scheduler
+
+    req = make_request(num_blocks=2)
+    kv_blocks = _alloc_and_register(fix, req, 2)
+    sched.update_state_after_alloc(req, kv_blocks, num_external_tokens=0)
+    meta = sched.build_connector_meta(
+        make_scheduler_output(
+            {req.request_id: 2 * BLOCK_SIZE},
+            new_reqs={req.request_id: kv_blocks.get_block_ids()},
+        )
+    )
+    simulate_store_completion(sched, meta.store_event)
+
+    req2 = Request(
+        request_id="req-reset-miss",
+        prompt_token_ids=req.prompt_token_ids,
+        sampling_params=req.sampling_params,
+        pooling_params=None,
+        mm_features=None,
+        block_hasher=req._block_hasher,
+    )
+    hit_tokens, is_async = sched.get_num_new_matched_tokens(req2, 0)
+    assert hit_tokens == 2 * BLOCK_SIZE
+    assert is_async is True
+    sched.request_finished(req2, [])
+
+    assert sched.reset_cache() is True
+    hit_tokens, is_async = sched.get_num_new_matched_tokens(req2, 0)
+    assert hit_tokens == 0
+    assert is_async is False
+
+
+def test_reset_cache_releases_in_flight_store_refs() -> None:
+    fix = make_scheduler(num_cpu_blocks=8, num_gpu_blocks=16, lazy=False)
+    sched = fix.scheduler
+
+    req = make_request(num_blocks=2)
+    kv_blocks = _alloc_and_register(fix, req, 2)
+    sched.update_state_after_alloc(req, kv_blocks, num_external_tokens=0)
+    meta = sched.build_connector_meta(
+        make_scheduler_output(
+            {req.request_id: 2 * BLOCK_SIZE},
+            new_reqs={req.request_id: kv_blocks.get_block_ids()},
+        )
+    )
+
+    assert meta.store_event >= 0
+    assert sched._store_event_to_blocks
+    assert sched._in_flight_store_gpu_blocks
+
+    assert sched.reset_cache() is True
+    assert sched._store_event_to_blocks == {}
+    assert sched._in_flight_store_gpu_blocks == set()
+
+
 # ---------------------------------------------------------------------------
 # Test 1b: Boundary — max_hit_len cap drops the last full block when the
 # prompt is an exact multiple of BLOCK_SIZE.

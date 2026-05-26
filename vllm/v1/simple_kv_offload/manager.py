@@ -879,6 +879,46 @@ class SimpleCPUOffloadScheduler:
         """Return True if there are in-flight store transfers."""
         return bool(self._store_event_to_blocks)
 
+    def reset_cache(self) -> bool:
+        """Drop all scheduler-side CPU offload cache state."""
+        for pending in list(self._pending_cpu_hits.values()):
+            self._free_pending_cpu_hit(pending)
+        self._pending_cpu_hits.clear()
+
+        for req_id in list(self._reqs_to_load):
+            self._cleanup_load_request(req_id)
+
+        if self._store_event_to_blocks:
+            for transfer in self._store_event_to_blocks.values():
+                if transfer.cpu_block_ids:
+                    self.cpu_block_pool.free_blocks(
+                        self.cpu_block_pool.blocks[bid]
+                        for bid in transfer.cpu_block_ids
+                    )
+                if transfer.gpu_block_ids and self._gpu_block_pool is not None:
+                    self._gpu_block_pool.free_blocks(
+                        self._gpu_block_pool.blocks[bid]
+                        for bid in transfer.gpu_block_ids
+                    )
+
+        self._reqs_to_load.clear()
+        self._load_event_to_reqs.clear()
+        self._store_event_to_blocks.clear()
+        self._reqs_to_store.clear()
+        self._store_event_to_reqs.clear()
+        self._in_flight_store_gpu_blocks.clear()
+        self._store_event_pending_counts.clear()
+        self._load_event_counter = 0
+        self._store_event_counter = 0
+        self._cursor = None
+
+        reset_successful = self.cpu_block_pool.reset_prefix_cache()
+        logger.info(
+            "SimpleCPUOffloadScheduler: reset CPU offload cache success=%s",
+            reset_successful,
+        )
+        return reset_successful
+
     def request_finished(
         self,
         request: "Request",

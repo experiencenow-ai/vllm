@@ -49,7 +49,12 @@ from vllm.sequence import IntermediateTensors
 from vllm.tasks import SupportedTask
 from vllm.tracing import instrument
 from vllm.utils.mem_constants import GiB_bytes
-from vllm.utils.mem_utils import MemorySnapshot, format_gib, memory_profiling
+from vllm.utils.mem_utils import (
+    MemorySnapshot,
+    format_gib,
+    memory_profiling,
+    trim_process_memory,
+)
 from vllm.utils.torch_utils import set_random_seed
 from vllm.v1.core.sched.output import GrammarOutput, SchedulerOutput
 from vllm.v1.kv_cache_interface import KVCacheConfig, KVCacheSpec
@@ -729,6 +734,31 @@ class Worker(WorkerBase):
 
     def reset_encoder_cache(self) -> None:
         self.model_runner.reset_encoder_cache()
+
+    def trim_memory(
+        self,
+        *,
+        release_offload_memory: bool = True,
+        malloc_trim: bool = True,
+    ) -> dict[str, object]:
+        connector_result: dict[str, object] | None = None
+        if release_offload_memory and has_kv_transfer_group():
+            connector = get_kv_transfer_group()
+            trim = getattr(connector, "trim_memory", None)
+            if trim is not None:
+                connector_result = trim(
+                    release_offload_memory=release_offload_memory,
+                    malloc_trim=malloc_trim,
+                )
+
+        process_result = trim_process_memory(
+            empty_accelerator_cache=True,
+            malloc_trim=malloc_trim,
+        )
+        return {
+            "connector": connector_result,
+            "process": process_result,
+        }
 
     def get_model(self) -> nn.Module:
         return self.model_runner.get_model()

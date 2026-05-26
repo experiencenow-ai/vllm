@@ -925,6 +925,36 @@ class AsyncLLM(EngineClient):
             reset_running_requests, reset_connector
         )
 
+    async def trim_memory(
+        self,
+        *,
+        mode: PauseMode = "abort",
+        reset_external: bool = True,
+        release_offload_memory: bool = True,
+        malloc_trim: bool = True,
+        resume: bool = True,
+    ) -> dict[str, Any]:
+        if mode == "keep":
+            raise ValueError(
+                "trim_memory cannot use mode='keep' because caches are reset"
+            )
+        if release_offload_memory and not reset_external:
+            raise ValueError(
+                "release_offload_memory=True requires reset_external=True"
+            )
+        was_paused = await self.is_paused()
+        await self.pause_generation(mode=mode, clear_cache=False)
+        try:
+            await self.renderer.clear_mm_cache_async()
+            return await self.engine_core.trim_memory_async(
+                reset_external,
+                release_offload_memory,
+                malloc_trim,
+            )
+        finally:
+            if resume and not was_paused:
+                await self.resume_generation()
+
     async def reset_encoder_cache(self) -> None:
         await self.engine_core.reset_encoder_cache_async()
 

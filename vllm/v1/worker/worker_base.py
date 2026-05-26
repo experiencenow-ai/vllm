@@ -122,6 +122,22 @@ class WorkerBase:
         if callable(reset_fn):
             reset_fn()
 
+    def trim_memory(
+        self,
+        *,
+        release_offload_memory: bool = True,
+        malloc_trim: bool = True,
+    ) -> dict[str, object]:
+        from vllm.utils.mem_utils import trim_process_memory
+
+        return {
+            "connector": None,
+            "process": trim_process_memory(
+                empty_accelerator_cache=True,
+                malloc_trim=malloc_trim,
+            ),
+        }
+
     def get_model(self) -> nn.Module:
         raise NotImplementedError
 

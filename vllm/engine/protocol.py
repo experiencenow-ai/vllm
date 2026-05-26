@@ -161,6 +161,19 @@ class EngineClient(ABC):
         ...
 
     @abstractmethod
+    async def trim_memory(
+        self,
+        *,
+        mode: "PauseMode" = "abort",
+        reset_external: bool = True,
+        release_offload_memory: bool = True,
+        malloc_trim: bool = True,
+        resume: bool = True,
+    ) -> dict[str, Any]:
+        """Minimize memory footprint without unloading model weights"""
+        ...
+
+    @abstractmethod
     async def sleep(self, level: int = 1, mode: "PauseMode" = "abort") -> None:
         """Sleep the engine"""
         ...
