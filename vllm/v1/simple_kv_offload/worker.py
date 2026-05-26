@@ -15,6 +15,7 @@ from vllm.v1.simple_kv_offload.metadata import (
     SimpleCPUOffloadMetadata,
     SimpleCPUOffloadWorkerMetadata,
 )
+from vllm.v1.simple_kv_offload.persistent_disk import PersistentSimpleOffloadStore
 
 if TYPE_CHECKING:
     from vllm.v1.kv_cache_interface import KVCacheConfig
@@ -62,6 +63,9 @@ class SimpleCPUOffloadWorker:
         self._pending_store_event_indices: set[int] = set()
         # Completed store events to report via build_connector_worker_meta
         self._completed_store_events: dict[int, int] = {}
+        self._persistent_store: PersistentSimpleOffloadStore | None = None
+        self._persistent_known: dict[int, str] = {}
+        self._pending_store_persist: dict[int, tuple[list[int], list[str]]] = {}
 
     def register_kv_caches(
         self,
@@ -180,13 +184,45 @@ class SimpleCPUOffloadWorker:
             self.load_stream,
             self.store_stream,
         )
+        self._persistent_store = PersistentSimpleOffloadStore.from_env(
+            role="worker",
+            vllm_config=self.vllm_config,
+            num_cpu_blocks=self.num_cpu_blocks,
+            tensor_names=list(self.cpu_kv_caches.keys()),
+        )
+        if self._persistent_store is not None:
+            entries = self._persistent_store.load_worker_entries(self.num_cpu_blocks)
+            logger.info(
+                "SimpleCPUOffloadWorker: indexed %d persistent CPU blocks "
+                "for lazy restore",
+                len(entries),
+            )
 
     def bind_connector_metadata(self, metadata: SimpleCPUOffloadMetadata) -> None:
         self._connector_metadata = metadata
         if metadata.load_event >= 0:
             self._pending_load_event_indices.add(metadata.load_event)
+            if metadata.load_cpu_blocks and self._persistent_store is not None:
+                assert self.cpu_kv_caches is not None
+                restored = self._persistent_store.ensure_worker_blocks(
+                    self.cpu_kv_caches,
+                    metadata.load_cpu_blocks,
+                    metadata.load_block_hashes,
+                    self._persistent_known,
+                )
+                self._persistent_known.update(restored)
+                self._persistent_store.validate_loaded_blocks(
+                    metadata.load_cpu_blocks,
+                    metadata.load_block_hashes,
+                    self._persistent_known,
+                )
         if metadata.store_event >= 0:
             self._pending_store_event_indices.add(metadata.store_event)
+            if metadata.store_cpu_blocks:
+                self._pending_store_persist[metadata.store_event] = (
+                    list(metadata.store_cpu_blocks),
+                    list(metadata.store_block_hashes),
+                )
 
     def clear_connector_metadata(self) -> None:
         self._connector_metadata = None
@@ -254,6 +290,15 @@ class SimpleCPUOffloadWorker:
             store_wm = self._poll_stream_events(is_store=True)
             for j in [j for j in self._pending_store_event_indices if j <= store_wm]:
                 self._pending_store_event_indices.discard(j)
+                persist = self._pending_store_persist.pop(j, None)
+                if persist is not None and self._persistent_store is not None:
+                    assert self.cpu_kv_caches is not None
+                    cpu_ids, hashes = persist
+                    self._persistent_store.persist_worker_blocks(
+                        self.cpu_kv_caches, cpu_ids, hashes
+                    )
+                    for cpu_id, hash_hex in zip(cpu_ids, hashes):
+                        self._persistent_known[int(cpu_id)] = hash_hex
                 self._completed_store_events[j] = 1
 
         return None, finished_recving or None
