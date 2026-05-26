@@ -1,11 +1,14 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+import ctypes
 import contextlib
 import gc
+import sys
 import time
 from collections.abc import Generator
 from dataclasses import dataclass, field
 from functools import cache
+from typing import Any
 
 import psutil
 import torch
@@ -43,6 +46,43 @@ def get_max_shared_memory_bytes(gpu: int = 0) -> int:
 def get_cpu_memory() -> int:
     """Returns the total CPU memory of the node in bytes."""
     return psutil.virtual_memory().total
+
+
+def trim_process_memory(
+    *,
+    empty_accelerator_cache: bool = True,
+    malloc_trim: bool = True,
+) -> dict[str, Any]:
+    """Best-effort release of unused memory owned by this process.
+
+    This does not unload model weights. It collects Python garbage, releases
+    cached accelerator allocator slabs, and asks glibc to return free arenas to
+    the OS when available.
+    """
+    result: dict[str, Any] = {"gc_collected": gc.collect()}
+
+    if empty_accelerator_cache:
+        try:
+            torch.accelerator.empty_cache()
+            result["accelerator_empty_cache"] = True
+        except Exception as exc:
+            result["accelerator_empty_cache"] = False
+            result["accelerator_empty_cache_error"] = repr(exc)
+
+    if malloc_trim:
+        if sys.platform.startswith("linux"):
+            try:
+                libc = ctypes.CDLL("libc.so.6")
+                libc.malloc_trim.argtypes = [ctypes.c_size_t]
+                libc.malloc_trim.restype = ctypes.c_int
+                result["malloc_trim"] = bool(libc.malloc_trim(0))
+            except Exception as exc:
+                result["malloc_trim"] = False
+                result["malloc_trim_error"] = repr(exc)
+        else:
+            result["malloc_trim"] = None
+
+    return result
 
 
 class DeviceMemoryProfiler:

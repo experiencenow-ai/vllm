@@ -2,15 +2,17 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 """Worker-side handler for SimpleCPUOffloadConnector."""
 
+from contextlib import suppress
 from typing import TYPE_CHECKING
 
 import torch
 
 from vllm.config import VllmConfig
 from vllm.logger import init_logger
+from vllm.utils.mem_utils import trim_process_memory
 from vllm.utils.platform_utils import is_pin_memory_available
 from vllm.v1.simple_kv_offload.copy_backend import DmaCopyBackend
-from vllm.v1.simple_kv_offload.cuda_mem_ops import pin_tensor
+from vllm.v1.simple_kv_offload.cuda_mem_ops import pin_tensor, unpin_tensor
 from vllm.v1.simple_kv_offload.metadata import (
     SimpleCPUOffloadMetadata,
     SimpleCPUOffloadWorkerMetadata,
@@ -66,6 +68,7 @@ class SimpleCPUOffloadWorker:
         self._persistent_store: PersistentSimpleOffloadStore | None = None
         self._persistent_known: dict[int, str] = {}
         self._pending_store_persist: dict[int, tuple[list[int], list[str]]] = {}
+        self._pin_memory: bool = False
 
     def register_kv_caches(
         self,
@@ -136,38 +139,43 @@ class SimpleCPUOffloadWorker:
                     chunk = raw[offset : offset + seg_stride]
                     unique_gpu_caches[f"{name}.{idx}"] = chunk.view(num_blocks, -1)
 
-        # Compute per-tensor bytes_per_block. Tensors may have different
-        # page_size_bytes (e.g., UniformTypeKVCacheSpecs with varying head_size).
+        self.gpu_kv_caches = unique_gpu_caches
+        self._allocate_cpu_kv_caches()
+
+    def _allocate_cpu_kv_caches(self) -> None:
+        """Allocate pinned CPU KV tensors for the registered GPU KV cache."""
+        if self.cpu_kv_caches is not None:
+            return
+        assert self.gpu_kv_caches is not None
+
         per_tensor_bpb = [
-            t.stride(0) * t.element_size() for t in unique_gpu_caches.values()
+            t.stride(0) * t.element_size() for t in self.gpu_kv_caches.values()
         ]
         total_bytes_per_block = sum(per_tensor_bpb)
-
         self.num_cpu_blocks = max(1, self.cpu_capacity_bytes // total_bytes_per_block)
 
         logger.info(
             "SimpleCPUOffloadWorker: %d unique GPU KV tensors, "
             "allocating %d CPU blocks (%.2f GB)",
-            len(unique_gpu_caches),
+            len(self.gpu_kv_caches),
             self.num_cpu_blocks,
             (self.num_cpu_blocks * total_bytes_per_block) / (1024**3),
         )
 
-        pin_memory = is_pin_memory_available()
-        if not pin_memory:
+        self._pin_memory = is_pin_memory_available()
+        if not self._pin_memory:
             logger.warning(
                 "Pinned memory not available. CPU offload performance may be degraded."
             )
 
-        self.gpu_kv_caches = unique_gpu_caches
         self.cpu_kv_caches = {}
-        for name, gpu_tensor in unique_gpu_caches.items():
+        for name, gpu_tensor in self.gpu_kv_caches.items():
             cpu_shape = (self.num_cpu_blocks,) + gpu_tensor.shape[1:]
             # Allocate non-pinned first, then pin via cudaHostRegister to
             # bypass PyTorch's CUDACachingHostAllocator which rounds up to
             # the next power of 2 (e.g. 100 GB -> 128 GB).
             tensor = torch.zeros(cpu_shape, dtype=gpu_tensor.dtype, device="cpu")
-            if pin_memory:
+            if self._pin_memory:
                 pin_tensor(tensor)
             self.cpu_kv_caches[name] = tensor
 
@@ -177,6 +185,7 @@ class SimpleCPUOffloadWorker:
         self.store_stream = torch.cuda.Stream(priority=low_pri)
 
         # Initialize copy backend with caches and streams.
+        self._backend = DmaCopyBackend()
         self._backend.init(
             self.gpu_kv_caches,
             self.cpu_kv_caches,
@@ -200,6 +209,8 @@ class SimpleCPUOffloadWorker:
 
     def bind_connector_metadata(self, metadata: SimpleCPUOffloadMetadata) -> None:
         self._connector_metadata = metadata
+        if metadata.load_cpu_blocks or metadata.store_cpu_blocks:
+            self._allocate_cpu_kv_caches()
         if metadata.load_event >= 0:
             self._pending_load_event_indices.add(metadata.load_event)
             if metadata.load_cpu_blocks and self._persistent_store is not None:
@@ -255,6 +266,8 @@ class SimpleCPUOffloadWorker:
         # (1) Submit transfers
         metadata = self._connector_metadata
         if metadata is not None:
+            if metadata.load_cpu_blocks or metadata.store_cpu_blocks:
+                self._allocate_cpu_kv_caches()
             # Launch loads (CPU->GPU).
             if metadata.load_cpu_blocks:
                 self._backend.launch_copy(
@@ -349,3 +362,59 @@ class SimpleCPUOffloadWorker:
         else:
             self._load_hwm = hwm
         return hwm
+
+    def trim_memory(
+        self,
+        *,
+        release_offload_memory: bool = True,
+        malloc_trim: bool = True,
+    ) -> dict[str, object]:
+        """Drop idle CPU offload tensors and process allocator caches."""
+        if release_offload_memory:
+            self._backend.shutdown()
+        if self.load_stream is not None:
+            self.load_stream.synchronize()
+        if self.store_stream is not None:
+            self.store_stream.synchronize()
+        self._flush_and_sync_all()
+
+        released_cpu_bytes = 0
+        if release_offload_memory:
+            if self.cpu_kv_caches is not None:
+                released_cpu_bytes = sum(
+                    int(t.nbytes) for t in self.cpu_kv_caches.values()
+                )
+                if self._pin_memory:
+                    for tensor in self.cpu_kv_caches.values():
+                        with suppress(Exception):
+                            unpin_tensor(tensor)
+                self.cpu_kv_caches = None
+                self.num_cpu_blocks = 0
+                self.load_stream = None
+                self.store_stream = None
+                self._persistent_store = None
+                self._persistent_known.clear()
+                logger.info(
+                    "SimpleCPUOffloadWorker: released %.2f GB of CPU KV offload memory",
+                    released_cpu_bytes / (1024**3),
+                )
+
+            self._backend = DmaCopyBackend()
+            self._connector_metadata = None
+            self._pending_load_event_indices.clear()
+            self._pending_store_event_indices.clear()
+            self._completed_store_events.clear()
+            self._pending_store_persist.clear()
+            self._load_events.clear()
+            self._store_events.clear()
+            self._load_hwm = -1
+            self._store_hwm = -1
+
+        process = trim_process_memory(
+            empty_accelerator_cache=True, malloc_trim=malloc_trim
+        )
+        return {
+            "released_cpu_bytes": released_cpu_bytes,
+            "offload_memory_released": release_offload_memory,
+            "process": process,
+        }

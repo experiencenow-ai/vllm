@@ -99,6 +99,14 @@ For further details on renderer APIs, please refer to [this page](renderer.md).
 - `/ping` - SageMaker health check
 - `/version` - Version information
 - `/load` - Server load metrics
+- `/v1/trim_memory` - Abort or drain in-flight work, clear request/cache state,
+  release offloaded KV memory where supported, and keep model weights loaded
+
+Example:
+
+```bash
+curl -X POST 'http://localhost:8000/v1/trim_memory?mode=abort'
+```
 
 ## Sleep Mode APIs
 

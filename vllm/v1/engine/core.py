@@ -40,6 +40,7 @@ from vllm.utils.gc_utils import (
     maybe_attach_gc_debug_callback,
 )
 from vllm.utils.hashing import get_hash_fn_by_name
+from vllm.utils.mem_utils import trim_process_memory
 from vllm.utils.network_utils import make_zmq_socket
 from vllm.utils.system_utils import decorate_logs, set_process_title
 from vllm.v1.core.kv_cache_utils import (
@@ -654,6 +655,45 @@ class EngineCore:
         self.scheduler.reset_encoder_cache()
         # Reset the GPU model runner's encoder cache (physical storage)
         self.model_executor.reset_encoder_cache()
+
+    def trim_memory(
+        self,
+        reset_external: bool = True,
+        release_offload_memory: bool = True,
+        malloc_trim: bool = True,
+    ) -> dict[str, Any]:
+        """Clear request/cache state and return unused memory to the OS."""
+        if release_offload_memory and not reset_external:
+            raise ValueError(
+                "release_offload_memory=True requires reset_external=True"
+            )
+        worker_results = self.model_executor.collective_rpc(
+            "trim_memory",
+            kwargs={
+                "release_offload_memory": release_offload_memory,
+                "malloc_trim": malloc_trim,
+            },
+        )
+        connector_reset: bool | None = None
+        if reset_external and getattr(self.scheduler, "connector", None) is not None:
+            connector_reset = self.scheduler.reset_connector_cache()
+
+        prefix_cache_reset = self.reset_prefix_cache(
+            reset_running_requests=True,
+            reset_connector=False,
+        )
+        self.reset_mm_cache()
+        self.reset_encoder_cache()
+        process_result = trim_process_memory(
+            empty_accelerator_cache=False,
+            malloc_trim=malloc_trim,
+        )
+        return {
+            "prefix_cache_reset": prefix_cache_reset,
+            "connector_cache_reset": connector_reset,
+            "worker_results": worker_results,
+            "process": process_result,
+        }
 
     def _reset_caches(self, reset_running_requests=True) -> None:
         self.reset_prefix_cache(reset_running_requests=reset_running_requests)

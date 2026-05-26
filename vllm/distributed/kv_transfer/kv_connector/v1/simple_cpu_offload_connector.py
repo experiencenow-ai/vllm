@@ -240,15 +240,25 @@ class SimpleCPUOffloadConnector(KVConnectorBase_V1, SupportsHMA):
             return self.scheduler_manager.has_pending_stores()
         return False
 
+    def trim_memory(
+        self,
+        *,
+        release_offload_memory: bool = True,
+        malloc_trim: bool = True,
+    ) -> dict[str, object]:
+        if self.worker_handler is None:
+            return {"released_cpu_bytes": 0, "offload_memory_released": False}
+        return self.worker_handler.trim_memory(
+            release_offload_memory=release_offload_memory,
+            malloc_trim=malloc_trim,
+        )
+
     def take_events(self) -> Iterable[KVCacheEvent]:
         if self.scheduler_manager is not None:
             return self.scheduler_manager.take_events()
         return []
 
     def reset_cache(self) -> bool | None:
-        raise NotImplementedError(
-            "SimpleCPUOffloadConnector does not support reset_cache(). "
-            "reset_prefix_cache() requires synchronizing all pending "
-            "CPU offload transfers before clearing GPU prefix cache blocks, "
-            "which is not yet implemented."
-        )
+        if self.scheduler_manager is None:
+            return True
+        return self.scheduler_manager.reset_cache()
