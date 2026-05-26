@@ -35,12 +35,16 @@ JSON request bodies.
 
 Recommended endpoints:
 
+- `POST /v1/kv/ingest`
+  - input: cache package blob or package handle, model key, tokenizer/model
+    revision, tensor layout, rank metadata, manifest, and checksums
+  - output: committed `cache_ref` plus indexed block hashes
 - `POST /v1/kv/lookup`
-  - input: model key, rank key, ordered block hashes
+  - input: model key, rank key, optional `cache_ref`, ordered block hashes
   - output: ordered hit/miss metadata, cache generation, and optional leases
 - `POST /v1/kv/materialize`
-  - input: rank key and `(cpu_block_id, block_hash)` pairs selected by the
-    scheduler
+  - input: rank key and `(cpu_block_id, block_hash, cache_ref)` pairs selected
+    by the scheduler
   - output: local payload handles for the worker to copy into CPU KV slots
 - `POST /v1/kv/store/prepare`
   - input: rank key and `(cpu_block_id, block_hash)` pairs after a completed
@@ -62,12 +66,26 @@ The initial client supports:
 
 When the API URL is set, vLLM uses:
 
-- `POST /v1/kv/lookup` before advertising a CPU prefix hit;
-- `POST /v1/kv/materialize` before CPU-to-GPU load;
+- `POST /v1/kv/lookup` before advertising a CPU prefix hit, including
+  `cache_ref` when the request provides one;
+- `POST /v1/kv/materialize` before CPU-to-GPU load, including per-block
+  `cache_ref` values;
 - `POST /v1/kv/store/prepare` and `POST /v1/kv/store/commit` after a completed
   GPU-to-CPU offload;
 - `POST /v1/kv/scheduler/commit` after the scheduler observes that all workers
   committed the store event.
+
+Per-request cache refs are passed through existing vLLM request plumbing:
+
+```json
+{
+  "extra_args": {
+    "kv_transfer_params": {
+      "cache_ref": "cachepkg_..."
+    }
+  }
+}
+```
 
 Failure policy should remain fail-closed for this DS4 path. If the service says
 a block exists but the worker cannot materialize the exact hash into the exact
@@ -92,11 +110,14 @@ cross-process coordination, and admission/eviction policy.
 Submitting cached data with a generation request is possible only as a two-step
 protocol:
 
-1. The caller uploads or registers the cache package with the external cache
-   service, receiving a committed cache generation or cache reference.
-2. The caller sends the normal vLLM generation request. vLLM derives the prompt
-   block hashes, calls `/v1/kv/lookup`, and only uses blocks the service can
-   materialize for the exact model, rank, dtype, tensor layout, and hash.
+1. The gateway routes the request to one GPU node and pushes the bundled cache
+   package to that node's cache service with `/v1/kv/ingest`.
+2. The cache service validates and indexes the package, returning `cache_ref`.
+3. The gateway sends the normal vLLM generation request to the same node with
+   `kv_transfer_params.cache_ref`.
+4. vLLM derives the prompt block hashes, calls `/v1/kv/lookup`, and only uses
+   blocks the service can materialize for the exact model, rank, dtype, tensor
+   layout, and hash.
 
 The generation request should not carry raw KV tensors directly. KV payloads are
 model- and rank-specific and can be enormous. The safe request-level shape is a
