@@ -40,6 +40,7 @@ from vllm.v1.outputs import KVConnectorOutput
 from vllm.v1.request import Request
 from vllm.v1.simple_kv_offload.manager import SimpleCPUOffloadScheduler
 from vllm.v1.simple_kv_offload.metadata import SimpleCPUOffloadWorkerMetadata
+from vllm.v1.simple_kv_offload.persistent_disk import PersistentSimpleOffloadStore
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -1348,3 +1349,79 @@ def test_toctou_cpu_hit_evicted_between_phases_no_crash() -> None:
     )
     assert len(meta_b.load_gpu_blocks) == 2
     assert len(meta_b.load_cpu_blocks) == 2
+
+
+def test_persistent_store_roundtrip(tmp_path) -> None:
+    """Persistent store reloads worker tensors and scheduler block hashes."""
+    store = PersistentSimpleOffloadStore(
+        root=tmp_path,
+        rank_key="rank0",
+        model_key="model",
+        num_cpu_blocks=4,
+        strict=True,
+        tensor_names=["kv"],
+    )
+    cpu_kv_caches = {"kv": torch.zeros((4, 2), dtype=torch.float16)}
+    cpu_kv_caches["kv"][2] = torch.tensor([7, 8], dtype=torch.float16)
+    hash_hex = "ab" * 32
+
+    store.persist_worker_blocks(cpu_kv_caches, [2], [hash_hex])
+    cpu_kv_caches["kv"].zero_()
+
+    restored = store.restore_worker_blocks(cpu_kv_caches, 4)
+    assert restored == {2: hash_hex}
+    assert cpu_kv_caches["kv"][2].tolist() == [7.0, 8.0]
+
+    store.save_scheduler_blocks([2], [hash_hex])
+    entries = store.load_scheduler_entries(4)
+    assert len(entries) == 1
+    assert entries[0].cpu_block_id == 2
+    assert entries[0].hash_hex == hash_hex
+
+
+def test_persistent_scheduler_restore_uses_guarded_hits(tmp_path, monkeypatch) -> None:
+    """Restored persistent CPU hits advertise one HMA guard block less."""
+    monkeypatch.setenv("VLLM_SIMPLE_KV_OFFLOAD_PERSIST_ROOT", str(tmp_path))
+    fix = make_scheduler(num_cpu_blocks=8, num_gpu_blocks=16, lazy=False)
+    sched = fix.scheduler
+
+    num_blocks = 3
+    req = make_request(num_blocks=num_blocks)
+    kv_blocks = _alloc_and_register(fix, req, num_blocks)
+    sched.update_state_after_alloc(req, kv_blocks, num_external_tokens=0)
+    sched_out = make_scheduler_output(
+        {req.request_id: num_blocks * BLOCK_SIZE},
+        new_reqs={req.request_id: kv_blocks.get_block_ids()},
+    )
+    meta = sched.build_connector_meta(sched_out)
+    assert meta.store_event >= 0
+    assert len(meta.store_block_hashes) == num_blocks
+    simulate_store_completion(sched, meta.store_event)
+
+    restored = make_scheduler(num_cpu_blocks=8, num_gpu_blocks=16, lazy=False)
+    restored_sched = restored.scheduler
+    req2 = Request(
+        request_id="req-persistent-restore",
+        prompt_token_ids=req.prompt_token_ids,
+        sampling_params=req.sampling_params,
+        pooling_params=None,
+        mm_features=None,
+        block_hasher=req._block_hasher,
+    )
+    hit_tokens, is_async = restored_sched.get_num_new_matched_tokens(
+        req2, num_computed_tokens=0
+    )
+    assert hit_tokens == (num_blocks - 1) * BLOCK_SIZE
+    assert is_async is True
+
+    gpu_blocks = restored.gpu_block_pool.get_new_blocks(num_blocks - 1)
+    kv_blocks2 = KVCacheBlocks(blocks=(gpu_blocks,))
+    restored_sched.update_state_after_alloc(
+        req2, kv_blocks2, num_external_tokens=hit_tokens
+    )
+    meta2 = restored_sched.build_connector_meta(
+        make_scheduler_output({req2.request_id: 1})
+    )
+    assert meta2.load_event >= 0
+    assert len(meta2.load_cpu_blocks) == num_blocks - 1
+    assert len(meta2.load_block_hashes) == num_blocks - 1
