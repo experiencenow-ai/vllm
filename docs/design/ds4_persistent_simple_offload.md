@@ -126,12 +126,12 @@ validated. vLLM should still verify by hash before using any block.
 
 ## Qwen27
 
-This API boundary is not DSV4-only. It can work for Qwen27 if Qwen27 is running
-through `SimpleCPUOffloadConnector` with matching block hashes, tensor names,
-dtype, tensor parallel rank, and tokenizer/model revision.
+Qwen27 should not use this DSV4 persistent SimpleCPUOffload path as its first
+external KV implementation. Qwen KV is ordinary dense KV, so the forked runtime
+uses the built-in `LMCacheMPConnector` plus an external `lmcache server` for
+Qwen. See [DS4 Qwen27 LMCache MP Runtime](ds4_qwen_lmcache_mp.md).
 
-It does not make dense Qwen27 KV small. Qwen27 does not get DSV4's compressed
-context-state advantage from this connector; it only gets durable/reusable CPU
-offload blocks. For Qwen27 today, node-sticky APC or normal prefix warming may
-still be the better first-line cache unless CPU offload is already enabled and
-the external service can keep the relevant blocks near the serving node.
+The shared DS4 API can still expose one high-level contract to clients:
+`prefix_text` or `shared_prefix` for text prefixes, and `kv_cache_ref` for
+already-ingested cache packages. The model-specific vLLM launch decides whether
+that maps to DSV4 native offload or Qwen LMCache MP.
