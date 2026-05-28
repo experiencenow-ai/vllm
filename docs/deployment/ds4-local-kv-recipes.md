@@ -11,14 +11,103 @@ older Docker copy-patch runtime:
 
 ```text
 repository: https://github.com/experiencenow-ai/vllm
-baseline: d240cdbcf3de175be57c108fd9cbfce04009ec29
-runtime: /home/spark*/ds4-vllm-local editable install
-source:  /home/spark*/src/vllm-b55c3b6-docker-lineage
+branch: main
+required code: PR #7 DeepSeek V4 Cutlass cache-mode fix, or newer
+runtime: /home/spark*/ds4-vllm-local
+source:  /home/spark*/src/vllm
+model:   /home/spark*/models/hf/deepseek-ai/DeepSeek-V4-Flash
 ```
 
 Use one grouped vLLM service across the Spark tensor-parallel lane. The live
 requalification shape used spark4 as head and spark7 as worker while spark5 was
 unavailable; the normal lane is spark4 plus spark5.
+
+Do not use `/home/spark*/src/vllm-b55c3b6-docker-lineage` for the standard
+DSV4 lane. That tree was a Docker-lineage rescue runtime; the documented path is
+the source-built host-local checkout at `/home/spark*/src/vllm`.
+
+### Source Runtime Build
+
+Build vLLM from the host-local source checkout into the host-local runtime on
+every DSV4 node. Use `git checkout`; some Spark images have an older Git that
+does not support `git switch`.
+
+```bash
+cd /home/$USER/src/vllm
+git fetch experiencenow
+git checkout main
+git pull --ff-only experiencenow main
+
+/home/$USER/ds4-vllm-local/bin/python -m pip install setuptools-rust
+
+export VLLM_TARGET_DEVICE=cuda
+export CUDA_HOME=/usr/local/cuda
+export MAX_JOBS=8
+export CMAKE_BUILD_PARALLEL_LEVEL=8
+export TORCH_CUDA_ARCH_LIST="8.0+PTX;12.1a"
+export CPATH=/home/$USER/standard-runtimes/python3.12-dev-extract/usr/include:/home/$USER/standard-runtimes/python3.12-dev-extract/usr/include/python3.12:${CPATH:-}
+export C_INCLUDE_PATH=/home/$USER/standard-runtimes/python3.12-dev-extract/usr/include:/home/$USER/standard-runtimes/python3.12-dev-extract/usr/include/python3.12:${C_INCLUDE_PATH:-}
+export CPLUS_INCLUDE_PATH=/home/$USER/standard-runtimes/python3.12-dev-extract/usr/include:/home/$USER/standard-runtimes/python3.12-dev-extract/usr/include/python3.12:${CPLUS_INCLUDE_PATH:-}
+export CMAKE_ARGS="-DPython_INCLUDE_DIR=/home/$USER/standard-runtimes/python3.12-dev-extract/usr/include/python3.12 -DPython_EXECUTABLE=/home/$USER/ds4-vllm-local/bin/python"
+
+/home/$USER/ds4-vllm-local/bin/python -m pip install -e . --no-build-isolation
+```
+
+The `TORCH_CUDA_ARCH_LIST` line is required. The Spark CUDA 13 / PyTorch 2.11
+stack warns that PyTorch ignores `CMAKE_CUDA_ARCHITECTURES`; use
+`TORCH_CUDA_ARCH_LIST` instead. A correct configure prints:
+
+```text
+Added CUDA NVCC flags for: -gencode;arch=compute_80,code=sm_80;...;arch=compute_121a,code=sm_121a;...
+CUDA target architectures: 8.0;12.1a
+Building Marlin kernels for archs: 8.0+PTX
+Building Marlin MOE kernels for archs: 8.0+PTX
+```
+
+Do not use `-DCMAKE_CUDA_ARCHITECTURES=native` on this stack. It can be
+rewritten by PyTorch/CMake into `compute_20,code=sm_121`, which vLLM parses as
+`CUDA target architectures: 2.0`; that skips the DSV4 kernels.
+
+Without the `8.0+PTX` target, CMake can skip the Marlin source set that
+registers the CUDA implementation for `_C::gptq_marlin_repack`. Python imports
+still pass, but DSV4 fails during model load with:
+
+```text
+NotImplementedError: Could not run '_C::gptq_marlin_repack' with arguments from the 'CUDA' backend.
+```
+
+Do not force `DS4_DSV4_MOE_BACKEND=triton` for this lane. The MXFP4 Triton path
+rejects the Spark CUDA device during DeepSeek V4 model initialization. Use the
+default backend selection and verify that Marlin's CUDA op exists.
+
+Prove the installed runtime is the source checkout, not an old editable install:
+
+```bash
+/home/$USER/ds4-vllm-local/bin/python -m pip show vllm | grep -E 'Version|Editable project location'
+PYTHONPATH=/home/$USER/src/vllm /home/$USER/ds4-vllm-local/bin/python - <<'PY'
+import pathlib
+import vllm
+import vllm.vllm_flash_attn
+print("vllm_file", pathlib.Path(vllm.__file__).resolve())
+print("version", getattr(vllm, "__version__", None))
+print("fa_file", pathlib.Path(vllm.vllm_flash_attn.__file__).resolve())
+PY
+```
+
+Then smoke the Marlin repack CUDA dispatch before spending time on a full DSV4
+load:
+
+```bash
+PYTHONPATH=/home/$USER/src/vllm /home/$USER/ds4-vllm-local/bin/python - <<'PY'
+import torch
+import vllm._C
+b = torch.zeros((32, 64), device="cuda", dtype=torch.int32)
+perm = torch.empty((0,), device="cuda", dtype=torch.int32)
+out = torch.ops._C.gptq_marlin_repack(b, perm, 256, 64, 4, False)
+torch.cuda.synchronize()
+print("gptq_marlin_repack_cuda_ok", tuple(out.shape), out.dtype, out.device)
+PY
+```
 
 Critical launch settings:
 
@@ -184,9 +273,10 @@ Keep the vLLM source tree and runtime branch identical on every node that may
 host the service:
 
 ```bash
-cd /home/$USER/src/vllm-b55c3b6-docker-lineage
+cd /home/$USER/src/vllm
 git fetch experiencenow
 git checkout main
+git pull --ff-only experiencenow main
 /home/$USER/ds4-vllm-local/bin/python -m py_compile \
   vllm/distributed/kv_transfer/kv_connector/v1/lmcache_connector.py \
   vllm/v1/core/sched/scheduler.py \
