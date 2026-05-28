@@ -9,8 +9,10 @@ from vllm.utils.math_utils import cdiv
 from vllm.v1.core.block_pool import BlockPool
 from vllm.v1.core.kv_cache_utils import (
     BlockHashList,
+    BlockHashListWithBlockSize,
     BlockHashWithGroupId,
     KVCacheBlock,
+    make_block_hash_with_group_id,
 )
 from vllm.v1.kv_cache_interface import (
     ChunkedLocalAttentionSpec,
@@ -204,6 +206,7 @@ class SingleTypeKVCacheManager(ABC):
         )
         num_skipped_tokens = self.get_num_skipped_tokens(num_total_computed_tokens)
         num_skipped_blocks = num_skipped_tokens // self.block_size
+        num_computed_blocks = len(new_computed_blocks)
         if num_skipped_blocks > 0:
             # It is possible that all new computed blocks are skipped when
             # num_skipped_blocks > len(new_computed_blocks).
@@ -226,10 +229,8 @@ class SingleTypeKVCacheManager(ABC):
         req_blocks.extend([self._null_block] * num_skipped_blocks)
         # Add the remaining computed blocks.
         req_blocks.extend(new_computed_blocks)
-        # All cached hits (including skipped nulls) are already cached; mark
-        # them so cache_blocks() will not try to re-cache blocks that already
-        # have a block_hash set.
-        self.num_cached_block[request_id] = len(req_blocks)
+        # Count real prefix-hit blocks before skipping.
+        self.num_cached_block[request_id] = num_computed_blocks
 
         if num_external_computed_tokens > 0:
             # Allocate new blocks for external computed tokens.
@@ -1107,13 +1108,30 @@ class MambaManager(SingleTypeKVCacheManager):
         super().cache_blocks(request, num_tokens, alignment_tokens=alignment_tokens)
         num_cached_blocks_after = self.num_cached_block.get(request.request_id, 0)
         if num_cached_blocks_after > num_cached_blocks_before:
-            for block in self.req_to_blocks[request.request_id][
-                num_cached_blocks_before:num_cached_blocks_after
-            ]:
-                if block.is_null:
+            if self.block_size == self.block_pool.hash_block_size:
+                block_hashes: BlockHashList = request.block_hashes
+            else:
+                block_hashes = BlockHashListWithBlockSize(
+                    request.block_hashes,
+                    self.block_pool.hash_block_size,
+                    self.block_size,
+                )
+            req_blocks = self.req_to_blocks[request.request_id]
+            for i in range(num_cached_blocks_before, num_cached_blocks_after):
+                blk = req_blocks[i]
+                if blk.is_null:
+                    # find_longest_cache_hit searches right-to-left through hashes.
+                    # When null-block positions are not in the hash map, the search
+                    # misses and hit_length drops to 0 (mamba caching specific).
+                    block_hash_with_gid = make_block_hash_with_group_id(
+                        block_hashes[i], self.kv_cache_group_id
+                    )
+                    self.block_pool.cached_block_hash_to_block.insert(
+                        block_hash_with_gid, blk
+                    )
                     continue
-                assert block.block_hash is not None
-                self.cached_blocks_this_step.add(block.block_hash)
+                assert blk.block_hash is not None
+                self.cached_blocks_this_step.add(blk.block_hash)
 
     def new_step_starts(self) -> None:
         self.cached_blocks_this_step.clear()
