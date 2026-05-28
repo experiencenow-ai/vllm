@@ -38,7 +38,7 @@ git fetch experiencenow
 git checkout main
 git pull --ff-only experiencenow main
 
-/home/$USER/ds4-vllm-local/bin/python -m pip install setuptools-rust
+/home/$USER/ds4-vllm-local/bin/python -m pip install setuptools-rust pytest
 
 export VLLM_TARGET_DEVICE=cuda
 export CUDA_HOME=/usr/local/cuda
@@ -79,6 +79,11 @@ NotImplementedError: Could not run '_C::gptq_marlin_repack' with arguments from 
 Do not force `DS4_DSV4_MOE_BACKEND=triton` for this lane. The MXFP4 Triton path
 rejects the Spark CUDA device during DeepSeek V4 model initialization. Use the
 default backend selection and verify that Marlin's CUDA op exists.
+
+Keep `pytest` installed in the serving runtime. Qwen torch.compile profiling on
+the Spark CUDA 13 / PyTorch 2.11 stack can import `cupy.testing`, which imports
+`pytest`; without it, Qwen can fail after checkpoint load with
+`ModuleNotFoundError: No module named 'pytest'`.
 
 Prove the installed runtime is the source checkout, not an old editable install:
 
@@ -220,7 +225,6 @@ YAML
 
 export PATH=/home/$USER/ds4-vllm-local/bin:$PATH
 VLLM_ALLOW_LONG_MAX_MODEL_LEN=1 \
-VLLM_USE_V1=1 \
 /home/$USER/ds4-vllm-local/bin/python -m vllm.entrypoints.cli.main serve \
   /home/$USER/models/hf/Qwen/Qwen3.6-27B-FP8 \
   --served-model-name qwen27 \
@@ -228,17 +232,30 @@ VLLM_USE_V1=1 \
   --port 8000 \
   --trust-remote-code \
   --max-model-len 262144 \
-  --max-num-batched-tokens 7840 \
+  --max-num-seqs 12 \
+  --max-num-batched-tokens 32768 \
+  --gpu-memory-utilization 0.50 \
+  --dtype bfloat16 \
+  --language-model-only \
+  --enable-chunked-prefill \
   --enable-prefix-caching \
+  --async-scheduling \
+  --reasoning-parser qwen3 \
   --no-disable-hybrid-kv-cache-manager \
+  --disable-log-stats \
   --mamba-cache-mode align \
   --kv-transfer-config '{"kv_connector":"LMCacheConnectorV1","kv_role":"kv_both"}'
 ```
 
 For Qwen3.6-27B-FP8 on spark7, vLLM sets the HMA attention page size to 784
-tokens. Keep the LMCache `chunk_size` and chunked-prefill budget aligned to
-that page size. The smoke used `chunk_size: 784` and
-`--max-num-batched-tokens 7840`; the earlier `chunk_size: 256` launch started
+tokens. Keep the LMCache `chunk_size` aligned to that page size. The first
+HMA smoke used `chunk_size: 784` and a smaller
+`--max-num-batched-tokens 7840`; production Qwen27 lanes should use the normal
+resident-lane caps above: `--max-num-seqs 12`,
+`--max-num-batched-tokens 32768`, and `--gpu-memory-utilization 0.50`.
+Do not fall back to uncapped vLLM defaults for a 262k qual launch; that can push
+Spark nodes into swap before the API is ready. The earlier `chunk_size: 256`
+launch started
 successfully but LMCache rejected external hits because matching hybrid-state
 pages were not available at the same token boundary.
 
