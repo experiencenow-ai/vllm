@@ -1,6 +1,6 @@
 # DS4 GB10 native MXFP4/FP8 path
 
-DS4 production on DGX Spark / GB10 must not silently run DeepSeek-V4 Flash through Marlin or emulation. GB10 reports CUDA capability SM121. That is Blackwell-family hardware, but it is not in the SM100 datacenter family. Backend gates must therefore use `current_platform.is_device_capability_blackwell()` when the intended meaning is "Blackwell-family", and reserve `is_device_capability_family(100)` for kernels that are actually compiled only for SM100/SM10x.
+DS4 production on DGX Spark / GB10 must not silently run DeepSeek-V4 Flash or Qwen NVFP4 through Marlin or emulation. GB10 reports CUDA capability SM121. That is Blackwell-family hardware, but it is not in the SM100 datacenter family. Backend gates must therefore use `current_platform.is_device_capability_blackwell()` when the intended meaning is "Blackwell-family", and reserve `is_device_capability_family(100)` for kernels that are actually compiled only for SM100/SM10x.
 
 ## Required startup result
 
@@ -20,7 +20,15 @@ Using 'BATCHED_MARLIN' Mxfp4 MoE backend.
 Using 'EMULATION' Mxfp4 MoE backend.
 ```
 
-For DeepSeek-V4 on Blackwell, the auto backend priority list no longer contains Marlin. If all native backends reject the deployment, startup fails and reports the last native rejection reason.
+For DeepSeek-V4 on Blackwell, the auto backend priority list no longer contains Marlin. This is structural: it does not depend on `VLLM_DS4_STRICT_NATIVE_FP4` being present in the runtime. If all native backends reject the deployment, startup fails and reports the last native rejection reason.
+
+For Qwen NVFP4 on Blackwell, acceptable linear backends are native Blackwell FP4 paths such as FlashInfer/CUTLASS or CUTLASS. `MarlinNvFp4LinearKernel`, `FbgemmNvFp4LinearKernel`, and `EmulationNvFp4LinearKernel` are rejected on Blackwell even when strict-env plumbing is missing. ModelOpt `W4A16_NVFP4` is also rejected on Blackwell because this tree currently implements that checkpoint shape through Marlin; use W4A4 ModelOpt NVFP4 with native FlashInfer/CUTLASS, or BF16.
+
+Run the static no-Marlin audit before building an image:
+
+```bash
+python3 tools/ds4_no_marlin_static_audit.py
+```
 
 ## Probe before serving
 

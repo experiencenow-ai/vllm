@@ -95,6 +95,7 @@ from vllm.model_executor.parameter import (
     PerTensorScaleParameter,
 )
 from vllm.model_executor.utils import replace_parameter, set_weight_attrs
+from vllm.platforms import current_platform
 from vllm.utils.flashinfer import flashinfer_trtllm_fp8_block_scale_moe
 
 if TYPE_CHECKING:
@@ -1257,12 +1258,18 @@ class ModelOptNvFp4W4A16LinearMethod(LinearMethodBase):
     """
 
     def __init__(self, quant_config: ModelOptNvFp4Config) -> None:
-        if envs.VLLM_DS4_STRICT_NATIVE_FP4:
+        if (
+            envs.VLLM_DS4_STRICT_NATIVE_FP4
+            or (
+                current_platform.is_cuda()
+                and current_platform.is_device_capability_blackwell()
+            )
+        ):
             raise RuntimeError(
-                "DS4 strict native FP4 mode rejected W4A16_NVFP4 because "
+                "Native Blackwell FP4 mode rejected W4A16_NVFP4 because "
                 "vLLM currently implements that checkpoint shape through "
-                "Marlin. Use a W4A4 ModelOpt NVFP4 checkpoint with "
-                "FlashInfer/CUTLASS, or BF16, for DS4 production."
+                "Marlin. GB10/SM12x Qwen deployments must use a W4A4 ModelOpt "
+                "NVFP4 checkpoint with FlashInfer/CUTLASS, or BF16."
             )
         self.quant_config = quant_config
         # Vestigial slot mirrored from ModelOptNvFp4LinearMethod: the parent
