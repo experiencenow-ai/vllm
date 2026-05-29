@@ -15,11 +15,6 @@ from lmcache.utils import _lmcache_nvtx_annotate
 from lmcache.v1.cache_engine import LMCacheEngine, LMCacheEngineBuilder
 from lmcache.v1.compute.blend import LMCBlenderBuilder
 from lmcache.v1.config import LMCacheEngineConfig
-from lmcache.v1.gpu_connector import (
-    VLLMBufferLayerwiseGPUConnector,
-    VLLMPagedMemGPUConnectorV2,
-    VLLMPagedMemLayerwiseGPUConnector,
-)
 from lmcache.v1.internal_api_server.api_server import InternalAPIServer
 from lmcache.v1.lookup_client import LookupClientFactory
 from lmcache.v1.lookup_client.lmcache_async_lookup_client import (
@@ -33,6 +28,19 @@ try:
     )
 except ImportError:
     from lmcache.v1.config import validate_and_set_config_value
+
+try:
+    from lmcache.v1.gpu_connector import (
+        VLLMBufferLayerwiseGPUConnector,
+        VLLMPagedMemGPUConnectorV2,
+        VLLMPagedMemLayerwiseGPUConnector,
+    )
+except ImportError:
+    from lmcache.v1.gpu_connector.gpu_connectors import (
+        VLLMBufferLayerwiseGPUConnector,
+        VLLMPagedMemGPUConnectorV2,
+        VLLMPagedMemLayerwiseGPUConnector,
+    )
 
 try:
     from lmcache.config import LMCacheEngineMetadata
