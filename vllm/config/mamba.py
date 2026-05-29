@@ -65,7 +65,7 @@ class MambaConfig:
                 )
             if (
                 self.backend == MambaBackendEnum.TRITON
-                and not current_platform.is_device_capability_family(100)
+                and not current_platform.is_device_capability_blackwell()
             ):
                 raise ValueError(
                     "Stochastic rounding for Mamba cache with triton backend requires "

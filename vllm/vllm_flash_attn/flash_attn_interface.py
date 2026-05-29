@@ -76,7 +76,7 @@ def _is_fa4_supported() -> tuple[bool, str | None]:
 
     if not (
         current_platform.is_device_capability_family(90)
-        or current_platform.is_device_capability_family(100)
+        or current_platform.is_device_capability_blackwell()
         or current_platform.is_device_capability_family(110)
     ):
         return (

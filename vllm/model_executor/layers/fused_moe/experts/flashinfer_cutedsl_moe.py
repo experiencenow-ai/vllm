@@ -70,7 +70,7 @@ class FlashInferCuteDSLExperts(mk.FusedMoEExpertsModular):
         p = current_platform
         return (
             p.is_cuda()
-            and p.is_device_capability_family(100)
+            and p.is_device_capability_blackwell()
             and has_flashinfer_cutedsl_moe_nvfp4()
         )
 

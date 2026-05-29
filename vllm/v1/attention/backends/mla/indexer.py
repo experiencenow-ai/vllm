@@ -257,24 +257,23 @@ class DeepseekV32IndexerMetadataBuilder(AttentionMetadataBuilder):
         )
 
         assert (
-            current_platform.is_device_capability_family(100)
+            current_platform.is_device_capability_blackwell()
             or not self.use_fp4_indexer_cache
         ), (
-            "use_fp4_indexer_cache requires Blackwell datacenter GPUs "
-            "(sm_10x, e.g. B200/GB200); sm_120 (consumer Blackwell) and "
-            "earlier architectures are not supported."
+            "use_fp4_indexer_cache requires Blackwell-family CUDA devices "
+            "(SM10x data-center Blackwell or SM12x GB10/RTX Blackwell)."
         )
 
         next_n = self.num_speculative_tokens + 1
         self.reorder_batch_threshold += self.num_speculative_tokens
         # NOTE(zyongye) fp4 indexer cache only natively supports next_n in
         # natively_supported_next_n_fp4; for other next_n values we fall back
-        # to the flattening path. Outside the SM100 datacenter family the FP8
+        # to the flattening path. Outside the Blackwell family the FP8
         # paged MQA logits kernel has the same [1, 2] constraint (deepgemm
         # smxx_fp8_fp4_paged_mqa_logits.hpp:233), so flatten there too.
         self.use_flattening = (
             self.use_fp4_indexer_cache
-            or not current_platform.is_device_capability_family(100)
+            or not current_platform.is_device_capability_blackwell()
         ) and next_n not in self.natively_supported_next_n_fp4
 
         sm_count = num_compute_units(self.device.index)
