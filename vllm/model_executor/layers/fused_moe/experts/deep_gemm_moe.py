@@ -333,7 +333,7 @@ class DeepGemmFP4Experts(mk.FusedMoEExpertsModular):
     """DeepGemm-based fused MoE expert implementation for FP4 weights.
 
     Uses m_grouped_fp8_fp4_gemm_nt_contiguous with FP8 activations and
-    MXFP4 (FP4 E2M1 packed as uint8) weights. Requires SM100+ (Blackwell).
+    MXFP4 (FP4 E2M1 packed as uint8) weights. Requires Blackwell.
     """
 
     # FP8 activation block size (hardcoded since mxfp4_w4a8 quant config
@@ -360,7 +360,7 @@ class DeepGemmFP4Experts(mk.FusedMoEExpertsModular):
 
         return (
             is_deep_gemm_supported()
-            and current_platform.is_device_capability_family(100)
+            and current_platform.is_device_capability_blackwell()
         )
 
     @staticmethod

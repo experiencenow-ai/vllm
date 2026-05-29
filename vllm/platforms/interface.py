@@ -101,6 +101,14 @@ class DeviceCapability(NamedTuple):
         assert 0 <= self.minor < 10
         return self.major * 10 + self.minor
 
+    def is_blackwell(self) -> bool:
+        """Return True for CUDA Blackwell families.
+
+        CUDA reports data-center Blackwell as SM10x and GB10/GeForce
+        Blackwell as SM12x.
+        """
+        return self.major in (10, 12)
+
 
 class Platform:
     _enum: PlatformEnum
@@ -365,6 +373,22 @@ class Platform:
         if current_capability is None:
             return False
         return (current_capability.to_int() // 10) == (capability // 10)
+
+    @classmethod
+    def is_device_capability_blackwell(
+        cls,
+        device_id: int = 0,
+    ) -> bool:
+        """Return True for NVIDIA Blackwell-family CUDA devices.
+
+        CUDA reports data-center Blackwell as SM10x and GB10/GeForce
+        Blackwell as SM12x. Kernel selection should not spell Blackwell as
+        only ``major == 10``.
+        """
+        current_capability = cls.get_device_capability(device_id=device_id)
+        if current_capability is None:
+            return False
+        return current_capability.is_blackwell()
 
     @classmethod
     def get_device_name(cls, device_id: int = 0) -> str:

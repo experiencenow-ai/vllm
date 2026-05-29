@@ -429,8 +429,11 @@ class DeepseekV4MegaMoEExperts(nn.Module):
             raise NotImplementedError(
                 "DeepSeek V4 MegaMoE expert weights must be loaded on CUDA."
             )
-        if torch.cuda.get_device_capability(device)[0] != 10:
-            raise NotImplementedError("DeepGEMM MegaMoE requires SM100 GPUs.")
+        device_id = (
+            torch.cuda.current_device() if device.index is None else device.index
+        )
+        if not current_platform.is_device_capability_blackwell(device_id):
+            raise NotImplementedError("DeepGEMM MegaMoE requires Blackwell GPUs.")
         if self.hidden_size % 128 != 0 or self.intermediate_size % 128 != 0:
             raise ValueError(
                 "DeepGEMM MegaMoE requires hidden and intermediate sizes "

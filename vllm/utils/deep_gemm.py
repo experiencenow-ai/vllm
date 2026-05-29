@@ -33,11 +33,11 @@ def should_auto_disable_deep_gemm(model_type: str | None) -> bool:
     """Check if DeepGemm should be auto-disabled for this model on Blackwell.
 
     Returns True if the model is known to have accuracy degradation with
-    DeepGemm's E8M0 scale format on Blackwell GPUs (SM100+).
+    DeepGemm's E8M0 scale format on Blackwell GPUs.
     """
     if model_type is None:
         return False
-    if not current_platform.is_device_capability_family(100):
+    if not current_platform.is_device_capability_blackwell():
         return False
     return model_type in _DEEPGEMM_BLACKWELL_EXCLUDED_MODEL_TYPES
 
@@ -71,7 +71,7 @@ class DeepGemmQuantScaleFMT(Enum):
 
         cls._oracle_cache = (  # type: ignore
             cls.UE8M0
-            if current_platform.is_device_capability_family(100)
+            if current_platform.is_device_capability_blackwell()
             else cls.FLOAT32_CEIL_UE8M0
         )
 

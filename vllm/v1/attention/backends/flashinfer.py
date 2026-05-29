@@ -429,7 +429,7 @@ class FlashInferBackend(AttentionBackend):
     @classmethod
     def get_required_kv_cache_layout(cls) -> KVCacheLayoutType | None:
         capability = current_platform.get_device_capability()
-        if capability is not None and capability.major == 10:
+        if capability is not None and capability.is_blackwell():
             return "HND"
         return None
 

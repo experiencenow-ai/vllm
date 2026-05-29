@@ -56,6 +56,17 @@ def _make_vllm_config(
 class TestGetMLAPrefillBackend:
     """Tests for get_mla_prefill_backend (public API)."""
 
+    @pytest.mark.parametrize(
+        ("capability", "is_blackwell"),
+        [
+            (DeviceCapability(major=10, minor=0), True),
+            (DeviceCapability(major=12, minor=1), True),
+            (DeviceCapability(major=9, minor=0), False),
+        ],
+    )
+    def test_device_capability_blackwell_helper(self, capability, is_blackwell):
+        assert capability.is_blackwell() is is_blackwell
+
     def test_no_device_capability_returns_flash_attn(self):
         vllm_config = _make_vllm_config()
 
@@ -148,9 +159,15 @@ class TestGetMLAPrefillBackend:
 class TestAutoSelectMLAPrefillBackend:
     """Tests for fallback and error paths in auto-selection."""
 
-    def test_blackwell_falls_back_to_trtllm(self):
+    @pytest.mark.parametrize(
+        "capability",
+        [
+            DeviceCapability(major=10, minor=0),
+            DeviceCapability(major=12, minor=1),
+        ],
+    )
+    def test_blackwell_falls_back_to_trtllm(self, capability):
         vllm_config = _make_vllm_config()
-        capability = DeviceCapability(major=10, minor=0)
         selector_config = MLAPrefillSelectorConfig(
             dtype=torch.bfloat16,
             is_r1_compatible=is_deepseek_r1_mla_compatible(vllm_config),

@@ -186,7 +186,7 @@ def _resolve_gdn_prefill_backend(
     if current_platform.is_device_capability(90):
         supports_flashinfer = True
     elif (
-        current_platform.is_device_capability_family(100)
+        current_platform.is_device_capability_blackwell()
         and head_k_dim == 128
         and current_platform.get_cuda_runtime_major() >= 13
     ):

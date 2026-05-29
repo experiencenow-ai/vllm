@@ -828,6 +828,33 @@ _NVFP4_BACKEND_TO_KERNEL: dict[str, type[NvFp4LinearKernel]] = {
 }
 
 
+def _raise_if_ds4_strict_native_fp4_rejects(
+    kernel_cls: type[NvFp4LinearKernel],
+    failure_reasons: list[str] | None = None,
+) -> None:
+    if not envs.VLLM_DS4_STRICT_NATIVE_FP4:
+        return
+    rejected_kernel_names = {
+        "MarlinNvFp4LinearKernel",
+        "EmulationNvFp4LinearKernel",
+        "FbgemmNvFp4LinearKernel",
+    }
+    if kernel_cls.__name__ not in rejected_kernel_names:
+        return
+    details = ""
+    if failure_reasons:
+        details = " Earlier native-backend rejection reasons:\n - " + "\n - ".join(
+            failure_reasons
+        )
+    raise RuntimeError(
+        "DS4 strict native FP4 mode rejected "
+        f"{kernel_cls.__name__}. GB10/SM121 deployments must use a native "
+        "Blackwell FP4 path such as FlashInfer/CUTLASS or CUTLASS; Marlin, "
+        "FBGEMM, and software emulation are not acceptable fallbacks."
+        + details
+    )
+
+
 def init_nvfp4_linear_kernel() -> NvFp4LinearKernel:
     """Select and instantiate the best NVFP4 linear kernel for the
     current platform."""
@@ -892,6 +919,7 @@ def init_nvfp4_linear_kernel() -> NvFp4LinearKernel:
                 f"Forced NVFP4 kernel {force_kernel.__name__} is not "
                 f"supported: {reason}"
             )
+        _raise_if_ds4_strict_native_fp4_rejects(force_kernel)
         logger.info_once("Using %s for NVFP4 GEMM", force_kernel.__name__)
         return force_kernel(config)
 
@@ -937,6 +965,7 @@ def init_nvfp4_linear_kernel() -> NvFp4LinearKernel:
                 "\n - ".join(failure_reasons),
             )
 
+        _raise_if_ds4_strict_native_fp4_rejects(kernel_cls, failure_reasons)
         logger.info_once("Using %s for NVFP4 GEMM", kernel_cls.__name__)
         return kernel_cls(config)
 
