@@ -26,6 +26,11 @@ if [[ "${VLLM_MXFP4_USE_MARLIN:-}" =~ ^(1|true|TRUE|yes|YES)$ ]]; then
   exit 64
 fi
 unset VLLM_MXFP4_USE_MARLIN
+if [[ "${VLLM_TEST_FORCE_FP8_MARLIN:-}" =~ ^(1|true|TRUE|yes|YES)$ ]]; then
+  echo "DS4 strict native mode refuses VLLM_TEST_FORCE_FP8_MARLIN=$VLLM_TEST_FORCE_FP8_MARLIN" >&2
+  exit 64
+fi
+export VLLM_TEST_FORCE_FP8_MARLIN=0
 export NCCL_IB_DISABLE="${NCCL_IB_DISABLE:-0}"
 export NCCL_NET="${NCCL_NET:-IB}"
 export NCCL_IGNORE_CPU_AFFINITY="${NCCL_IGNORE_CPU_AFFINITY:-1}"
@@ -49,6 +54,8 @@ COMMON_ARGS=(
   --distributed-executor-backend mp
   --kv-cache-dtype fp8
   --block-size 256
+  --linear-backend "${DSV4_LINEAR_BACKEND:-deep_gemm}"
+  --moe-backend "${DSV4_MOE_BACKEND:-deep_gemm}"
   --enable-prefix-caching
   --max-model-len "${DSV4_MAX_MODEL_LEN:-200000}"
   --max-num-seqs "${DSV4_MAX_NUM_SEQS:-2}"

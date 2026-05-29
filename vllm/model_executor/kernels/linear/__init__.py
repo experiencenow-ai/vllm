@@ -832,7 +832,13 @@ def _raise_if_ds4_strict_native_fp4_rejects(
     kernel_cls: type[NvFp4LinearKernel],
     failure_reasons: list[str] | None = None,
 ) -> None:
-    if not envs.VLLM_DS4_STRICT_NATIVE_FP4:
+    if (
+        not envs.VLLM_DS4_STRICT_NATIVE_FP4
+        and not (
+            current_platform.is_cuda()
+            and current_platform.is_device_capability_blackwell()
+        )
+    ):
         return
     rejected_kernel_names = {
         "MarlinNvFp4LinearKernel",
@@ -847,8 +853,8 @@ def _raise_if_ds4_strict_native_fp4_rejects(
             failure_reasons
         )
     raise RuntimeError(
-        "DS4 strict native FP4 mode rejected "
-        f"{kernel_cls.__name__}. GB10/SM121 deployments must use a native "
+        "Native Blackwell FP4 mode rejected "
+        f"{kernel_cls.__name__}. GB10/SM12x deployments must use a native "
         "Blackwell FP4 path such as FlashInfer/CUTLASS or CUTLASS; Marlin, "
         "FBGEMM, and software emulation are not acceptable fallbacks."
         + details
