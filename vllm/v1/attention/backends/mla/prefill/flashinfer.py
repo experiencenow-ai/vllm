@@ -41,7 +41,7 @@ class FlashInferPrefillBackend(MLAPrefillBackend):
 
     @classmethod
     def supports_compute_capability(cls, device_capability: "DeviceCapability") -> bool:
-        return device_capability.major == 10
+        return device_capability.is_blackwell()
 
     @classmethod
     def is_available(cls) -> bool:

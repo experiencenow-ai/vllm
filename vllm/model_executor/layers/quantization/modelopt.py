@@ -5,6 +5,8 @@ from fnmatch import fnmatch
 from typing import TYPE_CHECKING, Any
 
 import torch
+
+import vllm.envs as envs
 from torch.nn.parameter import Parameter
 
 import vllm.model_executor.layers.fused_moe.modular_kernel as mk
@@ -1255,6 +1257,13 @@ class ModelOptNvFp4W4A16LinearMethod(LinearMethodBase):
     """
 
     def __init__(self, quant_config: ModelOptNvFp4Config) -> None:
+        if envs.VLLM_DS4_STRICT_NATIVE_FP4:
+            raise RuntimeError(
+                "DS4 strict native FP4 mode rejected W4A16_NVFP4 because "
+                "vLLM currently implements that checkpoint shape through "
+                "Marlin. Use a W4A4 ModelOpt NVFP4 checkpoint with "
+                "FlashInfer/CUTLASS, or BF16, for DS4 production."
+            )
         self.quant_config = quant_config
         # Vestigial slot mirrored from ModelOptNvFp4LinearMethod: the parent
         # config's get_quant_method only fills marlin_input_dtype when

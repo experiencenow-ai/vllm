@@ -109,6 +109,7 @@ if TYPE_CHECKING:
     VLLM_ALLOW_RUNTIME_LORA_UPDATING: bool = False
     VLLM_SKIP_P2P_CHECK: bool = False
     VLLM_DISABLED_KERNELS: list[str] = []
+    VLLM_DS4_STRICT_NATIVE_FP4: bool = False
     VLLM_ENABLE_FLA_PACKED_RECURRENT_DECODE: bool = True
     VLLM_DISABLE_PYNCCL: bool = False
     VLLM_USE_OINK_OPS: bool = False
@@ -1074,6 +1075,12 @@ environment_variables: dict[str, Callable[[], Any]] = {
         []
         if "VLLM_DISABLED_KERNELS" not in os.environ
         else os.environ["VLLM_DISABLED_KERNELS"].split(",")
+    ),
+    # DS4 appliance mode: never silently select Marlin or software
+    # emulation for native Blackwell FP4/MXFP4 deployments.
+    "VLLM_DS4_STRICT_NATIVE_FP4": lambda: (
+        os.environ.get("VLLM_DS4_STRICT_NATIVE_FP4", "0").strip().lower()
+        in ("1", "true")
     ),
     "VLLM_ENABLE_FLA_PACKED_RECURRENT_DECODE": lambda: bool(
         int(os.getenv("VLLM_ENABLE_FLA_PACKED_RECURRENT_DECODE", "1"))

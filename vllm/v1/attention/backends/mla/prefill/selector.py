@@ -62,7 +62,7 @@ def _get_mla_prefill_backend_priorities(
     Returns:
         List of backends in priority order (highest priority first).
     """
-    if device_capability.major == 10:  # Blackwell
+    if device_capability.is_blackwell():
         return [
             MLAPrefillBackendEnum.FLASH_ATTN,
             MLAPrefillBackendEnum.TRTLLM_RAGGED,

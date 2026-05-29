@@ -59,7 +59,7 @@ if has_triton_kernels():
 
 class Mxfp4MoeBackend(Enum):
     NONE = "None"
-    # DeepGEMM FP8xFP4 backend (SM100+)
+    # DeepGEMM FP8xFP4 backend (Blackwell)
     DEEPGEMM_MXFP4 = "DEEPGEMM_MXFP4"
     # FlashInfer TRTLLM backends
     FLASHINFER_TRTLLM_MXFP4_MXFP8 = "FLASHINFER_TRTLLM_MXFP4_MXFP8"
@@ -291,7 +291,7 @@ def _get_priority_backends_for_gpt_oss() -> list[Mxfp4MoeBackend]:
 
 def _get_priority_backends() -> list[Mxfp4MoeBackend]:
     """
-    Get available backends in priority order. SM100+ prefers DeepGEMM FP4 /
+    Get available backends in priority order. Blackwell prefers DeepGEMM FP4 /
     TRTLLM MXFP8; SM90 falls through to Triton_unfused or Marlin (the
     backend-level ``is_supported_config`` check filters by device capability).
     """
@@ -364,6 +364,32 @@ def _make_log_unsupported(backend: Mxfp4MoeBackend, reason: str | None) -> str:
     return f"{base} since {reason}." if reason else f"{base}."
 
 
+def _raise_if_ds4_strict_native_mxfp4_rejects(
+    backend: Mxfp4MoeBackend,
+    reason: str | None = None,
+) -> None:
+    if not envs.VLLM_DS4_STRICT_NATIVE_FP4:
+        return
+    native_blackwell_backends = {
+        Mxfp4MoeBackend.DEEPGEMM_MXFP4,
+        Mxfp4MoeBackend.FLASHINFER_TRTLLM_MXFP4_MXFP8,
+        Mxfp4MoeBackend.FLASHINFER_TRTLLM_MXFP4_BF16,
+        Mxfp4MoeBackend.FLASHINFER_CUTLASS_MXFP4_MXFP8,
+        Mxfp4MoeBackend.FLASHINFER_CUTLASS_MXFP4_BF16,
+    }
+    if backend in native_blackwell_backends:
+        return
+    detail = f" Last native-backend rejection: {reason}." if reason else ""
+    raise RuntimeError(
+        "DS4 strict native FP4 mode rejected "
+        f"MXFP4 MoE backend {backend.value!r}. GB10/SM121 deployments "
+        "must use native Blackwell MXFP4/FP8 backends such as DeepGEMM "
+        "or FlashInfer/CUTLASS/TRTLLM; Marlin, CPU, ROCm/XPU, Triton "
+        "fallbacks, and emulation are not acceptable production paths."
+        + detail
+    )
+
+
 def _return_or_raise(
     backend: Mxfp4MoeBackend,
     config: FusedMoEConfig,
@@ -372,6 +398,7 @@ def _return_or_raise(
     activation_format: mk.FusedMoEActivationFormat,
     scope: Literal["process", "global", "local"] = "local",
 ) -> tuple[Mxfp4MoeBackend, type[mk.FusedMoEExperts]]:
+    _raise_if_ds4_strict_native_mxfp4_rejects(backend)
     reason: str | None = None
     for k_cls in backend_to_kernel_cls(backend):
         supported, reason = k_cls.is_supported_config(
@@ -482,7 +509,7 @@ def select_mxfp4_moe_backend(
                     None,
                     activation_format,
                 )
-            if current_platform.is_device_capability_family(100):
+            if current_platform.is_device_capability_blackwell():
                 return _return_or_raise(
                     Mxfp4MoeBackend.FLASHINFER_TRTLLM_MXFP4_BF16,
                     config,
@@ -493,7 +520,7 @@ def select_mxfp4_moe_backend(
             raise ValueError(
                 "VLLM_USE_FLASHINFER_MOE_MXFP4_BF16=1 is set but the "
                 "current device capability is not supported. "
-                "Only SM90 (CUTLASS) and SM100+ (TRTLLM) are supported."
+                "Only SM90 (CUTLASS) and Blackwell (TRTLLM) are supported."
             )
 
     # Handle explicit FlashInfer MXFP4 MXFP8 TRTLLM configuration.
@@ -532,7 +559,9 @@ def select_mxfp4_moe_backend(
             activation_format,
         )
 
+    last_native_rejection: str | None = None
     for backend in AVAILABLE_BACKENDS:
+        _raise_if_ds4_strict_native_mxfp4_rejects(backend, last_native_rejection)
         # Use requested_activation_key if provided, otherwise use backend default
         act_key = (
             requested_activation_key
@@ -547,7 +576,8 @@ def select_mxfp4_moe_backend(
                 logger.info_once(_make_log_backend(backend))
                 return backend, k_cls
             else:
-                logger.debug_once(_make_log_unsupported(backend, reason))
+                last_native_rejection = _make_log_unsupported(backend, reason)
+                logger.debug_once(last_native_rejection)
 
     if current_platform.is_xpu():
         backend = Mxfp4MoeBackend.XPU
@@ -637,7 +667,9 @@ def select_deepseek_v4_mxfp4_moe_backend(
         priority_backends = _get_priority_backends()
 
     # Iterate priority backends: TRTLLM MXFP8, then Triton.
+    last_native_rejection: str | None = None
     for backend in priority_backends:
+        _raise_if_ds4_strict_native_mxfp4_rejects(backend, last_native_rejection)
         activation_key = _backend_activation_key(backend)
         for k_cls in backend_to_kernel_cls(backend):
             supported, reason = k_cls.is_supported_config(
@@ -647,7 +679,8 @@ def select_deepseek_v4_mxfp4_moe_backend(
                 logger.info_once(_make_log_backend(backend), scope="local")
                 return backend, k_cls
             else:
-                logger.debug_once(_make_log_unsupported(backend, reason), scope="local")
+                last_native_rejection = _make_log_unsupported(backend, reason)
+                logger.debug_once(last_native_rejection, scope="local")
 
     raise NotImplementedError(
         "No MXFP4 MoE backend supports the deployment configuration."

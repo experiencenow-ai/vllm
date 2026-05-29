@@ -37,7 +37,7 @@ class GateLinear(ReplicatedLinear):
     ):
         is_hopper_or_blackwell = current_platform.is_device_capability(
             (9, 0)
-        ) or current_platform.is_device_capability_family(100)
+        ) or current_platform.is_device_capability_blackwell()
         can_use_specialized_kernels = (
             current_platform.is_cuda() and is_hopper_or_blackwell and not bias
         )

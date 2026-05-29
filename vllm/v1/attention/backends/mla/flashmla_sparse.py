@@ -295,13 +295,13 @@ class FlashMLASparseMetadataBuilder(AttentionMetadataBuilder[FlashMLASparseMetad
         # Equation taken from FlashMLA/csrc/api/sparse_decode.h
         # For sparse FP8 decode, the formula depends on architecture:
         # - SM90 (Hopper): num_sm_parts = num_sms / s_q / (h_q/64)
-        # - SM100 (Blackwell head64/head64x2): num_sm_parts = num_sms / s_q
-        # - SM100 (Blackwell head128): num_sm_parts = num_sms / s_q / 2
+        # - Blackwell head64/head64x2: num_sm_parts = num_sms / s_q
+        # - Blackwell head128: num_sm_parts = num_sms / s_q / 2
         # For max buffer size, use s_q = 1 (the case that produces largest output)
         # Use padded head count since that's what will be passed to the kernel
         h_q = self.fp8_decode_padded_heads
-        if current_platform.is_device_capability_family(100):
-            # SM100 head64 or head64x2 uses full SM count
+        if current_platform.is_device_capability_blackwell():
+            # Blackwell head64 or head64x2 uses full SM count
             max_num_sm_parts = sm_count
         else:
             # SM90 uses h_q/64 divisor
@@ -721,7 +721,7 @@ class FlashMLASparseImpl(SparseMLAAttentionImpl[FlashMLASparseMetadata]):
         self.topk_indices_buffer: torch.Tensor | None = indexer.topk_indices_buffer
         # Prefill BF16 kernel requires 64 on Hopper, 128 on Blackwell
         self.prefill_padding = (
-            128 if current_platform.is_device_capability_family(100) else 64
+            128 if current_platform.is_device_capability_blackwell() else 64
         )
         self.fp8_decode_padded_heads = self._compute_fp8_decode_padded_heads(num_heads)
 
