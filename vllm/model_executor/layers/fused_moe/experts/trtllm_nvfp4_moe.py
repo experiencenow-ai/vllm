@@ -115,7 +115,7 @@ class TrtLlmNvFp4ExpertsBase:
         p = current_platform
         return (
             p.is_cuda()
-            and p.is_device_capability_family(100)
+            and p.is_device_capability_blackwell()
             and has_flashinfer_trtllm_fused_moe()
         )
 

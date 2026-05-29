@@ -842,7 +842,7 @@ class DeepSeekV2FusedQkvAProjLinear(MergedColumnParallelLinear):
             and current_platform.is_cuda()
             and (
                 current_platform.is_device_capability(90)
-                or current_platform.is_device_capability_family(100)
+                or current_platform.is_device_capability_blackwell()
             )
         )
 

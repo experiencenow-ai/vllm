@@ -299,6 +299,12 @@ def _get_priority_backends() -> list[Mxfp4MoeBackend]:
         return [Mxfp4MoeBackend.AITER_MXFP4_BF16]
     if current_platform.is_xpu():
         return [Mxfp4MoeBackend.XPU]
+    if current_platform.is_cuda() and current_platform.is_device_capability_blackwell():
+        return [
+            Mxfp4MoeBackend.FLASHINFER_TRTLLM_MXFP4_MXFP8,
+            Mxfp4MoeBackend.DEEPGEMM_MXFP4,
+            Mxfp4MoeBackend.FLASHINFER_CUTLASS_MXFP4_MXFP8,
+        ]
     _AVAILABLE_BACKENDS = [
         Mxfp4MoeBackend.FLASHINFER_TRTLLM_MXFP4_MXFP8,
         Mxfp4MoeBackend.DEEPGEMM_MXFP4,
@@ -682,8 +688,15 @@ def select_deepseek_v4_mxfp4_moe_backend(
                 last_native_rejection = _make_log_unsupported(backend, reason)
                 logger.debug_once(last_native_rejection, scope="local")
 
+    detail = f" Last rejection: {last_native_rejection}" if last_native_rejection else ""
+    if current_platform.is_cuda() and current_platform.is_device_capability_blackwell():
+        raise NotImplementedError(
+            "No native Blackwell MXFP4 MoE backend supports the DeepSeek-V4 "
+            "deployment configuration. Marlin fallback is intentionally disabled "
+            "for Blackwell DS4 production." + detail
+        )
     raise NotImplementedError(
-        "No MXFP4 MoE backend supports the deployment configuration."
+        "No MXFP4 MoE backend supports the deployment configuration." + detail
     )
 
 

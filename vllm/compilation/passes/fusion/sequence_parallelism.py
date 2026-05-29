@@ -80,7 +80,7 @@ def get_sequence_parallelism_threshold(
         return None
 
     # Collapse Blackwell variants (sm100/sm103/...) into one policy bucket.
-    if current_platform.is_device_capability_family(100):
+    if current_platform.is_device_capability_blackwell():
         device_capability = 100
     else:
         device_capability = capability.to_int()

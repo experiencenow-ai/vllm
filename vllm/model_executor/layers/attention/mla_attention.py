@@ -1340,9 +1340,8 @@ def backend_supports_prefill_query_quantization() -> bool:
     - FlashAttention (FA3/FA4)
     - Non-GB200 devices (FP8 prefill requires device capability 100)
     """
-    # FP8 prefill query quantization requires GB200 (device capability 100)
-    # for the necessary FP8 kernels at the moment.
-    if not current_platform.is_device_capability_family(100):
+    # FP8 prefill query quantization requires Blackwell-family FP8 kernels.
+    if not current_platform.is_device_capability_blackwell():
         return False
 
     from vllm.config import get_current_vllm_config

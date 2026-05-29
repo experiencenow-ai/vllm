@@ -474,13 +474,25 @@ def tf32_hc_prenorm_gemm(
     _lazy_init()
     if _tf32_hc_prenorm_gemm_impl is None:
         return _missing()
-    return _tf32_hc_prenorm_gemm_impl(
-        x,
-        fn,
-        out,
-        sqrsum,
-        num_split,
-    )
+    try:
+        return _tf32_hc_prenorm_gemm_impl(
+            x,
+            fn,
+            out,
+            sqrsum,
+            num_split,
+        )
+    except RuntimeError as exc:
+        if "Unsupported architecture" not in str(exc):
+            raise
+        capability = current_platform.get_device_capability()
+        capability_text = capability.as_version_str() if capability else "unknown"
+        raise RuntimeError(
+            "DeepGEMM tf32_hc_prenorm_gemm rejected this GPU architecture "
+            f"(capability {capability_text}). DeepSeek-V4 MHC is on the native "
+            "performance path; DS4 strict native startup must fail here instead "
+            "of falling back to a slower MHC implementation."
+        ) from exc
 
 
 def _ceil_to_ue8m0(x: torch.Tensor):

@@ -681,9 +681,8 @@ class CutlassExpertsFp4(mk.FusedMoEExpertsModular):
     def _supports_current_device() -> bool:
         p = current_platform
         return p.is_cuda() and (
-            p.is_device_capability_family(100)
+            p.is_device_capability_blackwell()
             or p.is_device_capability_family(110)
-            or p.is_device_capability_family(120)
         )
 
     @staticmethod
@@ -986,6 +985,7 @@ class CutlassExpertsMxfp4(mk.FusedMoEExpertsModular):
     @staticmethod
     def _supports_current_device() -> bool:
         p = current_platform
+        # This MXFP4 x MXFP4 CUTLASS kernel is compiled only for SM100.
         return p.is_cuda() and p.is_device_capability_family(100)
 
     @staticmethod
