@@ -126,12 +126,14 @@ validated. vLLM should still verify by hash before using any block.
 
 ## Qwen27
 
-Qwen27 should not use this DSV4 persistent SimpleCPUOffload path as its first
-external KV implementation. Qwen KV is ordinary dense KV, so the forked runtime
-uses the built-in `LMCacheMPConnector` plus an external `lmcache server` for
-Qwen. See [DS4 Qwen27 LMCache MP Runtime](ds4_qwen_lmcache_mp.md).
+Qwen27 should not use this DSV4 persistent SimpleCPUOffload path as its primary
+external KV implementation. Qwen3.6-27B is hybrid GDN/full-attention in this
+runtime, so the DS4 Qwen lane uses native `LMCacheConnectorV1` with HMA enabled
+and `lmcache_kv_cache_group_id=auto`. Do not route Qwen27 through
+`LMCacheMPConnector`. See [DS4 Qwen27 LMCache Runtime](ds4_qwen_lmcache_mp.md)
+and [DS4 Dual 8x Spark Pipelines](../deployment/ds4-dual-8x-pipelines.md).
 
 The shared DS4 API can still expose one high-level contract to clients:
 `prefix_text` or `shared_prefix` for text prefixes, and `kv_cache_ref` for
 already-ingested cache packages. The model-specific vLLM launch decides whether
-that maps to DSV4 native offload or Qwen LMCache MP.
+that maps to DSV4 native offload or Qwen native LMCache HMA.

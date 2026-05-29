@@ -9,24 +9,43 @@ from typing import TYPE_CHECKING, Any
 
 import torch
 from lmcache import utils
-from lmcache.config import LMCacheEngineMetadata
 from lmcache.logging import init_logger
 from lmcache.observability import LMCStatsMonitor
 from lmcache.utils import _lmcache_nvtx_annotate
 from lmcache.v1.cache_engine import LMCacheEngine, LMCacheEngineBuilder
 from lmcache.v1.compute.blend import LMCBlenderBuilder
-from lmcache.v1.config import LMCacheEngineConfig, _validate_and_set_config_value
-from lmcache.v1.gpu_connector import (
-    VLLMBufferLayerwiseGPUConnector,
-    VLLMPagedMemGPUConnectorV2,
-    VLLMPagedMemLayerwiseGPUConnector,
-)
+from lmcache.v1.config import LMCacheEngineConfig
 from lmcache.v1.internal_api_server.api_server import InternalAPIServer
 from lmcache.v1.lookup_client import LookupClientFactory
 from lmcache.v1.lookup_client.lmcache_async_lookup_client import (
     LMCacheAsyncLookupServer,
 )
 from lmcache.v1.offload_server.zmq_server import ZMQOffloadServer
+
+try:
+    from lmcache.v1.config import (
+        _validate_and_set_config_value as validate_and_set_config_value,
+    )
+except ImportError:
+    from lmcache.v1.config import validate_and_set_config_value
+
+try:
+    from lmcache.v1.gpu_connector import (
+        VLLMBufferLayerwiseGPUConnector,
+        VLLMPagedMemGPUConnectorV2,
+        VLLMPagedMemLayerwiseGPUConnector,
+    )
+except ImportError:
+    from lmcache.v1.gpu_connector.gpu_connectors import (
+        VLLMBufferLayerwiseGPUConnector,
+        VLLMPagedMemGPUConnectorV2,
+        VLLMPagedMemLayerwiseGPUConnector,
+    )
+
+try:
+    from lmcache.config import LMCacheEngineMetadata
+except ImportError:
+    from lmcache.v1.metadata import LMCacheMetadata as LMCacheEngineMetadata
 
 try:
     from lmcache.v1.plugin.runtime_plugin_launcher import RuntimePluginLauncher
@@ -41,6 +60,12 @@ from vllm.distributed.kv_transfer.kv_connector.v1.base import (
     KVConnectorBase_V1,
     KVConnectorMetadata,
     KVConnectorRole,
+)
+from vllm.distributed.kv_transfer.kv_connector.v1.lmcache_integration.hma_block_ids import (
+    build_slot_mappings_for_block_id_groups,
+    choose_lmcache_kv_cache_group_id,
+    extend_block_id_groups,
+    normalize_block_id_groups,
 )
 from vllm.distributed.kv_transfer.kv_connector.v1.lmcache_integration.utils import (
     ENGINE_NAME,
@@ -128,9 +153,12 @@ class RequestTracker:
     # The token ids that has been scheduled so far
     token_ids: list[int]
 
-    # The block ids that has been allocated so far
-    # NOTE: allocated blocks could be more than the number of tokens
-    allocated_block_ids: list[int]
+    # The block ids that have been allocated so far, preserving HMA KV-cache
+    # group boundaries. allocated blocks can be more than the token count.
+    allocated_block_id_groups: tuple[list[int], ...]
+
+    # The KV-cache group whose block table is used for LMCache slot mapping.
+    lmcache_kv_cache_group_id: int = 0
 
     # The number of tokens that has been saved
     num_saved_tokens: int = 0
@@ -159,6 +187,7 @@ class RequestTracker:
         num_tokens_to_compute: int,
         lmcache_cached_tokens: int,
         skip_save: bool,
+        lmcache_kv_cache_group_id: int = 0,
     ) -> "RequestTracker":
         """Create the request tracker from a new request.
 
@@ -172,20 +201,9 @@ class RequestTracker:
                 cached in LMCache.
             skip_save (bool): whether the request cache should be saved
         """
-        # vLLM 0.9.0 update: request.block_ids changed from list[int] to
-        # list[list[int]]
-        # Need to check the type of request.block_ids
-
-        unfolded_block_ids = []
-
-        if not isinstance(new_request.block_ids[0], list):
-            unfolded_block_ids = new_request.block_ids.copy()
-        else:
-            # According to the vLLM code
-            # (https://github.com/vllm-project/vllm/blob/main/vllm/v1/core/
-            # sched/scheduler.py#L943),
-            # only one KVCacheGroup is supported in connector for now.
-            unfolded_block_ids = new_request.block_ids[0].copy()
+        allocated_block_id_groups = normalize_block_id_groups(
+            new_request.block_ids
+        )
 
         # NOTE: Initialized in `update_state_after_alloc`
         disagg_spec = tmp_disagg_tracker.pop(new_request.req_id, None)
@@ -202,7 +220,8 @@ class RequestTracker:
             req_id=new_request.req_id,
             prompt_len=len(new_request.prompt_token_ids),
             token_ids=new_request.prompt_token_ids[:num_tokens_to_compute].copy(),
-            allocated_block_ids=unfolded_block_ids,
+            allocated_block_id_groups=allocated_block_id_groups,
+            lmcache_kv_cache_group_id=lmcache_kv_cache_group_id,
             num_saved_tokens=lmcache_cached_tokens,
             disagg_spec=disagg_spec,
             mm_hashes=mm_hashes,
@@ -215,6 +234,7 @@ class RequestTracker:
         self,
         new_token_ids: list[int],
         new_block_ids: tuple[list[int], ...] | None | list[int],
+        lmcache_kv_cache_group_id: int = 0,
     ) -> None:
         """Update the request tracker when a running request is
         scheduled again
@@ -222,22 +242,10 @@ class RequestTracker:
 
         self.token_ids.extend(new_token_ids)
 
-        if new_block_ids is None:
-            # https://github.com/vllm-project/vllm/commit/
-            # b029de9902aa3ac58806c8c17776c7074175b6db
-            new_block_ids = []
-        elif len(new_block_ids) == 0:
-            new_block_ids = []
-        elif isinstance(new_block_ids, tuple):
-            new_block_ids = new_block_ids[0]
-        elif isinstance(new_block_ids, list):
-            pass
-        else:
-            raise ValueError(
-                f"Unsupported new_block_ids type {type(new_block_ids)}: "
-                f"should be None[list[int], ...], tuple or list[int]."
-            )
-        self.allocated_block_ids.extend(new_block_ids)
+        self.allocated_block_id_groups = extend_block_id_groups(
+            self.allocated_block_id_groups, new_block_ids
+        )
+        self.lmcache_kv_cache_group_id = lmcache_kv_cache_group_id
 
         # When a request is scheduled again, and the number of new tokens
         # is 1 (excluding chunked prefill), the request is in decode phase.
@@ -351,28 +359,34 @@ class ReqMeta:
             )
             token_ids = token_ids_tensor.tolist()
 
-        num_blocks = len(tracker.allocated_block_ids)
+        slot_mappings = build_slot_mappings_for_block_id_groups(
+            tracker.allocated_block_id_groups, block_size, len(token_ids)
+        )
+        group_id = tracker.lmcache_kv_cache_group_id
+        if group_id >= len(slot_mappings):
+            raise ValueError(
+                f"LMCache selected KV cache group {group_id}, but request "
+                f"{tracker.req_id} has {len(slot_mappings)} block-id group(s)."
+            )
+
+        selected_block_ids = tracker.allocated_block_id_groups[group_id]
+        num_blocks = len(selected_block_ids)
 
         if len(token_ids) > num_blocks * block_size:
             logger.error(
-                "The number of tokens is more than the number of blocks."
+                "The number of tokens is more than the number of blocks. "
                 "Something might be wrong in scheduling logic!"
             )
             logger.error(
-                "Num tokens: %d, num blocks: %d, block size: %d",
+                "Num tokens: %d, num blocks: %d, block size: %d, "
+                "kv cache group: %d",
                 len(token_ids),
                 num_blocks,
                 block_size,
+                group_id,
             )
 
-        block_ids = torch.tensor(tracker.allocated_block_ids, dtype=torch.long)
-        block_offsets = torch.arange(0, block_size, dtype=torch.long)
-        slot_mapping = (
-            block_offsets.reshape((1, block_size))
-            + block_ids.reshape((num_blocks, 1)) * block_size
-        )
-
-        slot_mapping = slot_mapping.flatten()[: len(token_ids)]
+        slot_mapping = slot_mappings[group_id]
         assert slot_mapping.dtype == torch.long
 
         # For load operation: check whether the request is scheduled to load
@@ -428,6 +442,48 @@ def _calculate_mtp_layers(vllm_config, model_config):
                 )
                 num_mtp_layers = 1
     return num_mtp_layers
+
+
+def _build_lmcache_metadata(
+    lmcache_config: LMCacheEngineConfig,
+    vllm_config: "VllmConfig",
+    kv_dtype: torch.dtype,
+    kv_shape: tuple[int, int, int, int, int],
+    use_mla: bool,
+    local_rank: int,
+    local_world_size: int,
+):
+    model_config = vllm_config.model_config
+    parallel_config = vllm_config.parallel_config
+    metadata_fields = getattr(LMCacheEngineMetadata, "__dataclass_fields__", {})
+    if "model_name" in metadata_fields:
+        kv_transfer_config = vllm_config.kv_transfer_config
+        return LMCacheEngineMetadata(
+            model_name=model_config.model,
+            world_size=parallel_config.world_size,
+            local_world_size=local_world_size,
+            worker_id=parallel_config.rank,
+            local_worker_id=local_rank,
+            kv_dtype=kv_dtype,
+            kv_shape=kv_shape,
+            use_mla=use_mla,
+            role="worker",
+            served_model_name=getattr(model_config, "served_model_name", None),
+            chunk_size=lmcache_config.chunk_size,
+            engine_id=getattr(kv_transfer_config, "engine_id", None),
+            kv_connector_extra_config=getattr(
+                kv_transfer_config, "kv_connector_extra_config", None
+            ),
+        )
+    return LMCacheEngineMetadata(
+        model_config.model,
+        parallel_config.world_size,
+        parallel_config.rank,
+        "vllm",
+        kv_dtype,
+        kv_shape,
+        use_mla,
+    )
 
 
 def _init_lmcache_engine(
@@ -487,14 +543,14 @@ def _init_lmcache_engine(
     local_rank = parallel_config.rank % num_gpus
     torch.accelerator.set_device_index(local_rank)
     device = torch.device(f"cuda:{local_rank}")
-    metadata = LMCacheEngineMetadata(
-        model_config.model,
-        parallel_config.world_size,
-        parallel_config.rank,
-        "vllm",
+    metadata = _build_lmcache_metadata(
+        lmcache_config,
+        vllm_config,
         kv_dtype,
         kv_shape,
         use_mla,
+        local_rank,
+        num_gpus,
     )
 
     use_gpu = need_gpu_interim_buffer(lmcache_config)
@@ -578,7 +634,7 @@ class LMCacheConnectorV1Impl:
         self._parent = parent
         self._vllm_config = vllm_config
         self.kv_role = vllm_config.kv_transfer_config.kv_role
-        self.worker_count = vllm_config.parallel_config.tensor_parallel_size
+        self.worker_count = vllm_config.parallel_config.world_size
         config = lmcache_get_or_create_config()
         assert isinstance(config, LMCacheEngineConfig), (
             "LMCache v1 configuration is should be passed for vLLM v1."
@@ -588,16 +644,35 @@ class LMCacheConnectorV1Impl:
         kv_connector_extra_config = (
             vllm_config.kv_transfer_config.kv_connector_extra_config
         )
+        requested_group_id = None
         if kv_connector_extra_config:
+            requested_group_id = kv_connector_extra_config.get(
+                "lmcache_kv_cache_group_id",
+                kv_connector_extra_config.get(
+                    "hma_lmcache_kv_cache_group_id",
+                    kv_connector_extra_config.get("lmcache.kv_cache_group_id"),
+                ),
+            )
             for key, value in kv_connector_extra_config.items():
                 if key.startswith("lmcache."):
                     config_key = key[8:]  # Remove "lmcache." prefix
-                    if _validate_and_set_config_value(config, config_key, value):
+                    if validate_and_set_config_value(config, config_key, value):
                         logger.info(
                             "Updated config %s from vLLM extra config: %s",
                             config_key,
                             value,
                         )
+
+        kv_cache_config = getattr(
+            parent, "kv_cache_config", getattr(parent, "_kv_cache_config", None)
+        )
+        self._lmcache_kv_cache_group_id = choose_lmcache_kv_cache_group_id(
+            kv_cache_config, requested_group_id
+        )
+        logger.info(
+            "LMCache HMA slot mapping will use KV cache group %d",
+            self._lmcache_kv_cache_group_id,
+        )
 
         self.config = config
 
@@ -714,6 +789,9 @@ class LMCacheConnectorV1Impl:
             getattr(self.lmcache_engine, "metadata", None),
         )
 
+    def get_lmcache_kv_cache_group_id(self) -> int:
+        return self._lmcache_kv_cache_group_id
+
     def get_inference_info(self) -> dict:
         """Get inference information including vLLM config and related details.
 
@@ -785,7 +863,12 @@ class LMCacheConnectorV1Impl:
     ####################
     @_lmcache_nvtx_annotate
     def register_kv_caches(self, kv_caches: dict[str, torch.Tensor]):
-        logger.info("Registering KV caches")
+        logger.info(
+            "Registering %d local KV cache entries for LMCache "
+            "using HMA group %d",
+            len(kv_caches),
+            self._lmcache_kv_cache_group_id,
+        )
         # TODO(chunxiaozheng): `_init_kv_caches_from_forward_context` is
         #  not called, we should consider removing it.
         assert len(self.kv_caches) == 0 and len(kv_caches) > 0
@@ -1341,6 +1424,7 @@ class LMCacheConnectorV1Impl:
                 num_tokens_to_compute,
                 lmcache_cached_tokens,
                 skip_save,
+                self._lmcache_kv_cache_group_id,
             )
             self._request_trackers[request.req_id] = request_tracker
 
@@ -1363,7 +1447,11 @@ class LMCacheConnectorV1Impl:
         if isinstance(cached_reqs, list):
             for i, req in enumerate(cached_reqs):
                 request_tracker = self._request_trackers[req.req_id]
-                request_tracker.update(req.new_token_ids, req.new_block_ids)
+                request_tracker.update(
+                    req.new_token_ids,
+                    req.new_block_ids,
+                    self._lmcache_kv_cache_group_id,
+                )
 
                 req_meta = ReqMeta.from_request_tracker(
                     request_tracker,
@@ -1391,7 +1479,11 @@ class LMCacheConnectorV1Impl:
                 )
             new_block_ids = cached_reqs.new_block_ids[i]
 
-            request_tracker.update(new_token_ids, new_block_ids)
+            request_tracker.update(
+                new_token_ids,
+                new_block_ids,
+                self._lmcache_kv_cache_group_id,
+            )
 
             req_meta = ReqMeta.from_request_tracker(
                 request_tracker,

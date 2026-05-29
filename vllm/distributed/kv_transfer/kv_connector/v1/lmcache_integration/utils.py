@@ -119,7 +119,10 @@ def create_lmcache_metadata(
     """
     # Third Party
     # First Party
-    from lmcache.config import LMCacheEngineMetadata
+    try:
+        from lmcache.config import LMCacheEngineMetadata
+    except ImportError:
+        from lmcache.v1.metadata import LMCacheMetadata as LMCacheEngineMetadata
 
     from vllm.utils.torch_utils import get_kv_cache_torch_dtype
 
@@ -152,16 +155,53 @@ def create_lmcache_metadata(
     head_size = model_cfg.get_head_size()
     kv_shape = (num_layer, 1 if use_mla else 2, chunk_size, num_kv_head, head_size)
 
-    # Create metadata
-    metadata = LMCacheEngineMetadata(
-        model_cfg.model,
-        parallel_cfg.world_size,
-        parallel_cfg.rank,
-        "vllm",
-        kv_dtype,
-        kv_shape,
-        use_mla,
-    )
+    metadata_fields = getattr(LMCacheEngineMetadata, "__dataclass_fields__", {})
+    if "model_name" in metadata_fields:
+        kv_transfer_cfg = (
+            getattr(vllm_config, "kv_transfer_config", None)
+            if vllm_config is not None
+            else None
+        )
+        local_world_size = max(
+            1,
+            getattr(
+                parallel_cfg,
+                "data_parallel_size_local",
+                getattr(parallel_cfg, "local_world_size", 1),
+            ),
+        )
+        local_worker_id = getattr(
+            parallel_cfg,
+            "local_rank",
+            getattr(parallel_cfg, "rank", 0) % local_world_size,
+        )
+        metadata = LMCacheEngineMetadata(
+            model_name=model_cfg.model,
+            world_size=parallel_cfg.world_size,
+            local_world_size=local_world_size,
+            worker_id=parallel_cfg.rank,
+            local_worker_id=local_worker_id,
+            kv_dtype=kv_dtype,
+            kv_shape=kv_shape,
+            use_mla=use_mla,
+            role="worker",
+            served_model_name=getattr(model_cfg, "served_model_name", None),
+            chunk_size=config.chunk_size,
+            engine_id=getattr(kv_transfer_cfg, "engine_id", None),
+            kv_connector_extra_config=getattr(
+                kv_transfer_cfg, "kv_connector_extra_config", None
+            ),
+        )
+    else:
+        metadata = LMCacheEngineMetadata(
+            model_cfg.model,
+            parallel_cfg.world_size,
+            parallel_cfg.rank,
+            "vllm",
+            kv_dtype,
+            kv_shape,
+            use_mla,
+        )
 
     return metadata, config
 
