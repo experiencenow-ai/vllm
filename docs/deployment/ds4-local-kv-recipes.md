@@ -188,6 +188,16 @@ vLLM: Mamba/GDN scheduler and prefix-cache fixes for external computed tokens
 LMCache: companion hybrid-state restore branch selecting FullAttentionSpec groups
 ```
 
+Install the Qwen runtime dependencies into the exact Python environment that
+will launch vLLM. `pytest` is a serving dependency for this stack: Qwen
+torch.compile profiling can import `cupy.testing`, which imports `pytest`.
+Without it, Qwen can load all checkpoint shards and then fail during engine-core
+initialization with `ModuleNotFoundError: No module named 'pytest'`.
+
+```bash
+/home/$USER/ds4-vllm-local/bin/python -m pip install setuptools-rust pytest
+```
+
 Install the LMCache companion branch into the same runtime environment used by
 the vLLM server:
 
@@ -205,7 +215,17 @@ the default include path, set the CUDA and Python include paths before running
 
 ```bash
 export CUDA_HOME=/usr/local/cuda
-export CPATH=/home/$USER/standard-runtimes/python3.12-dev-extract/usr/include:/home/$USER/standard-runtimes/python3.12-dev-extract/usr/include/python3.12:${CPATH:-}
+export PYHDR_HOME=/home/$USER/standard-runtimes/python3.12-dev-extract
+test -f "$PYHDR_HOME/usr/include/python3.12/Python.h"
+test -f "$PYHDR_HOME/usr/include/aarch64-linux-gnu/python3.12/pyconfig.h"
+export CPATH=$PYHDR_HOME/usr/include/python3.12:$PYHDR_HOME/usr/include/aarch64-linux-gnu/python3.12:$PYHDR_HOME/usr/include:${CPATH:-}
+```
+
+After installing vLLM and LMCache, prove the serving runtime has the complete
+Qwen dependency set before loading the model:
+
+```bash
+/home/$USER/ds4-vllm-local/bin/python -c 'import pytest, cupy.testing, vllm, lmcache; print("qwen-runtime-deps-ok")'
 ```
 
 Launch Qwen27 with HMA enabled:
@@ -213,12 +233,13 @@ Launch Qwen27 with HMA enabled:
 ```bash
 export LMCACHE_CONFIG_FILE=/tmp/lmcache_qwen27.yaml
 export LMCACHE_ROOT=/home/$USER/ds4_lmcache/qwen27
+export PYTHONHASHSEED=0
 mkdir -p "$LMCACHE_ROOT"
 
 cat > "$LMCACHE_CONFIG_FILE" <<YAML
 chunk_size: 784
 local_cpu: true
-max_local_cpu_size: 64.0
+max_local_cpu_size: 16.0
 local_disk: file://$LMCACHE_ROOT
 max_local_disk_size: 1024.0
 YAML
@@ -239,7 +260,7 @@ VLLM_ALLOW_LONG_MAX_MODEL_LEN=1 \
   --language-model-only \
   --enable-chunked-prefill \
   --enable-prefix-caching \
-  --async-scheduling \
+  --no-async-scheduling \
   --reasoning-parser qwen3 \
   --no-disable-hybrid-kv-cache-manager \
   --disable-log-stats \
@@ -254,10 +275,16 @@ HMA smoke used `chunk_size: 784` and a smaller
 resident-lane caps above: `--max-num-seqs 12`,
 `--max-num-batched-tokens 32768`, and `--gpu-memory-utilization 0.50`.
 Do not fall back to uncapped vLLM defaults for a 262k qual launch; that can push
-Spark nodes into swap before the API is ready. The earlier `chunk_size: 256`
-launch started
-successfully but LMCache rejected external hits because matching hybrid-state
-pages were not available at the same token boundary.
+Spark nodes into swap before the API is ready. Keep
+`max_local_cpu_size: 16.0` unless the node's host-memory budget has been
+rechecked. A Spark0 gate run with `max_local_cpu_size: 64.0` reached the
+FullAttentionSpec and hybrid-state initialization path, then collapsed
+`MemAvailable` below 1 GiB before the API became healthy. The earlier
+`chunk_size: 256` launch started successfully but LMCache rejected external hits
+because matching hybrid-state pages were not available at the same token
+boundary. Keep `--no-async-scheduling` for the rollout gate; enable
+`--async-scheduling` only as a separate performance experiment after the capped
+LMCache recipe is healthy.
 
 Acceptance requires all of the following:
 
