@@ -14,7 +14,7 @@ from lmcache.observability import LMCStatsMonitor
 from lmcache.utils import _lmcache_nvtx_annotate
 from lmcache.v1.cache_engine import LMCacheEngine, LMCacheEngineBuilder
 from lmcache.v1.compute.blend import LMCBlenderBuilder
-from lmcache.v1.config import LMCacheEngineConfig, _validate_and_set_config_value
+from lmcache.v1.config import LMCacheEngineConfig
 from lmcache.v1.gpu_connector import (
     VLLMBufferLayerwiseGPUConnector,
     VLLMPagedMemGPUConnectorV2,
@@ -26,6 +26,13 @@ from lmcache.v1.lookup_client.lmcache_async_lookup_client import (
     LMCacheAsyncLookupServer,
 )
 from lmcache.v1.offload_server.zmq_server import ZMQOffloadServer
+
+try:
+    from lmcache.v1.config import (
+        _validate_and_set_config_value as validate_and_set_config_value,
+    )
+except ImportError:
+    from lmcache.v1.config import validate_and_set_config_value
 
 try:
     from lmcache.config import LMCacheEngineMetadata
@@ -641,7 +648,7 @@ class LMCacheConnectorV1Impl:
             for key, value in kv_connector_extra_config.items():
                 if key.startswith("lmcache."):
                     config_key = key[8:]  # Remove "lmcache." prefix
-                    if _validate_and_set_config_value(config, config_key, value):
+                    if validate_and_set_config_value(config, config_key, value):
                         logger.info(
                             "Updated config %s from vLLM extra config: %s",
                             config_key,
