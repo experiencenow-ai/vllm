@@ -9,7 +9,6 @@ from typing import TYPE_CHECKING, Any
 
 import torch
 from lmcache import utils
-from lmcache.config import LMCacheEngineMetadata
 from lmcache.logging import init_logger
 from lmcache.observability import LMCStatsMonitor
 from lmcache.utils import _lmcache_nvtx_annotate
@@ -27,6 +26,11 @@ from lmcache.v1.lookup_client.lmcache_async_lookup_client import (
     LMCacheAsyncLookupServer,
 )
 from lmcache.v1.offload_server.zmq_server import ZMQOffloadServer
+
+try:
+    from lmcache.config import LMCacheEngineMetadata
+except ImportError:
+    from lmcache.v1.metadata import LMCacheMetadata as LMCacheEngineMetadata
 
 try:
     from lmcache.v1.plugin.runtime_plugin_launcher import RuntimePluginLauncher
@@ -425,6 +429,48 @@ def _calculate_mtp_layers(vllm_config, model_config):
     return num_mtp_layers
 
 
+def _build_lmcache_metadata(
+    lmcache_config: LMCacheEngineConfig,
+    vllm_config: "VllmConfig",
+    kv_dtype: torch.dtype,
+    kv_shape: tuple[int, int, int, int, int],
+    use_mla: bool,
+    local_rank: int,
+    local_world_size: int,
+):
+    model_config = vllm_config.model_config
+    parallel_config = vllm_config.parallel_config
+    metadata_fields = getattr(LMCacheEngineMetadata, "__dataclass_fields__", {})
+    if "model_name" in metadata_fields:
+        kv_transfer_config = vllm_config.kv_transfer_config
+        return LMCacheEngineMetadata(
+            model_name=model_config.model,
+            world_size=parallel_config.world_size,
+            local_world_size=local_world_size,
+            worker_id=parallel_config.rank,
+            local_worker_id=local_rank,
+            kv_dtype=kv_dtype,
+            kv_shape=kv_shape,
+            use_mla=use_mla,
+            role="worker",
+            served_model_name=getattr(model_config, "served_model_name", None),
+            chunk_size=lmcache_config.chunk_size,
+            engine_id=getattr(kv_transfer_config, "engine_id", None),
+            kv_connector_extra_config=getattr(
+                kv_transfer_config, "kv_connector_extra_config", None
+            ),
+        )
+    return LMCacheEngineMetadata(
+        model_config.model,
+        parallel_config.world_size,
+        parallel_config.rank,
+        "vllm",
+        kv_dtype,
+        kv_shape,
+        use_mla,
+    )
+
+
 def _init_lmcache_engine(
     lmcache_config: LMCacheEngineConfig,
     vllm_config: "VllmConfig",
@@ -482,14 +528,14 @@ def _init_lmcache_engine(
     local_rank = parallel_config.rank % num_gpus
     torch.accelerator.set_device_index(local_rank)
     device = torch.device(f"cuda:{local_rank}")
-    metadata = LMCacheEngineMetadata(
-        model_config.model,
-        parallel_config.world_size,
-        parallel_config.rank,
-        "vllm",
+    metadata = _build_lmcache_metadata(
+        lmcache_config,
+        vllm_config,
         kv_dtype,
         kv_shape,
         use_mla,
+        local_rank,
+        num_gpus,
     )
 
     use_gpu = need_gpu_interim_buffer(lmcache_config)

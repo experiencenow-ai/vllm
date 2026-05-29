@@ -30,10 +30,12 @@ YAML
 
 KV_TRANSFER_CONFIG='{"kv_connector":"LMCacheConnectorV1","kv_role":"kv_both","kv_connector_extra_config":{"use_native":true,"lmcache_kv_cache_group_id":"auto","discard_partial_chunks":false}}'
 
-ASYNC_SCHEDULING_ARGS=(--no-async-scheduling)
-if [[ "${QWEN27_ASYNC_SCHEDULING:-0}" == "1" ]]; then
-  ASYNC_SCHEDULING_ARGS=(--async-scheduling)
-fi
+ASYNC_SCHEDULING_ARGS=(--async-scheduling)
+case "${QWEN27_ASYNC_SCHEDULING:-1}" in
+  0|false|False|no|NO|off|OFF)
+    ASYNC_SCHEDULING_ARGS=(--no-async-scheduling)
+    ;;
+esac
 
 COMMON_ARGS=(
   -m vllm.entrypoints.cli.main serve "$MODEL"

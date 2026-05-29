@@ -96,16 +96,17 @@ QWEN27_MAX_NUM_SEQS=12
 QWEN27_MAX_NUM_BATCHED_TOKENS=32768
 QWEN27_GPU_MEMORY_UTILIZATION=0.50
 LMCACHE_MAX_LOCAL_CPU_SIZE=16.0
-QWEN27_ASYNC_SCHEDULING=0
+QWEN27_ASYNC_SCHEDULING=1
 PYTHONHASHSEED=0
 ```
 
 Raise those caps only after both resident services are healthy together. Do not
 start with `LMCACHE_MAX_LOCAL_CPU_SIZE=64.0`; a Spark gate run with that value
 reached the LMCache FullAttentionSpec/hybrid-state initialization path and then
-drove host `MemAvailable` below 1 GiB before the API became healthy. Keep async
-scheduling disabled for the rollout gate; enable it later with
-`QWEN27_ASYNC_SCHEDULING=1` as a separate performance experiment.
+drove host `MemAvailable` below 1 GiB before the API became healthy. The same
+failure path reproduced with async disabled, so async was not the isolated
+trigger and the Qwen launcher enables it by default. Set
+`QWEN27_ASYNC_SCHEDULING=0` only as a rollback or bisection switch.
 
 ## DeepSeek V4 Flash 8-way PP
 
