@@ -90,6 +90,8 @@ def main() -> int:
     print(f"CUDA_VISIBLE_DEVICES: {os.getenv('CUDA_VISIBLE_DEVICES', '<unset>')}")
     print(f"TORCH_CUDA_ARCH_LIST: {os.getenv('TORCH_CUDA_ARCH_LIST', '<unset>')}")
     print(f"VLLM_DS4_STRICT_NATIVE_FP4: {os.getenv('VLLM_DS4_STRICT_NATIVE_FP4', '<unset>')}")
+    print(f"VLLM_DS4_ALLOW_DEEPGEMM_MXFP4_SM12X: {os.getenv('VLLM_DS4_ALLOW_DEEPGEMM_MXFP4_SM12X', '<unset>')}")
+    print(f"VLLM_DS4_ALLOW_DEEPGEMM_FP8_LINEAR_SM12X: {os.getenv('VLLM_DS4_ALLOW_DEEPGEMM_FP8_LINEAR_SM12X', '<unset>')}")
     print(f"VLLM_MXFP4_USE_MARLIN: {os.getenv('VLLM_MXFP4_USE_MARLIN', '<unset>')}")
     print(f"VLLM_USE_DEEP_GEMM: {os.getenv('VLLM_USE_DEEP_GEMM', '<unset>')}")
     print(f"VLLM_USE_DEEP_GEMM_E8M0: {os.getenv('VLLM_USE_DEEP_GEMM_E8M0', '<unset>')}")

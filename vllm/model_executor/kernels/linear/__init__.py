@@ -136,6 +136,7 @@ from vllm.model_executor.kernels.linear.scaled_mm.deep_gemm import (
     DeepGemmFp8BlockScaledMMKernel,
 )
 from vllm.model_executor.kernels.linear.scaled_mm.flashinfer import (
+    FlashInferFp8BlockScaledMMKernel,
     FlashInferFp8DeepGEMMDynamicBlockScaledKernel,
     FlashInferFP8ScaledMMLinearKernel,
 )
@@ -187,6 +188,7 @@ _LINEAR_BACKEND_KERNEL_MAP: dict[str, set[type]] = {
     },
     "flashinfer_cutlass": {
         FlashInferFP8ScaledMMLinearKernel,
+        FlashInferFp8BlockScaledMMKernel,
         FlashInferFp8DeepGEMMDynamicBlockScaledKernel,
         FlashInferCutlassMxfp8LinearKernel,
         FlashInferCutlassNvFp4LinearKernel,
@@ -295,6 +297,7 @@ _POSSIBLE_FP8_BLOCK_KERNELS: dict[
 ] = {
     PlatformEnum.CUDA: [
         FlashInferFp8DeepGEMMDynamicBlockScaledKernel,
+        FlashInferFp8BlockScaledMMKernel,
         DeepGemmFp8BlockScaledMMKernel,
         CutlassFp8BlockScaledMMKernel,
         MarlinFP8ScaledMMLinearKernel,
@@ -402,11 +405,52 @@ _KernelT = TypeVar("_KernelT", bound=ScaledMMLinearKernel | MMLinearKernel)
 _KernelConfigT = TypeVar("_KernelConfigT", bound=MMLinearLayerConfig)
 
 
+def _is_cuda_blackwell_family_120() -> bool:
+    return (
+        current_platform.is_cuda()
+        and current_platform.is_device_capability_family(120)
+    )
+
+
+def _deepgemm_fp8_linear_allowed_on_current_device() -> bool:
+    if not _is_cuda_blackwell_family_120():
+        return True
+    return envs.VLLM_DS4_ALLOW_DEEPGEMM_FP8_LINEAR_SM12X
+
+
+def _is_deepgemm_fp8_linear_kernel(kernel: type) -> bool:
+    return kernel in {
+        DeepGemmFp8BlockScaledMMKernel,
+        FlashInferFp8DeepGEMMDynamicBlockScaledKernel,
+    }
+
+
+def _reject_deepgemm_fp8_linear_on_sm12x(
+    kernel: type,
+) -> tuple[bool, str]:
+    if (
+        not _is_deepgemm_fp8_linear_kernel(kernel)
+        or _deepgemm_fp8_linear_allowed_on_current_device()
+    ):
+        return False, ""
+    return (
+        True,
+        f"{kernel.__name__} is disabled on CUDA Blackwell family-120 by "
+        "default because its DeepGEMM FP8 block-scaled linear path can fail "
+        "in csrc/apis/gemm.hpp:99. Use a non-DeepGEMM FP8 linear kernel, or "
+        "set VLLM_DS4_ALLOW_DEEPGEMM_FP8_LINEAR_SM12X=1 only after the "
+        "runtime DeepGEMM wheel proves SM12x fp8_gemm_nt support.",
+    )
+
+
 def is_supported_and_can_implement_kernel(
     kernel: type[_KernelT], config: _KernelConfigT, compute_capability: int | None
 ) -> tuple[bool, str]:
     if kernel.__name__ in envs.VLLM_DISABLED_KERNELS:
         return False, f" {kernel.__name__} is disabled by environment variable"
+    rejected, reason = _reject_deepgemm_fp8_linear_on_sm12x(kernel)
+    if rejected:
+        return False, reason
 
     if compute_capability is None:
         _cc = current_platform.get_device_capability()
@@ -1088,5 +1132,6 @@ __all__ = [
     "MarlinNvFp4LinearKernel",
     "_KernelT",
     "DeepGemmFp8BlockScaledMMKernel",
+    "FlashInferFp8BlockScaledMMKernel",
     "FlashInferFp8DeepGEMMDynamicBlockScaledKernel",
 ]

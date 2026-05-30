@@ -124,3 +124,13 @@ ds4_run_native_blackwell_preflight()
   echo "DS4 native Blackwell preflight: strict=$VLLM_DS4_STRICT_NATIVE_FP4 deep_gemm=$VLLM_USE_DEEP_GEMM e8m0=$VLLM_USE_DEEP_GEMM_E8M0" >&2
   "$RUNTIME_PYTHON" "$SCRIPT_DIR/ds4_native_blackwell_probe.py" --strict-dsv4
 }
+
+ds4_run_dsv4_native_preflight()
+{
+  local args=()
+  echo "DS4 DSV4 native package preflight: active_probe=${DS4_NATIVE_PREFLIGHT_ACTIVE:-0}" >&2
+  if [[ "${DS4_NATIVE_PREFLIGHT_ACTIVE:-0}" == "1" ]]; then
+    args+=(--active-kernel-probe)
+  fi
+  "$RUNTIME_PYTHON" "$SCRIPT_DIR/ds4_dsv4_native_preflight.py" "${args[@]}"
+}

@@ -16,11 +16,25 @@ if(DEEPGEMM_SRC_DIR)
     BUILD_COMMAND ""
   )
 else()
-  # This ref should be kept in sync with tools/install_deepgemm.sh
+  # These defaults intentionally remain the upstream DeepGEMM source.
+  # DS4/GB10 native builds must override them with the jasl SM12x fork:
+  #   DEEPGEMM_GIT_REPO=https://github.com/jasl/DeepGEMM.git
+  #   DEEPGEMM_GIT_REF=7a7a41a1
+  # Keep the upstream defaults in sync with tools/install_deepgemm.sh.
+  set(DEEPGEMM_GIT_REPO "https://github.com/deepseek-ai/DeepGEMM.git")
+  set(DEEPGEMM_GIT_REF "891d57b4db1071624b5c8fa0d1e51cb317fa709f")
+  if(DEFINED ENV{DEEPGEMM_GIT_REPO} AND NOT "$ENV{DEEPGEMM_GIT_REPO}" STREQUAL "")
+    set(DEEPGEMM_GIT_REPO "$ENV{DEEPGEMM_GIT_REPO}")
+  endif()
+  if(DEFINED ENV{DEEPGEMM_GIT_REF} AND NOT "$ENV{DEEPGEMM_GIT_REF}" STREQUAL "")
+    set(DEEPGEMM_GIT_REF "$ENV{DEEPGEMM_GIT_REF}")
+  endif()
+  message(STATUS "DeepGEMM git repository: ${DEEPGEMM_GIT_REPO}")
+  message(STATUS "DeepGEMM git reference: ${DEEPGEMM_GIT_REF}")
   FetchContent_Declare(
     deepgemm
-    GIT_REPOSITORY https://github.com/deepseek-ai/DeepGEMM.git
-    GIT_TAG 891d57b4db1071624b5c8fa0d1e51cb317fa709f
+    GIT_REPOSITORY ${DEEPGEMM_GIT_REPO}
+    GIT_TAG ${DEEPGEMM_GIT_REF}
     GIT_SUBMODULES "third-party/cutlass" "third-party/fmt"
     GIT_PROGRESS TRUE
     CONFIGURE_COMMAND ""
@@ -36,6 +50,16 @@ if(NOT deepgemm_POPULATED)
 endif()
 message(STATUS "DeepGEMM is available at ${deepgemm_SOURCE_DIR}")
 
+# DS4 / GB10: patch DeepGEMM's source-level SM12x layout dispatch before
+# vendoring/building its Python extension. Without this, SM121 can pass vLLM's
+# native backend gates, select DEEPGEMM_MXFP4, then crash in layout.hpp with
+# "Unknown SF transformation" during FP8 scale-factor post-processing.
+execute_process(
+  COMMAND "${Python_EXECUTABLE}"
+          "${CMAKE_SOURCE_DIR}/tools/ds4_patch_deepgemm_sm12x_layout.py"
+          "${deepgemm_SOURCE_DIR}"
+  COMMAND_ERROR_IS_FATAL ANY)
+
 # DeepGEMM requires CUDA 12.3+ for SM90, 12.9+ for SM100
 set(DEEPGEMM_SUPPORT_ARCHS)
 if(${CMAKE_CUDA_COMPILER_VERSION} VERSION_GREATER_EQUAL 12.3)
@@ -45,6 +69,12 @@ if(${CMAKE_CUDA_COMPILER_VERSION} VERSION_GREATER_EQUAL 12.9)
   list(APPEND DEEPGEMM_SUPPORT_ARCHS "10.0f")
 elseif(${CMAKE_CUDA_COMPILER_VERSION} VERSION_GREATER_EQUAL 12.8)
   list(APPEND DEEPGEMM_SUPPORT_ARCHS "10.0a")
+endif()
+if(${CMAKE_CUDA_COMPILER_VERSION} VERSION_GREATER_EQUAL 13.0)
+  # GB10 / consumer Blackwell reports SM12x. The default upstream DeepGEMM ref
+  # does not have full DS4 SM12x kernel coverage; use this with the jasl
+  # DeepGEMM fork pinned by the DS4 build script.
+  list(APPEND DEEPGEMM_SUPPORT_ARCHS "12.0a" "12.1a")
 endif()
 
 cuda_archs_loose_intersection(DEEPGEMM_ARCHS

@@ -110,6 +110,8 @@ if TYPE_CHECKING:
     VLLM_SKIP_P2P_CHECK: bool = False
     VLLM_DISABLED_KERNELS: list[str] = []
     VLLM_DS4_STRICT_NATIVE_FP4: bool = False
+    VLLM_DS4_ALLOW_DEEPGEMM_MXFP4_SM12X: bool = False
+    VLLM_DS4_ALLOW_DEEPGEMM_FP8_LINEAR_SM12X: bool = False
     VLLM_ENABLE_FLA_PACKED_RECURRENT_DECODE: bool = True
     VLLM_DISABLE_PYNCCL: bool = False
     VLLM_USE_OINK_OPS: bool = False
@@ -1080,6 +1082,25 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # emulation for native Blackwell FP4/MXFP4 deployments.
     "VLLM_DS4_STRICT_NATIVE_FP4": lambda: (
         os.environ.get("VLLM_DS4_STRICT_NATIVE_FP4", "0").strip().lower()
+        in ("1", "true")
+    ),
+    # DS4 / GB10: DeepGEMM_MXFP4 still has an SM12x FP8xFP4 GEMM
+    # coverage gap on the known jasl/DeepGEMM stack. Keep it out of
+    # Blackwell-family-120 production selection unless explicitly opted in.
+    "VLLM_DS4_ALLOW_DEEPGEMM_MXFP4_SM12X": lambda: (
+        os.environ.get("VLLM_DS4_ALLOW_DEEPGEMM_MXFP4_SM12X", "0")
+        .strip()
+        .lower()
+        in ("1", "true")
+    ),
+    # DS4 / GB10: the DeepGEMM FP8 block-scaled linear path currently
+    # reaches csrc/apis/gemm.hpp:99 on SM12x. Keep DeepGEMM-bearing
+    # FP8 linear kernels out of Blackwell-family-120 auto selection unless
+    # explicitly opted in.
+    "VLLM_DS4_ALLOW_DEEPGEMM_FP8_LINEAR_SM12X": lambda: (
+        os.environ.get("VLLM_DS4_ALLOW_DEEPGEMM_FP8_LINEAR_SM12X", "0")
+        .strip()
+        .lower()
         in ("1", "true")
     ),
     "VLLM_ENABLE_FLA_PACKED_RECURRENT_DECODE": lambda: bool(

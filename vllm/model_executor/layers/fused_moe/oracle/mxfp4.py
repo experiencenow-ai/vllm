@@ -271,12 +271,27 @@ def _is_cuda_blackwell() -> bool:
     return current_platform.is_cuda() and current_platform.is_device_capability_blackwell()
 
 
+def _is_cuda_blackwell_family_120() -> bool:
+    return (
+        current_platform.is_cuda()
+        and current_platform.is_device_capability_family(120)
+    )
+
+
+def _deepgemm_mxfp4_allowed_on_current_device() -> bool:
+    if not _is_cuda_blackwell_family_120():
+        return True
+    return envs.VLLM_DS4_ALLOW_DEEPGEMM_MXFP4_SM12X
+
+
 def _get_native_blackwell_mxfp4_backends() -> list[Mxfp4MoeBackend]:
-    return [
+    backends = [
         Mxfp4MoeBackend.FLASHINFER_TRTLLM_MXFP4_MXFP8,
-        Mxfp4MoeBackend.DEEPGEMM_MXFP4,
         Mxfp4MoeBackend.FLASHINFER_CUTLASS_MXFP4_MXFP8,
     ]
+    if _deepgemm_mxfp4_allowed_on_current_device():
+        backends.insert(1, Mxfp4MoeBackend.DEEPGEMM_MXFP4)
+    return backends
 
 
 def _is_native_blackwell_mxfp4_backend(backend: Mxfp4MoeBackend) -> bool:
@@ -293,17 +308,19 @@ def _get_priority_backends_for_gpt_oss() -> list[Mxfp4MoeBackend]:
     """Available backends in priority order, BF16-act variant before
     activation-quantized variant within each vendor family.
 
-    On CUDA Blackwell, MXFP4 auto-selection is native-only. This prevents the
-    generic GPT-OSS path from silently inheriting Marlin fallbacks on GB10.
+    On CUDA Blackwell, DS4 production must not silently select Marlin. Keep
+    the auto list native-only there; unsupported native backends must fail.
     """
     if _is_cuda_blackwell():
-        return [
+        backends = [
             Mxfp4MoeBackend.FLASHINFER_TRTLLM_MXFP4_BF16,
             Mxfp4MoeBackend.FLASHINFER_TRTLLM_MXFP4_MXFP8,
             Mxfp4MoeBackend.FLASHINFER_CUTLASS_MXFP4_BF16,
             Mxfp4MoeBackend.FLASHINFER_CUTLASS_MXFP4_MXFP8,
-            Mxfp4MoeBackend.DEEPGEMM_MXFP4,
         ]
+        if _deepgemm_mxfp4_allowed_on_current_device():
+            backends.append(Mxfp4MoeBackend.DEEPGEMM_MXFP4)
+        return backends
     _AVAILABLE_BACKENDS = [
         Mxfp4MoeBackend.FLASHINFER_TRTLLM_MXFP4_BF16,
         Mxfp4MoeBackend.FLASHINFER_TRTLLM_MXFP4_MXFP8,
@@ -406,15 +423,29 @@ def _raise_if_ds4_strict_native_mxfp4_rejects(
 ) -> None:
     if not envs.VLLM_DS4_STRICT_NATIVE_FP4 and not _is_cuda_blackwell():
         return
+    if (
+        backend == Mxfp4MoeBackend.DEEPGEMM_MXFP4
+        and not _deepgemm_mxfp4_allowed_on_current_device()
+    ):
+        detail = f" Last native-backend rejection: {reason}." if reason else ""
+        raise RuntimeError(
+            "DeepGEMM_MXFP4 is disabled on CUDA Blackwell family-120 by "
+            "default because this path can fail in DeepGEMM "
+            "csrc/apis/gemm.hpp:99 on FP8xFP4 GEMM. Use FlashInfer "
+            "TRTLLM/CUTLASS MXFP4/MXFP8, or set "
+            "VLLM_DS4_ALLOW_DEEPGEMM_MXFP4_SM12X=1 only after the runtime "
+            "DeepGEMM wheel proves SM12x fp8_fp4_gemm_nt support."
+            + detail
+        )
     if _is_native_blackwell_mxfp4_backend(backend):
         return
     detail = f" Last native-backend rejection: {reason}." if reason else ""
     raise RuntimeError(
         "Native Blackwell MXFP4 mode rejected "
         f"MXFP4 MoE backend {backend.value!r}. GB10/SM12x deployments "
-        "must use native Blackwell MXFP4/FP8 backends such as DeepGEMM "
-        "or FlashInfer/CUTLASS/TRTLLM; Marlin, CPU, ROCm/XPU, Triton "
-        "fallbacks, and emulation are not acceptable production paths."
+        "must use native Blackwell MXFP4/FP8 backends such as FlashInfer "
+        "TRTLLM/CUTLASS; Marlin, CPU, ROCm/XPU, Triton fallbacks, and "
+        "emulation are not acceptable production paths."
         + detail
     )
 
