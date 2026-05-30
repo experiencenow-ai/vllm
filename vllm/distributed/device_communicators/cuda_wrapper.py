@@ -6,6 +6,7 @@ convenient for use when we just need to call a few functions.
 """
 
 import ctypes
+import os
 from dataclasses import dataclass
 from typing import Any
 
@@ -102,9 +103,38 @@ class CudaRTLibrary:
     #  to the corresponding dictionary
     path_to_dict_mapping: dict[str, dict[str, Any]] = {}
 
+    @staticmethod
+    def _is_cudart_stub(so_file: str) -> bool:
+        filename = os.path.basename(so_file)
+        return "stub" in filename or "/stubs/" in so_file
+
+    @staticmethod
+    def _find_loaded_real_cudart() -> str | None:
+        found: list[str] = []
+        with open("/proc/self/maps") as f:
+            for line in f:
+                if "libcudart" not in line or "/" not in line:
+                    continue
+                path = line[line.index("/") :].strip()
+                filename = os.path.basename(path)
+                if not filename.rpartition(".so")[0].startswith("libcudart"):
+                    continue
+                if CudaRTLibrary._is_cudart_stub(path):
+                    continue
+                if path not in found:
+                    found.append(path)
+        return found[0] if found else None
+
     def __init__(self, so_file: str | None = None):
         if so_file is None:
-            so_file = find_loaded_library("libcudart")
+            so_file = envs.VLLM_CUDART_SO_PATH
+            if so_file is not None and self._is_cudart_stub(so_file):
+                raise RuntimeError(
+                    "VLLM_CUDART_SO_PATH points at a CUDA runtime stub "
+                    f"({so_file}); set it to the real libcudart.so path."
+                )
+            if so_file is None:
+                so_file = self._find_loaded_real_cudart()
             if so_file is None:
                 # libcudart is not loaded in the current process, try hip
                 so_file = find_loaded_library("libamdhip64")
@@ -116,6 +146,11 @@ class CudaRTLibrary:
             assert so_file is not None, (
                 "libcudart is not loaded in the current process, "
                 "try setting VLLM_CUDART_SO_PATH"
+            )
+        elif self._is_cudart_stub(so_file):
+            raise RuntimeError(
+                f"CUDART runtime path resolved to a CUDA stub ({so_file}); "
+                "use the real libcudart.so instead."
             )
         if so_file not in CudaRTLibrary.path_to_library_cache:
             lib = ctypes.CDLL(so_file)

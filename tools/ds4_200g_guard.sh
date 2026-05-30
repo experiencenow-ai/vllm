@@ -225,6 +225,64 @@ ds4_find_libcuda_path()
   fi
 }
 
+ds4_find_libcudart_path()
+{
+  local dir candidate
+  local search_dirs=()
+  if [[ -n "${VLLM_CUDART_SO_PATH:-}" ]]; then
+    [[ -e "$VLLM_CUDART_SO_PATH" ]] && echo "$VLLM_CUDART_SO_PATH" && return 0
+  fi
+  if [[ -n "${LD_LIBRARY_PATH:-}" ]]; then
+    local ld_dirs=()
+    IFS=':' read -r -a ld_dirs <<< "$LD_LIBRARY_PATH"
+    search_dirs+=("${ld_dirs[@]}")
+  fi
+  for dir in \
+    "$("$RUNTIME_PYTHON" - <<'PY' 2>/dev/null
+import os
+try:
+    import torch
+    root = os.path.abspath(os.path.join(os.path.dirname(torch.__file__), "..", "nvidia"))
+    for name in ("cu13", "cu12"):
+        path = os.path.join(root, name, "lib")
+        if os.path.isdir(path):
+            print(path)
+except Exception:
+    pass
+PY
+    )" \
+    "${CUDA_HOME:-}/targets/sbsa-linux/lib" \
+    "${CUDA_HOME:-}/targets/x86_64-linux/lib" \
+    "${CUDA_HOME:-}/lib64" \
+    "${CUDA_PATH:-}/targets/sbsa-linux/lib" \
+    "${CUDA_PATH:-}/targets/x86_64-linux/lib" \
+    "${CUDA_PATH:-}/lib64" \
+    /usr/local/cuda/targets/sbsa-linux/lib \
+    /usr/local/cuda/targets/x86_64-linux/lib \
+    /usr/local/cuda/lib64 \
+    /usr/lib/aarch64-linux-gnu \
+    /usr/lib/x86_64-linux-gnu \
+    /usr/lib64 \
+    /usr/lib \
+    /lib/aarch64-linux-gnu \
+    /lib/x86_64-linux-gnu
+  do
+    [[ -n "$dir" ]] && search_dirs+=("$dir")
+  done
+  for dir in "${search_dirs[@]}"; do
+    [[ -n "$dir" && -d "$dir" ]] || continue
+    for candidate in "$dir/libcudart.so" "$dir"/libcudart.so.*; do
+      [[ -e "$candidate" ]] || continue
+      [[ "$candidate" == *"/stubs/"* || "$(basename "$candidate")" == *stub* ]] && continue
+      echo "$candidate"
+      return 0
+    done
+  done
+  if command -v ldconfig >/dev/null 2>&1; then
+    ldconfig -p 2>/dev/null | awk '/libcudart\.so/ && $NF !~ /\/stubs\// && $NF !~ /stub/ {print $NF; exit}'
+  fi
+}
+
 ds4_prepare_python_include_environment()
 {
   local py_tag include_dir
@@ -279,7 +337,7 @@ ds4_prepare_triton_jit_environment()
     default_work_root="/tmp/ds4_triton/$service_name"
   fi
   local work_root="${DS4_TRITON_WORK_ROOT:-$default_work_root}"
-  local cc cxx libcuda_path libcuda_dir symlink_dir
+  local cc cxx libcuda_path libcuda_dir libcudart_path libcudart_dir symlink_dir
 
   cc="$(ds4_find_executable "${CC:-${DS4_CC:-}}" gcc cc || true)"
   [[ -n "$cc" ]] || ds4_200g_die "Triton JIT requires gcc/cc; set CC or DS4_CC"
@@ -314,6 +372,15 @@ ds4_prepare_triton_jit_environment()
   ds4_prepend_env_path LD_LIBRARY_PATH "$libcuda_dir"
   ds4_prepend_env_path LIBRARY_PATH "$libcuda_dir"
 
+  libcudart_path="$(ds4_find_libcudart_path || true)"
+  [[ -n "$libcudart_path" ]] || ds4_200g_die "DS4 native runtime requires the real libcudart.so; CUDA stubs are not acceptable"
+  if [[ "$libcudart_path" == *"/stubs/"* || "$(basename "$libcudart_path")" == *stub* ]]; then
+    ds4_200g_die "resolved libcudart to CUDA stub '$libcudart_path'; set VLLM_CUDART_SO_PATH to the real libcudart.so"
+  fi
+  libcudart_dir="$(dirname "$libcudart_path")"
+  ds4_prepend_env_path LD_LIBRARY_PATH "$libcudart_dir"
+  export VLLM_CUDART_SO_PATH="$libcudart_path"
+
   if [[ -e "$libcuda_dir/libcuda.so" ]]; then
     export TRITON_LIBCUDA_PATH="${TRITON_LIBCUDA_PATH:-$libcuda_dir}"
   else
@@ -324,7 +391,7 @@ ds4_prepare_triton_jit_environment()
     ds4_prepend_env_path LIBRARY_PATH "$symlink_dir"
   fi
 
-  echo "DS4 Triton JIT env: service=$service_name CC=$CC CXX=$CXX TRITON_CACHE_DIR=$TRITON_CACHE_DIR TRITON_LIBCUDA_PATH=$TRITON_LIBCUDA_PATH TMPDIR=$TMPDIR DS4_PYTHON_INCLUDE_DIRS=${DS4_PYTHON_INCLUDE_DIRS:-<unset>}" >&2
+  echo "DS4 Triton JIT env: service=$service_name CC=$CC CXX=$CXX TRITON_CACHE_DIR=$TRITON_CACHE_DIR TRITON_LIBCUDA_PATH=$TRITON_LIBCUDA_PATH VLLM_CUDART_SO_PATH=$VLLM_CUDART_SO_PATH TMPDIR=$TMPDIR DS4_PYTHON_INCLUDE_DIRS=${DS4_PYTHON_INCLUDE_DIRS:-<unset>}" >&2
 }
 
 ds4_run_triton_jit_preflight()
