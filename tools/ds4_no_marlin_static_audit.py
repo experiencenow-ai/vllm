@@ -14,6 +14,7 @@ import sys
 root = Path(__file__).resolve().parents[1]
 mxfp4 = (root / "vllm/model_executor/layers/fused_moe/oracle/mxfp4.py").read_text()
 linear = (root / "vllm/model_executor/kernels/linear/__init__.py").read_text()
+cutlass = (root / "vllm/model_executor/kernels/linear/scaled_mm/cutlass.py").read_text()
 modelopt = (root / "vllm/model_executor/layers/quantization/modelopt.py").read_text()
 dsv4_tp2 = (root / "tools/ds4_launch_dsv4_flash_tp2_native_benchmark.sh").read_text()
 dsv4_pp8 = (root / "tools/ds4_launch_dsv4_flash_pp8.sh").read_text()
@@ -74,6 +75,12 @@ checks = [
     (
         "explicit MXFP4 Marlin is forbidden on Blackwell",
         "VLLM_MXFP4_USE_MARLIN=1 is forbidden on CUDA Blackwell" in mxfp4,
+    ),
+    (
+        "Cutlass FP8 block-scale path decodes E8M0 scales before stable ABI op",
+        "def process_weights_after_loading(self, layer: torch.nn.Module)" in cutlass
+        and "weight_scale.dtype != torch.float8_e8m0fnu" in cutlass
+        and "_upcast_e8m0_to_fp32(weight_scale).contiguous()" in cutlass,
     ),
     (
         "DSV4 launchers keep compilation config override as valid JSON",

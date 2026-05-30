@@ -25,6 +25,29 @@ class FixFunctionalizationPass(VllmInductorPass):
     To add new nodes to defunctionalize, add to the if-elif chain in __call__.
     """
 
+    @staticmethod
+    def _is_vllm_op(at_target: object, op_name: str) -> bool:
+        if not hasattr(torch.ops, "vllm"):
+            return False
+        if not hasattr(torch.ops.vllm, op_name):
+            return False
+        return at_target == getattr(torch.ops.vllm, op_name).default
+
+    @staticmethod
+    def _is_c_op(at_target: object, op_name: str) -> bool:
+        if not hasattr(torch.ops, "_C"):
+            return False
+        if not hasattr(torch.ops._C, op_name):
+            return False
+        return at_target == getattr(torch.ops._C, op_name).default
+
+    @staticmethod
+    def _format_auto_functionalized_target(node: torch.fx.Node) -> str:
+        if len(node.args) == 0:
+            return repr(node.target)
+        target = node.args[0]
+        return getattr(target, "__name__", str(target))
+
     @VllmInductorPass.time_and_log
     def __call__(self, graph: torch.fx.Graph) -> None:
         # XPU does not support auto-functionalization yet.
@@ -220,6 +243,36 @@ class FixFunctionalizationPass(VllmInductorPass):
                 self.insert_defunctionalized(graph, node)
                 self._remove(node)
 
+            elif self._is_vllm_op(at_target, "deepseek_v4_attention"):
+                mutated_args = {1: "out"}
+                self.defunctionalize(graph, node, mutated_args=mutated_args)
+            elif self._is_vllm_op(at_target, "deepseek_v4_fp8_einsum"):
+                mutated_args = {1: "out"}
+                self.defunctionalize(graph, node, mutated_args=mutated_args)
+            elif self._is_vllm_op(at_target, "deepseek_v4_mega_moe_experts"):
+                mutated_args = {1: "out"}
+                self.defunctionalize(graph, node, mutated_args=mutated_args)
+            elif self._is_vllm_op(at_target, "unified_attention_with_output"):
+                mutated_args = {
+                    1: "output",
+                    2: "output_block_scale",
+                }
+                self.defunctionalize(graph, node, mutated_args=mutated_args)
+            elif self._is_vllm_op(at_target, "unified_mla_attention_with_output"):
+                mutated_args = {
+                    1: "output",
+                    2: "output_block_scale",
+                }
+                self.defunctionalize(graph, node, mutated_args=mutated_args)
+            elif self._is_c_op(
+                at_target, "fused_deepseek_v4_qnorm_rope_kv_rope_quant_insert"
+            ):
+                mutated_args = {
+                    1: "q",
+                    2: "k_cache",
+                }
+                self.defunctionalize(graph, node, mutated_args=mutated_args)
+
             # only used for test_functionalization::TestFunctionWithMutatedArgsAndReturn
             elif (
                 hasattr(torch.ops.vllm, "function_with_mutated_args_and_return")
@@ -239,6 +292,19 @@ class FixFunctionalizationPass(VllmInductorPass):
         count_removed = len(self.nodes_to_remove)
         for node in self.nodes_to_remove:
             graph.erase_node(node)
+
+        remaining_targets = [
+            self._format_auto_functionalized_target(node)
+            for node in graph.nodes
+            if is_func(node, auto_functionalized)
+        ]
+        if remaining_targets:
+            unique_targets = sorted(set(remaining_targets))
+            logger.warning(
+                "Remaining auto-functionalized nodes after vLLM "
+                "defunctionalization pass: %s",
+                unique_targets,
+            )
 
         logger.debug(
             "De-functionalized %s nodes, removed %s nodes", count, count_removed

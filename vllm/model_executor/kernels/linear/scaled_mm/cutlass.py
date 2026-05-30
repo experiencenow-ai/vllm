@@ -278,6 +278,34 @@ class CutlassFp8BlockScaledMMKernel(Fp8BlockScaledMMLinearKernel):
         )
         self.is_hopper = current_platform.is_device_capability(90)
 
+    def process_weights_after_loading(self, layer: torch.nn.Module) -> None:
+        super().process_weights_after_loading(layer)
+
+        params = self._get_layer_params(layer)
+        weight_scale = (
+            params.weight_scale
+            if params.weight_scale_inv is None
+            else params.weight_scale_inv
+        )
+        if weight_scale is None or weight_scale.dtype != torch.float8_e8m0fnu:
+            return
+
+        scale_attr_name = (
+            params.WEIGHT_SCALE
+            if params.weight_scale_inv is None
+            else params.WEIGHT_SCALE_INV
+        )
+        from vllm.model_executor.layers.quantization.utils.fp8_utils import (
+            _upcast_e8m0_to_fp32,
+        )
+
+        decoded_weight_scale = _upcast_e8m0_to_fp32(weight_scale).contiguous()
+        replace_parameter(
+            layer,
+            scale_attr_name,
+            torch.nn.Parameter(decoded_weight_scale.data, requires_grad=False),
+        )
+
     @classmethod
     def is_supported(cls, compute_capability=None):
         if not CUTLASS_BLOCK_FP8_SUPPORTED:
