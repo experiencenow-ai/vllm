@@ -32,6 +32,7 @@ mla_indexer = (root / "vllm/v1/attention/backends/mla/indexer.py").read_text()
 dsv4_tp2 = (root / "tools/ds4_launch_dsv4_flash_tp2_native_benchmark.sh").read_text()
 dsv4_pp8 = (root / "tools/ds4_launch_dsv4_flash_pp8.sh").read_text()
 qwen_pp8 = (root / "tools/ds4_launch_qwen27_pp8.sh").read_text()
+qwen_nvfp4_pp8 = (root / "tools/ds4_launch_qwen27_nvfp4_pp8.sh").read_text()
 guard = (root / "tools/ds4_200g_guard.sh").read_text()
 triton_preflight = (root / "tools/ds4_triton_jit_preflight.py").read_text()
 
@@ -172,6 +173,36 @@ checks = [
         "Qwen launcher inherits Triton JIT environment guard",
         "ds4_prepare_triton_jit_environment" in qwen_pp8
         and "ds4_run_triton_jit_preflight" in qwen_pp8,
+    ),
+    (
+        "Qwen BF16 launcher is N-way and stage-local for LMCache",
+        "--pipeline-parallel-size \"$NNODES\"" in qwen_pp8
+        and "--distributed-executor-backend mp" in qwen_pp8
+        and "QWEN27_PP_LAYER_PARTITION must sum to 64 Qwen decoder layers" in qwen_pp8
+        and "qwen27_bf16_pp${NNODES}/${DS4_NODE_ID}" in qwen_pp8,
+    ),
+    (
+        "Qwen launchers hardfail without 200G/NCCL preflight",
+        all(
+            "ds4_require_200g_fabric" in script
+            and "ds4_run_nccl_preflight \"$NNODES\"" in script
+            for script in (qwen_pp8, qwen_nvfp4_pp8)
+        ),
+    ),
+    (
+        "Qwen NVFP4 cache-primary launcher uses ModelOpt FP4 without MTP by default",
+        "--quantization modelopt" in qwen_nvfp4_pp8
+        and "--linear-backend \"${QWEN27_LINEAR_BACKEND:-flashinfer-cutlass}\"" in qwen_nvfp4_pp8
+        and "--kv-cache-dtype \"${QWEN27_KV_CACHE_DTYPE:-fp8}\"" in qwen_nvfp4_pp8
+        and "QWEN27_NVFP4_ENABLE_MTP_EXPERIMENTAL" in qwen_nvfp4_pp8
+        and "SPEC_ARGS=()" in qwen_nvfp4_pp8,
+    ),
+    (
+        "Qwen NVFP4 launcher uses native LMCache HMA with stage-local roots",
+        "LMCacheConnectorV1" in qwen_nvfp4_pp8
+        and '"use_native":true' in qwen_nvfp4_pp8
+        and '"lmcache_kv_cache_group_id":"auto"' in qwen_nvfp4_pp8
+        and "qwen27_nvfp4_pp${PP_SIZE}/${DS4_NODE_ID}" in qwen_nvfp4_pp8,
     ),
     (
         "Triton JIT preflight checks gcc, Python.h, libcuda, and active launch",
