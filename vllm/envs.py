@@ -116,6 +116,9 @@ if TYPE_CHECKING:
     VLLM_ENABLE_FLA_PACKED_RECURRENT_DECODE: bool = True
     VLLM_QWEN_GDN_PROFILE_WARMUP: bool = True
     VLLM_DS4_PROFILE_LAYER_TRACE: bool = False
+    VLLM_DS4_PROFILE_RUN_MAX_TOKENS: int | None = None
+    VLLM_DS4_PROFILE_WATCHDOG_SECONDS: int = 0
+    VLLM_DS4_PROFILE_ABORT_SECONDS: int = 0
     VLLM_DISABLE_PYNCCL: bool = False
     VLLM_USE_OINK_OPS: bool = False
     VLLM_ROCM_USE_AITER: bool = False
@@ -1130,6 +1133,23 @@ environment_variables: dict[str, Callable[[], Any]] = {
     "VLLM_DS4_PROFILE_LAYER_TRACE": lambda: (
         os.environ.get("VLLM_DS4_PROFILE_LAYER_TRACE", "0").strip().lower()
         in ("1", "true", "yes", "on")
+    ),
+    # DS4 PP bring-up can bound the profile dummy-run token count separately
+    # from the runtime scheduler budget. This is intentionally profile-only:
+    # max_num_batched_tokens still controls serving.
+    "VLLM_DS4_PROFILE_RUN_MAX_TOKENS": lambda: (
+        None
+        if os.environ.get("VLLM_DS4_PROFILE_RUN_MAX_TOKENS", "").strip()
+        in ("", "0", "none", "None", "NONE", "auto", "AUTO")
+        else int(os.environ["VLLM_DS4_PROFILE_RUN_MAX_TOKENS"])
+    ),
+    # Optional watchdogs for profile_run stalls. The dump watchdog emits Python
+    # stack traces; the abort watchdog fails closed instead of hanging forever.
+    "VLLM_DS4_PROFILE_WATCHDOG_SECONDS": lambda: int(
+        os.environ.get("VLLM_DS4_PROFILE_WATCHDOG_SECONDS", "0")
+    ),
+    "VLLM_DS4_PROFILE_ABORT_SECONDS": lambda: int(
+        os.environ.get("VLLM_DS4_PROFILE_ABORT_SECONDS", "0")
     ),
     # Disable pynccl (using torch.distributed instead)
     "VLLM_DISABLE_PYNCCL": lambda: (

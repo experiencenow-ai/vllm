@@ -2,8 +2,10 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 """A GPU worker class."""
 
+import faulthandler
 import gc
 import os
+import threading
 from collections.abc import Callable
 from contextlib import AbstractContextManager, contextmanager, nullcontext
 from datetime import timedelta
@@ -77,6 +79,49 @@ logger = init_logger(__name__)
 
 def ds4_profile_debug_enabled() -> bool:
     return os.environ.get("VLLM_DS4_PROFILE_DEBUG", "").lower() in ("1", "true", "yes")
+
+
+@contextmanager
+def ds4_profile_watchdog_context(label: str):
+    dump_seconds = envs.VLLM_DS4_PROFILE_WATCHDOG_SECONDS
+    abort_seconds = envs.VLLM_DS4_PROFILE_ABORT_SECONDS
+    abort_timer: threading.Timer | None = None
+
+    if dump_seconds > 0:
+        logger.info(
+            "DS4 profile watchdog enabled for %s: dumping stacks every %d seconds",
+            label,
+            dump_seconds,
+        )
+        faulthandler.dump_traceback_later(dump_seconds, repeat=True)
+
+    if abort_seconds > 0:
+        logger.info(
+            "DS4 profile abort watchdog enabled for %s: aborting after %d seconds",
+            label,
+            abort_seconds,
+        )
+
+        def abort_profile_run() -> None:
+            logger.error(
+                "DS4 profile abort watchdog fired for %s after %d seconds",
+                label,
+                abort_seconds,
+            )
+            faulthandler.dump_traceback()
+            os._exit(124)
+
+        abort_timer = threading.Timer(abort_seconds, abort_profile_run)
+        abort_timer.daemon = True
+        abort_timer.start()
+
+    try:
+        yield
+    finally:
+        if abort_timer is not None:
+            abort_timer.cancel()
+        if dump_seconds > 0:
+            faulthandler.cancel_dump_traceback_later()
 
 
 if TYPE_CHECKING:
@@ -391,9 +436,10 @@ class Worker(WorkerBase):
             by adjusting the `gpu_memory_utilization` parameter.
         """
         if kv_cache_memory_bytes := self.cache_config.kv_cache_memory_bytes:
-            # still need a profile run which compiles the model for
-            # max_num_batched_tokens
-            self.model_runner.profile_run()
+            # still need a profile run which compiles the model for the bounded
+            # DS4 profile token shape.
+            with ds4_profile_watchdog_context("explicit-kv-cache profile_run"):
+                self.model_runner.profile_run()
 
             msg = (
                 f"Initial free memory {format_gib(self.init_snapshot.free_memory)} "
@@ -418,7 +464,8 @@ class Worker(WorkerBase):
         ) as profile_result:
             if ds4_profile_debug_enabled():
                 logger.info("DS4 profile trace: starting memory profile_run")
-            self.model_runner.profile_run()
+            with ds4_profile_watchdog_context("memory profile_run"):
+                self.model_runner.profile_run()
             if ds4_profile_debug_enabled():
                 logger.info("DS4 profile trace: finished memory profile_run")
 
