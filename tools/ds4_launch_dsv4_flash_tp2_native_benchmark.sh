@@ -54,6 +54,7 @@ export NCCL_DEBUG_SUBSYS="${NCCL_DEBUG_SUBSYS:-INIT,NET}"
 export VLLM_ALLOW_LONG_MAX_MODEL_LEN="${VLLM_ALLOW_LONG_MAX_MODEL_LEN:-1}"
 export DS4_NATIVE_PREFLIGHT_ACTIVE="${DS4_NATIVE_PREFLIGHT_ACTIVE:-1}"
 ds4_prepare_triton_jit_environment "dsv4-flash-tp2-native"
+ds4_prepare_flashinfer_jit_environment
 ds4_require_200g_fabric
 ds4_run_nccl_preflight 2
 ds4_run_dsv4_native_preflight

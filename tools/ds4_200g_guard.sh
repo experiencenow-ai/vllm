@@ -398,6 +398,17 @@ ds4_prepare_triton_jit_environment()
   echo "DS4 Triton JIT env: service=$service_name CC=$CC CXX=$CXX TRITON_CACHE_DIR=$TRITON_CACHE_DIR TRITON_LIBCUDA_PATH=$TRITON_LIBCUDA_PATH VLLM_CUDART_SO_PATH=$VLLM_CUDART_SO_PATH TMPDIR=$TMPDIR DS4_PYTHON_INCLUDE_DIRS=${DS4_PYTHON_INCLUDE_DIRS:-<unset>}" >&2
 }
 
+ds4_prepare_flashinfer_jit_environment()
+{
+  local max_jobs="${DS4_FLASHINFER_JIT_MAX_JOBS:-1}"
+  [[ "$max_jobs" =~ ^[1-9][0-9]*$ ]] || ds4_200g_die "DS4_FLASHINFER_JIT_MAX_JOBS must be a positive integer, got '$max_jobs'"
+  if [[ -n "${MAX_JOBS:-}" && ! "$MAX_JOBS" =~ ^[1-9][0-9]*$ ]]; then
+    ds4_200g_die "MAX_JOBS must be a positive integer for FlashInfer runtime JIT, got '$MAX_JOBS'"
+  fi
+  export MAX_JOBS="${MAX_JOBS:-$max_jobs}"
+  echo "DS4 FlashInfer JIT guard: MAX_JOBS=$MAX_JOBS DS4_FLASHINFER_JIT_MAX_JOBS=$max_jobs" >&2
+}
+
 ds4_run_triton_jit_preflight()
 {
   local args=()

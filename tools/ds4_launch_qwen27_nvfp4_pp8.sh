@@ -102,6 +102,7 @@ case "$QWEN27_ATTENTION_BACKEND" in
 esac
 
 ds4_prepare_triton_jit_environment "qwen27-nvfp4-pp${PP_SIZE}"
+ds4_prepare_flashinfer_jit_environment
 ds4_require_200g_fabric
 ds4_run_nccl_preflight "$NNODES"
 if [[ "${DS4_QWEN_TRITON_JIT_PREFLIGHT:-1}" == "1" ]]; then

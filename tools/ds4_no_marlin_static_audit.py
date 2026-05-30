@@ -236,6 +236,16 @@ checks = [
         ),
     ),
     (
+        "Launchers bound FlashInfer runtime JIT parallelism during bringup",
+        "ds4_prepare_flashinfer_jit_environment()" in guard
+        and 'DS4_FLASHINFER_JIT_MAX_JOBS:-1' in guard
+        and "export MAX_JOBS=\"${MAX_JOBS:-$max_jobs}\"" in guard
+        and all(
+            "ds4_prepare_flashinfer_jit_environment" in script
+            for script in (dsv4_tp2, dsv4_pp8, qwen_pp8, qwen_nvfp4_pp8)
+        ),
+    ),
+    (
         "DSV4 launchers can disable MTP for memory bringup",
         all(
             "DSV4_DISABLE_MTP" in script

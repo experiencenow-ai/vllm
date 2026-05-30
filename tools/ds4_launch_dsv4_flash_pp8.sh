@@ -53,6 +53,7 @@ export NCCL_DEBUG="${NCCL_DEBUG:-INFO}"
 export NCCL_DEBUG_SUBSYS="${NCCL_DEBUG_SUBSYS:-INIT,NET}"
 export DS4_NATIVE_PREFLIGHT_ACTIVE="${DS4_NATIVE_PREFLIGHT_ACTIVE:-1}"
 ds4_prepare_triton_jit_environment "dsv4-flash-pp${NNODES}"
+ds4_prepare_flashinfer_jit_environment
 ds4_require_200g_fabric
 ds4_run_nccl_preflight "$NNODES"
 ds4_run_dsv4_native_preflight

@@ -97,6 +97,7 @@ QWEN27_MAX_NUM_BATCHED_TOKENS=32768
 QWEN27_GPU_MEMORY_UTILIZATION=0.40
 LMCACHE_MAX_LOCAL_CPU_SIZE=4.0
 QWEN27_ENABLE_FLASHINFER_AUTOTUNE=0
+DS4_FLASHINFER_JIT_MAX_JOBS=1
 QWEN27_ASYNC_SCHEDULING=1
 PYTHONHASHSEED=0
 ```
@@ -111,7 +112,10 @@ available during FlashInfer FP4 autotune. Retesting at 8 GiB local CPU and 0.50
 GPU utilization still let a later autotune pass drive a rank near zero available
 memory. The default host cache is therefore capped at 4 GiB, NVFP4 defaults GPU
 utilization to 0.40, and FlashInfer autotune is opt-in via
-`QWEN27_ENABLE_FLASHINFER_AUTOTUNE=1`. The same failure path reproduced with
+`QWEN27_ENABLE_FLASHINFER_AUTOTUNE=1`. FlashInfer runtime CUTLASS JIT can still
+spawn heavy `cicc` compiles even with autotune disabled, so the DS4 launchers
+default `MAX_JOBS` to `DS4_FLASHINFER_JIT_MAX_JOBS=1`. Raise it only in a
+dedicated warmup/tuning job on idle nodes. The same failure path reproduced with
 async disabled, so async was not the isolated trigger and the Qwen launcher
 enables it by default. Set
 `QWEN27_ASYNC_SCHEDULING=0` only as a rollback or bisection switch.
@@ -134,28 +138,31 @@ export VLLM_SIMPLE_KV_OFFLOAD_PERSIST_ROOT=/home/$USER/ds4_hma_store/dsv4_flash_
 The launcher preserves the existing DSV4 Flash recipe:
 
 ```text
-DSV4_MAX_NUM_SEQS=12
-DSV4_MAX_NUM_BATCHED_TOKENS=32768
-DSV4_GPU_MEMORY_UTILIZATION=0.40
+DSV4_MAX_NUM_SEQS=4
+DSV4_MAX_NUM_BATCHED_TOKENS=8192
+DSV4_GPU_MEMORY_UTILIZATION=0.70
+DS4_ENABLE_FLASHINFER_AUTOTUNE=0
+DS4_FLASHINFER_JIT_MAX_JOBS=1
+DSV4_DISABLE_MTP=1 for first memory bringup, then unset after health is proven
 --tensor-parallel-size 1
 --pipeline-parallel-size 8
 --nnodes 8
 --block-size 256
 --kv-cache-dtype fp8
---kv-offloading-size 8
---kv-offloading-backend native
---speculative-config '{"method":"deepseek_mtp","num_speculative_tokens":2}'
---no-disable-hybrid-kv-cache-manager
---enforce-eager
-VLLM_USE_SIMPLE_KV_OFFLOAD=1
-VLLM_SIMPLE_KV_OFFLOAD_PERSIST_STRICT=1
+native MXFP4/FP8 only: FlashInfer CUTLASS or explicitly validated TRTLLM
+no Marlin, no DeepGEMM MXFP4 on SM12x unless explicitly opted in
+CUDA graph compilation enabled
 ```
 
 The DSV4 script leaves `VLLM_PP_LAYER_PARTITION` unset by default so vLLM uses
 its normal non-even split for the model's layer count. Set
 `DSV4_FLASH_PP_LAYER_PARTITION` only after profiling stage time. If the DSV4
 stage needs more GPU memory, raise `DSV4_GPU_MEMORY_UTILIZATION` together with a
-matching reduction in Qwen admission or KV budget.
+matching reduction in Qwen admission or KV budget. Do not use TP2 health as the
+memory target for production residency; it is a native-kernel reproduction lane.
+On Spark0/Spark1 TP2 reached the correct native backend with autotune disabled
+and MTP disabled, but runtime FlashInfer CUTLASS JIT fanout drove available host
+memory below the safety floor before `/health` came up.
 
 ## Admission control
 
