@@ -172,7 +172,7 @@ a degraded benchmark.
 Default latency profile:
 
 ```text
-max_model_len=200000
+max_model_len=65000
 max_num_seqs=2
 max_num_batched_tokens=4096
 ```

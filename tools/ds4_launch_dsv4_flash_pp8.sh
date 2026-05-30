@@ -16,6 +16,10 @@ DEFAULT_COMPILATION_CONFIG='{"cudagraph_mode":"FULL_AND_PIECEWISE","custom_ops":
 DSV4_LINEAR_BACKEND="${DSV4_LINEAR_BACKEND:-auto}"
 DSV4_MOE_BACKEND="${DSV4_MOE_BACKEND:-auto}"
 DSV4_COMPILATION_CONFIG="${DSV4_COMPILATION_CONFIG:-$DEFAULT_COMPILATION_CONFIG}"
+FLASHINFER_AUTOTUNE_ARGS=(--no-enable-flashinfer-autotune)
+if [[ "${DS4_ENABLE_FLASHINFER_AUTOTUNE:-0}" =~ ^(1|true|TRUE|yes|YES|on|ON)$ ]]; then
+  FLASHINFER_AUTOTUNE_ARGS=(--enable-flashinfer-autotune)
+fi
 
 export PYTHONPATH="$SOURCE_ROOT${PYTHONPATH:+:$PYTHONPATH}"
 export PATH="$(dirname "$RUNTIME_PYTHON"):$PATH"
@@ -73,10 +77,11 @@ COMMON_ARGS=(
   --master-addr "$HEAD_ADDR"
   --master-port "$MASTER_PORT"
   --distributed-executor-backend mp
-  --max-model-len "${DSV4_MAX_MODEL_LEN:-262144}"
+  --max-model-len "${DSV4_MAX_MODEL_LEN:-65536}"
   --max-num-seqs "${DSV4_MAX_NUM_SEQS:-8}"
   --max-num-batched-tokens "${DSV4_MAX_NUM_BATCHED_TOKENS:-32768}"
   --gpu-memory-utilization "${DSV4_GPU_MEMORY_UTILIZATION:-0.82}"
+  "${FLASHINFER_AUTOTUNE_ARGS[@]}"
   --block-size 256
   --kv-cache-dtype fp8
   --enable-prefix-caching

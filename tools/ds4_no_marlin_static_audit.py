@@ -227,6 +227,15 @@ checks = [
         and "QWEN27_ENABLE_FLASHINFER_AUTOTUNE=0" in dual_pipeline_doc,
     ),
     (
+        "DSV4 launchers disable FlashInfer autotune unless explicitly requested",
+        all(
+            "FLASHINFER_AUTOTUNE_ARGS=(--no-enable-flashinfer-autotune)" in script
+            and "DS4_ENABLE_FLASHINFER_AUTOTUNE" in script
+            and '"${FLASHINFER_AUTOTUNE_ARGS[@]}"' in script
+            for script in (dsv4_tp2, dsv4_pp8)
+        ),
+    ),
+    (
         "LMCache lookup client/server receive LMCache metadata, not VllmConfig",
         "def _build_lmcache_metadata_from_vllm_config(" in lmcache_adapter
         and "LookupClientFactory.create_lookup_client(\n                config, lookup_metadata\n            )" in lmcache_adapter
