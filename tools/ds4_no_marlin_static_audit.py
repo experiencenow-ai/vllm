@@ -148,6 +148,12 @@ checks = [
         and "used_direct_topk = fp8_fp4_paged_mqa_topk_indices(" in sparse_indexer,
     ),
     (
+        "DeepSeek V4 CUTLASS MXFP4 converter handles DSV4 weight layout",
+        "DSV4 loading gives contiguous [w1/gate, w3/up]" in mxfp4
+        and "Mxfp4MoeBackend.FLASHINFER_CUTLASS_MXFP4_MXFP8" in mxfp4
+        and "block_scale_interleave(" in mxfp4,
+    ),
+    (
         "MLA indexer avoids DeepGEMM scheduler metadata on SM12x",
         "def sparse_indexer_max_logits_bytes(" in mla_indexer
         and "def _uses_deep_gemm_scheduler_metadata(" in mla_indexer
