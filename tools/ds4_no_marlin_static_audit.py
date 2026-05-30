@@ -217,6 +217,13 @@ checks = [
         and "DEFAULT_LMCACHE_ROOT=\"$HOME/ds4_lmcache/qwen27_nvfp4_pp${PP_SIZE}/${DS4_NODE_ID}\"" in qwen_nvfp4_pp8,
     ),
     (
+        "Qwen launchers keep conservative UMA defaults",
+        "max_local_cpu_size: ${LMCACHE_MAX_LOCAL_CPU_SIZE:-8.0}" in qwen_pp8
+        and "max_local_cpu_size: ${LMCACHE_MAX_LOCAL_CPU_SIZE:-8.0}" in qwen_nvfp4_pp8
+        and '--gpu-memory-utilization "${QWEN27_GPU_MEMORY_UTILIZATION:-0.50}"' in qwen_nvfp4_pp8
+        and "LMCACHE_MAX_LOCAL_CPU_SIZE=8.0" in dual_pipeline_doc,
+    ),
+    (
         "LMCache lookup client/server receive LMCache metadata, not VllmConfig",
         "def _build_lmcache_metadata_from_vllm_config(" in lmcache_adapter
         and "LookupClientFactory.create_lookup_client(\n                config, lookup_metadata\n            )" in lmcache_adapter

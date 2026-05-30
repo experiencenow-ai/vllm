@@ -64,7 +64,7 @@ fi
 cat > "$LMCACHE_CONFIG_FILE" <<YAML
 chunk_size: ${LMCACHE_CHUNK_SIZE:-784}
 local_cpu: true
-max_local_cpu_size: ${LMCACHE_MAX_LOCAL_CPU_SIZE:-32.0}
+max_local_cpu_size: ${LMCACHE_MAX_LOCAL_CPU_SIZE:-8.0}
 local_disk: file://$LMCACHE_ROOT
 max_local_disk_size: ${LMCACHE_MAX_LOCAL_DISK_SIZE:-2048.0}
 YAML

@@ -95,7 +95,7 @@ dual-resident rollout:
 QWEN27_MAX_NUM_SEQS=12
 QWEN27_MAX_NUM_BATCHED_TOKENS=32768
 QWEN27_GPU_MEMORY_UTILIZATION=0.50
-LMCACHE_MAX_LOCAL_CPU_SIZE=16.0
+LMCACHE_MAX_LOCAL_CPU_SIZE=8.0
 QWEN27_ASYNC_SCHEDULING=1
 PYTHONHASHSEED=0
 ```
@@ -103,9 +103,13 @@ PYTHONHASHSEED=0
 Raise those caps only after both resident services are healthy together. Do not
 start with `LMCACHE_MAX_LOCAL_CPU_SIZE=64.0`; a Spark gate run with that value
 reached the LMCache FullAttentionSpec/hybrid-state initialization path and then
-drove host `MemAvailable` below 1 GiB before the API became healthy. The same
-failure path reproduced with async disabled, so async was not the isolated
-trigger and the Qwen launcher enables it by default. Set
+drove host `MemAvailable` below 1 GiB before the API became healthy. A later
+NVFP4 PP2 smoke with `LMCACHE_MAX_LOCAL_CPU_SIZE=16.0` and
+`QWEN27_GPU_MEMORY_UTILIZATION=0.55` also drove spark0 down to about 2.5 GiB
+available during FlashInfer FP4 autotune, so the default host cache is capped at
+8 GiB and the NVFP4 launcher defaults GPU utilization to 0.50. The same failure
+path reproduced with async disabled, so async was not the isolated trigger and
+the Qwen launcher enables it by default. Set
 `QWEN27_ASYNC_SCHEDULING=0` only as a rollback or bisection switch.
 
 ## DeepSeek V4 Flash 8-way PP

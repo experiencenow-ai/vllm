@@ -111,7 +111,7 @@ fi
 cat > "$LMCACHE_CONFIG_FILE" <<YAML
 chunk_size: ${LMCACHE_CHUNK_SIZE:-784}
 local_cpu: true
-max_local_cpu_size: ${LMCACHE_MAX_LOCAL_CPU_SIZE:-16.0}
+max_local_cpu_size: ${LMCACHE_MAX_LOCAL_CPU_SIZE:-8.0}
 local_disk: file://$LMCACHE_ROOT
 max_local_disk_size: ${LMCACHE_MAX_LOCAL_DISK_SIZE:-2048.0}
 YAML
@@ -137,7 +137,7 @@ COMMON_ARGS=(
   --max-model-len "${QWEN27_MAX_MODEL_LEN:-262144}"
   --max-num-seqs "${QWEN27_MAX_NUM_SEQS:-24}"
   --max-num-batched-tokens "${QWEN27_MAX_NUM_BATCHED_TOKENS:-65536}"
-  --gpu-memory-utilization "${QWEN27_GPU_MEMORY_UTILIZATION:-0.55}"
+  --gpu-memory-utilization "${QWEN27_GPU_MEMORY_UTILIZATION:-0.50}"
   --quantization modelopt
   --linear-backend "${QWEN27_LINEAR_BACKEND:-flashinfer-cutlass}"
   --attention-backend "$QWEN27_ATTENTION_BACKEND"
