@@ -97,6 +97,10 @@ case "$QWEN27_KV_CACHE_MEMORY_BYTES" in
     KV_CACHE_MEMORY_ARGS=(--kv-cache-memory-bytes "$QWEN27_KV_CACHE_MEMORY_BYTES")
     ;;
 esac
+EAGER_ARGS=()
+if [[ "${QWEN27_ENFORCE_EAGER:-0}" =~ ^(1|true|TRUE|yes|YES|on|ON)$ ]]; then
+  EAGER_ARGS=(--enforce-eager)
+fi
 
 ASYNC_SCHEDULING_ARGS=(--async-scheduling)
 case "${QWEN27_ASYNC_SCHEDULING:-1}" in
@@ -121,6 +125,7 @@ COMMON_ARGS=(
   --max-num-batched-tokens "${QWEN27_MAX_NUM_BATCHED_TOKENS:-8192}"
   --gpu-memory-utilization "${QWEN27_GPU_MEMORY_UTILIZATION:-0.24}"
   "${KV_CACHE_MEMORY_ARGS[@]}"
+  "${EAGER_ARGS[@]}"
   --dtype bfloat16
   --kv-cache-dtype "$QWEN27_KV_CACHE_DTYPE"
   --language-model-only

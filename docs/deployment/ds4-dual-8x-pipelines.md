@@ -100,6 +100,7 @@ LMCACHE_MAX_LOCAL_CPU_SIZE=2.0
 DS4_ENABLE_FLASHINFER_AUTOTUNE=0
 DS4_FLASHINFER_JIT_MAX_JOBS=1
 QWEN27_ASYNC_SCHEDULING=1
+QWEN27_ENFORCE_EAGER=0
 PYTHONHASHSEED=0
 ```
 
@@ -125,6 +126,9 @@ an explicit tuning wrapper such as
 is an error. The same failure path reproduced with async disabled, so async was
 not the isolated trigger and the Qwen launcher enables it by default. Set
 `QWEN27_ASYNC_SCHEDULING=0` only as a rollback or bisection switch.
+If the compiled Qwen hybrid layer path stalls during PP8 bringup, set
+`QWEN27_ENFORCE_EAGER=1` for a targeted architecture validation run; keep it off
+for performance runs.
 
 ## DeepSeek V4 Flash 8-way PP
 

@@ -227,6 +227,10 @@ checks = [
         and "QWEN27_KV_CACHE_MEMORY_BYTES=\"${QWEN27_KV_CACHE_MEMORY_BYTES:-8589934592}\"" in qwen_nvfp4_pp8
         and "--kv-cache-memory-bytes \"$QWEN27_KV_CACHE_MEMORY_BYTES\"" in qwen_pp8
         and "--kv-cache-memory-bytes \"$QWEN27_KV_CACHE_MEMORY_BYTES\"" in qwen_nvfp4_pp8
+        and "QWEN27_ENFORCE_EAGER" in qwen_pp8
+        and "QWEN27_ENFORCE_EAGER" in qwen_nvfp4_pp8
+        and "EAGER_ARGS=(--enforce-eager)" in qwen_pp8
+        and "EAGER_ARGS=(--enforce-eager)" in qwen_nvfp4_pp8
         and '--gpu-memory-utilization "${QWEN27_GPU_MEMORY_UTILIZATION:-0.24}"' in qwen_nvfp4_pp8
         and "ds4_set_flashinfer_autotune_args DS4_ENABLE_FLASHINFER_AUTOTUNE" in qwen_pp8
         and "ds4_set_flashinfer_autotune_args DS4_ENABLE_FLASHINFER_AUTOTUNE" in qwen_nvfp4_pp8

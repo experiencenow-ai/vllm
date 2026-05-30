@@ -150,6 +150,11 @@ case "$QWEN27_KV_CACHE_MEMORY_BYTES" in
     ;;
 esac
 
+EAGER_ARGS=()
+if [[ "${QWEN27_ENFORCE_EAGER:-0}" =~ ^(1|true|TRUE|yes|YES|on|ON)$ ]]; then
+  EAGER_ARGS=(--enforce-eager)
+fi
+
 COMMON_ARGS=(
   -m vllm.entrypoints.cli.main serve "$MODEL"
   --served-model-name "${QWEN27_SERVED_MODEL_NAME:-qwen27-nvfp4-pp${PP_SIZE}}"
@@ -166,6 +171,7 @@ COMMON_ARGS=(
   --max-num-batched-tokens "${QWEN27_MAX_NUM_BATCHED_TOKENS:-8192}"
   --gpu-memory-utilization "${QWEN27_GPU_MEMORY_UTILIZATION:-0.24}"
   "${KV_CACHE_MEMORY_ARGS[@]}"
+  "${EAGER_ARGS[@]}"
   --quantization modelopt
   --linear-backend "${QWEN27_LINEAR_BACKEND:-flashinfer-cutlass}"
   --attention-backend "$QWEN27_ATTENTION_BACKEND"
