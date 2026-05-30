@@ -77,6 +77,24 @@ export LMCACHE_ROOT="${LMCACHE_ROOT:-$DEFAULT_LMCACHE_ROOT}"
 export LMCACHE_CONFIG_FILE="${LMCACHE_CONFIG_FILE:-/tmp/lmcache_qwen27_nvfp4_pp${PP_SIZE}_${DS4_NODE_ID}.yaml}"
 mkdir -p "$LMCACHE_ROOT"
 
+QWEN27_ATTENTION_BACKEND="${QWEN27_ATTENTION_BACKEND:-FLASH_ATTN}"
+case "$QWEN27_ATTENTION_BACKEND" in
+  FLASH_ATTN|TRITON_ATTN)
+    ;;
+  FLASHINFER)
+    echo "Qwen NVFP4 PP does not default to FLASHINFER attention on GB10." >&2
+    echo "Reason: FlashInfer XQA failed dummy-run capture with a query/output dtype mismatch." >&2
+    echo "Use QWEN27_ALLOW_FLASHINFER_ATTENTION_EXPERIMENTAL=1 only for a targeted bring-up run." >&2
+    if [[ ! "${QWEN27_ALLOW_FLASHINFER_ATTENTION_EXPERIMENTAL:-0}" =~ ^(1|true|TRUE|yes|YES|on|ON)$ ]]; then
+      exit 2
+    fi
+    ;;
+  *)
+    echo "Unsupported QWEN27_ATTENTION_BACKEND=$QWEN27_ATTENTION_BACKEND; expected FLASH_ATTN, TRITON_ATTN, or guarded FLASHINFER" >&2
+    exit 2
+    ;;
+esac
+
 ds4_prepare_triton_jit_environment "qwen27-nvfp4-pp${PP_SIZE}"
 ds4_require_200g_fabric
 ds4_run_nccl_preflight "$NNODES"
@@ -116,6 +134,7 @@ COMMON_ARGS=(
   --gpu-memory-utilization "${QWEN27_GPU_MEMORY_UTILIZATION:-0.55}"
   --quantization modelopt
   --linear-backend "${QWEN27_LINEAR_BACKEND:-flashinfer-cutlass}"
+  --attention-backend "$QWEN27_ATTENTION_BACKEND"
   --kv-cache-dtype "${QWEN27_KV_CACHE_DTYPE:-fp8}"
   --language-model-only
   --enable-chunked-prefill
