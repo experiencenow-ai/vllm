@@ -90,6 +90,7 @@ export LMCACHE_CONFIG_FILE="${LMCACHE_CONFIG_FILE:-/tmp/lmcache_qwen27_nvfp4_pp$
 mkdir -p "$LMCACHE_ROOT"
 
 QWEN27_KV_CACHE_DTYPE="${QWEN27_KV_CACHE_DTYPE:-fp8}"
+QWEN27_KV_CACHE_MEMORY_BYTES="${QWEN27_KV_CACHE_MEMORY_BYTES:-8589934592}"
 QWEN27_ATTENTION_BACKEND="${QWEN27_ATTENTION_BACKEND:-TRITON_ATTN}"
 case "$QWEN27_ATTENTION_BACKEND" in
   TRITON_ATTN)
@@ -128,7 +129,7 @@ fi
 cat > "$LMCACHE_CONFIG_FILE" <<YAML
 chunk_size: ${LMCACHE_CHUNK_SIZE:-784}
 local_cpu: true
-max_local_cpu_size: ${LMCACHE_MAX_LOCAL_CPU_SIZE:-4.0}
+max_local_cpu_size: ${LMCACHE_MAX_LOCAL_CPU_SIZE:-2.0}
 local_disk: file://$LMCACHE_ROOT
 max_local_disk_size: ${LMCACHE_MAX_LOCAL_DISK_SIZE:-2048.0}
 YAML
@@ -139,6 +140,15 @@ SPEC_ARGS=()
 if [[ "${QWEN27_NVFP4_ENABLE_MTP_EXPERIMENTAL:-0}" =~ ^(1|true|TRUE|yes|YES|on|ON)$ ]]; then
   SPEC_ARGS=(--speculative-config "${QWEN27_SPECULATIVE_CONFIG:-{\"method\":\"qwen3_5_mtp\",\"num_speculative_tokens\":3}}")
 fi
+
+KV_CACHE_MEMORY_ARGS=()
+case "$QWEN27_KV_CACHE_MEMORY_BYTES" in
+  ""|0|auto|AUTO|none|NONE)
+    ;;
+  *)
+    KV_CACHE_MEMORY_ARGS=(--kv-cache-memory-bytes "$QWEN27_KV_CACHE_MEMORY_BYTES")
+    ;;
+esac
 
 COMMON_ARGS=(
   -m vllm.entrypoints.cli.main serve "$MODEL"
@@ -151,10 +161,11 @@ COMMON_ARGS=(
   --node-rank "$NODE_RANK"
   --master-addr "$HEAD_ADDR"
   --master-port "$MASTER_PORT"
-  --max-model-len "${QWEN27_MAX_MODEL_LEN:-262144}"
-  --max-num-seqs "${QWEN27_MAX_NUM_SEQS:-24}"
-  --max-num-batched-tokens "${QWEN27_MAX_NUM_BATCHED_TOKENS:-65536}"
-  --gpu-memory-utilization "${QWEN27_GPU_MEMORY_UTILIZATION:-0.40}"
+  --max-model-len "${QWEN27_MAX_MODEL_LEN:-65536}"
+  --max-num-seqs "${QWEN27_MAX_NUM_SEQS:-8}"
+  --max-num-batched-tokens "${QWEN27_MAX_NUM_BATCHED_TOKENS:-8192}"
+  --gpu-memory-utilization "${QWEN27_GPU_MEMORY_UTILIZATION:-0.24}"
+  "${KV_CACHE_MEMORY_ARGS[@]}"
   --quantization modelopt
   --linear-backend "${QWEN27_LINEAR_BACKEND:-flashinfer-cutlass}"
   --attention-backend "$QWEN27_ATTENTION_BACKEND"

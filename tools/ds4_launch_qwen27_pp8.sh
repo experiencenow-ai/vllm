@@ -69,6 +69,8 @@ fi
 export LMCACHE_CONFIG_FILE="${LMCACHE_CONFIG_FILE:-/tmp/lmcache_qwen27_bf16_pp${NNODES}_${DS4_NODE_ID}.yaml}"
 export LMCACHE_ROOT="${LMCACHE_ROOT:-$DEFAULT_LMCACHE_ROOT}"
 mkdir -p "$LMCACHE_ROOT"
+QWEN27_KV_CACHE_DTYPE="${QWEN27_KV_CACHE_DTYPE:-fp8}"
+QWEN27_KV_CACHE_MEMORY_BYTES="${QWEN27_KV_CACHE_MEMORY_BYTES:-8589934592}"
 
 ds4_prepare_triton_jit_environment "qwen27-bf16-pp${NNODES}"
 ds4_prepare_flashinfer_jit_environment
@@ -81,12 +83,20 @@ fi
 cat > "$LMCACHE_CONFIG_FILE" <<YAML
 chunk_size: ${LMCACHE_CHUNK_SIZE:-784}
 local_cpu: true
-max_local_cpu_size: ${LMCACHE_MAX_LOCAL_CPU_SIZE:-4.0}
+max_local_cpu_size: ${LMCACHE_MAX_LOCAL_CPU_SIZE:-2.0}
 local_disk: file://$LMCACHE_ROOT
 max_local_disk_size: ${LMCACHE_MAX_LOCAL_DISK_SIZE:-2048.0}
 YAML
 
 KV_TRANSFER_CONFIG='{"kv_connector":"LMCacheConnectorV1","kv_role":"kv_both","kv_connector_extra_config":{"use_native":true,"lmcache_kv_cache_group_id":"auto","discard_partial_chunks":false}}'
+KV_CACHE_MEMORY_ARGS=()
+case "$QWEN27_KV_CACHE_MEMORY_BYTES" in
+  ""|0|auto|AUTO|none|NONE)
+    ;;
+  *)
+    KV_CACHE_MEMORY_ARGS=(--kv-cache-memory-bytes "$QWEN27_KV_CACHE_MEMORY_BYTES")
+    ;;
+esac
 
 ASYNC_SCHEDULING_ARGS=(--async-scheduling)
 case "${QWEN27_ASYNC_SCHEDULING:-1}" in
@@ -106,11 +116,13 @@ COMMON_ARGS=(
   --node-rank "$NODE_RANK"
   --master-addr "$HEAD_ADDR"
   --master-port "$MASTER_PORT"
-  --max-model-len "${QWEN27_MAX_MODEL_LEN:-262144}"
-  --max-num-seqs "${QWEN27_MAX_NUM_SEQS:-24}"
-  --max-num-batched-tokens "${QWEN27_MAX_NUM_BATCHED_TOKENS:-65536}"
-  --gpu-memory-utilization "${QWEN27_GPU_MEMORY_UTILIZATION:-0.36}"
+  --max-model-len "${QWEN27_MAX_MODEL_LEN:-65536}"
+  --max-num-seqs "${QWEN27_MAX_NUM_SEQS:-8}"
+  --max-num-batched-tokens "${QWEN27_MAX_NUM_BATCHED_TOKENS:-8192}"
+  --gpu-memory-utilization "${QWEN27_GPU_MEMORY_UTILIZATION:-0.24}"
+  "${KV_CACHE_MEMORY_ARGS[@]}"
   --dtype bfloat16
+  --kv-cache-dtype "$QWEN27_KV_CACHE_DTYPE"
   --language-model-only
   --enable-chunked-prefill
   --enable-prefix-caching

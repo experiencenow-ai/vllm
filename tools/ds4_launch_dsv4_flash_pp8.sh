@@ -16,6 +16,7 @@ DEFAULT_COMPILATION_CONFIG='{"cudagraph_mode":"FULL_AND_PIECEWISE","custom_ops":
 DSV4_LINEAR_BACKEND="${DSV4_LINEAR_BACKEND:-auto}"
 DSV4_MOE_BACKEND="${DSV4_MOE_BACKEND:-auto}"
 DSV4_COMPILATION_CONFIG="${DSV4_COMPILATION_CONFIG:-$DEFAULT_COMPILATION_CONFIG}"
+DSV4_KV_CACHE_MEMORY_BYTES="${DSV4_KV_CACHE_MEMORY_BYTES:-12884901888}"
 SPECULATIVE_ARGS=(--speculative-config "${DSV4_SPECULATIVE_CONFIG:-$DEFAULT_SPECULATIVE_CONFIG}")
 if [[ "${DSV4_DISABLE_MTP:-0}" =~ ^(1|true|TRUE|yes|YES|on|ON)$ ]]; then
   SPECULATIVE_ARGS=()
@@ -77,6 +78,15 @@ else
   unset VLLM_PP_LAYER_PARTITION
 fi
 
+KV_CACHE_MEMORY_ARGS=()
+case "$DSV4_KV_CACHE_MEMORY_BYTES" in
+  ""|0|auto|AUTO|none|NONE)
+    ;;
+  *)
+    KV_CACHE_MEMORY_ARGS=(--kv-cache-memory-bytes "$DSV4_KV_CACHE_MEMORY_BYTES")
+    ;;
+esac
+
 COMMON_ARGS=(
   -m vllm.entrypoints.cli.main serve "$MODEL"
   --served-model-name deepseek-v4-flash-pp${NNODES}
@@ -89,8 +99,9 @@ COMMON_ARGS=(
   --distributed-executor-backend mp
   --max-model-len "${DSV4_MAX_MODEL_LEN:-65536}"
   --max-num-seqs "${DSV4_MAX_NUM_SEQS:-8}"
-  --max-num-batched-tokens "${DSV4_MAX_NUM_BATCHED_TOKENS:-32768}"
+  --max-num-batched-tokens "${DSV4_MAX_NUM_BATCHED_TOKENS:-16384}"
   --gpu-memory-utilization "${DSV4_GPU_MEMORY_UTILIZATION:-0.82}"
+  "${KV_CACHE_MEMORY_ARGS[@]}"
   "${FLASHINFER_AUTOTUNE_ARGS[@]}"
   --block-size 256
   --kv-cache-dtype fp8
