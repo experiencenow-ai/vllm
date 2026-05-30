@@ -1042,9 +1042,6 @@ def deepgemm_post_process_fp8_weight_block(
         r = wq.size(0) // g
         wq = wq.view(g, r, d)
         ws = ws.view(g, r // quant_block_shape[0], d // quant_block_shape[1])
-        if current_platform.is_cuda() and current_platform.has_device_capability(120):
-            # SM12x DeepGEMM fp8_einsum kernels consume raw FP32 scale blocks.
-            return wq, ws
         # Pre-transform scale with recipe=(1, 128, 128) to broadcast + pack
         # into TMA-aligned UE8M0 (INT32) layout. At runtime fp8_einsum uses
         # recipe=(1, 1, 128) which sees INT dtype and skips re-transform.

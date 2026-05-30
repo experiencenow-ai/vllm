@@ -24,7 +24,9 @@ from vllm.models.deepseek_v4.common.ops import (
     fused_inv_rope_fp8_quant,
     fused_q_kv_rmsnorm,
 )
-from vllm.utils.deep_gemm import fp8_einsum
+from vllm.models.deepseek_v4.nvidia.ops.fp8_einsum import (
+    deepseek_v4_fp8_einsum_config,
+)
 from vllm.utils.torch_utils import direct_register_custom_op
 from vllm.v1.attention.ops.rocm_aiter_mla_sparse import rocm_inv_rope_einsum
 
@@ -208,8 +210,9 @@ class DeepseekV4MultiHeadLatentAttentionWrapper(PluggableLayer):
         # SM100: INT32 packed scales become [g, r, ...] → sfb_gran_mn=1.
         cap = current_platform.get_device_capability()
         assert cap is not None, "DeepseekV4 attention requires a CUDA device"
-        self._einsum_recipe = (1, 1, 128) if cap.major == 10 else (1, 128, 128)
-        self._tma_aligned_scales = cap.major == 10
+        self._einsum_recipe, self._tma_aligned_scales = (
+            deepseek_v4_fp8_einsum_config(cap.major)
+        )
 
         self.rotary_emb = mla_modules.rotary_emb
         self.indexer_rotary_emb = mla_modules.indexer_rotary_emb
@@ -571,38 +574,6 @@ direct_register_custom_op(
     op_func=deepseek_v4_attention,
     mutates_args=["out"],
     fake_impl=deepseek_v4_attention_fake,
-)
-
-
-def deepseek_v4_fp8_einsum(
-    a: torch.Tensor,
-    a_scale: torch.Tensor,
-    b: torch.Tensor,
-    b_scale: torch.Tensor,
-    out: torch.Tensor,
-    equation: str,
-    recipe: list[int],
-) -> None:
-    fp8_einsum(equation, (a, a_scale), (b, b_scale), out, recipe=tuple(recipe))
-
-
-def deepseek_v4_fp8_einsum_fake(
-    a: torch.Tensor,
-    a_scale: torch.Tensor,
-    b: torch.Tensor,
-    b_scale: torch.Tensor,
-    out: torch.Tensor,
-    equation: str,
-    recipe: list[int],
-) -> None:
-    return None
-
-
-direct_register_custom_op(
-    op_name="deepseek_v4_fp8_einsum",
-    op_func=deepseek_v4_fp8_einsum,
-    mutates_args=["out"],
-    fake_impl=deepseek_v4_fp8_einsum_fake,
 )
 
 

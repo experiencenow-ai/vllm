@@ -16,10 +16,10 @@ mxfp4 = (root / "vllm/model_executor/layers/fused_moe/oracle/mxfp4.py").read_tex
 linear = (root / "vllm/model_executor/kernels/linear/__init__.py").read_text()
 cutlass = (root / "vllm/model_executor/kernels/linear/scaled_mm/cutlass.py").read_text()
 modelopt = (root / "vllm/model_executor/layers/quantization/modelopt.py").read_text()
-fp8_utils = (
-    root / "vllm/model_executor/layers/quantization/utils/fp8_utils.py"
-).read_text()
 ds4_attention = (root / "vllm/models/deepseek_v4/nvidia/ops/attention.py").read_text()
+ds4_fp8_einsum = (
+    root / "vllm/models/deepseek_v4/nvidia/ops/fp8_einsum.py"
+).read_text()
 dsv4_tp2 = (root / "tools/ds4_launch_dsv4_flash_tp2_native_benchmark.sh").read_text()
 dsv4_pp8 = (root / "tools/ds4_launch_dsv4_flash_pp8.sh").read_text()
 qwen_pp8 = (root / "tools/ds4_launch_qwen27_pp8.sh").read_text()
@@ -91,13 +91,15 @@ checks = [
     ),
     (
         "SM12x DSV4 fp8_einsum uses DeepGEMM-supported FP32 scale recipe",
-        "self._einsum_recipe = (1, 1, 128) if cap.major == 10 else (1, 128, 128)" in ds4_attention
-        and "self._tma_aligned_scales = cap.major == 10" in ds4_attention,
+        "deepseek_v4_fp8_einsum_config(cap.major)" in ds4_attention
+        and "def deepseek_v4_fp8_einsum_config(" in ds4_fp8_einsum
+        and "return (1, 128, 128), False" in ds4_fp8_einsum,
     ),
     (
-        "SM12x DSV4 BMM weight scales stay raw for fp8_einsum",
-        "current_platform.has_device_capability(120)" in fp8_utils
-        and "SM12x DeepGEMM fp8_einsum kernels consume raw FP32 scale blocks" in fp8_utils,
+        "SM12x DSV4 fp8_einsum uses known-good Triton fallback",
+        "def deepseek_v4_sm12x_fp8_einsum(" in ds4_fp8_einsum
+        and "def _use_deepseek_v4_sm12x_triton_fp8_einsum(" in ds4_fp8_einsum
+        and "deepseek_v4_sm12x_fp8_einsum(a, a_scale, b, b_scale, out)" in ds4_fp8_einsum,
     ),
 
     (
