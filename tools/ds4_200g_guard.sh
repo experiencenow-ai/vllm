@@ -409,6 +409,22 @@ ds4_prepare_flashinfer_jit_environment()
   echo "DS4 FlashInfer JIT guard: MAX_JOBS=$MAX_JOBS DS4_FLASHINFER_JIT_MAX_JOBS=$max_jobs" >&2
 }
 
+ds4_set_flashinfer_autotune_args()
+{
+  local env_name="${1:-DS4_ENABLE_FLASHINFER_AUTOTUNE}"
+  local value="${!env_name:-0}"
+  FLASHINFER_AUTOTUNE_ARGS=(--no-enable-flashinfer-autotune)
+  if [[ "$value" =~ ^(1|true|TRUE|yes|YES|on|ON)$ ]]; then
+    if [[ "${DS4_FLASHINFER_AUTOTUNE_TUNING_JOB:-0}" =~ ^(1|true|TRUE|yes|YES|on|ON)$ ]]; then
+      FLASHINFER_AUTOTUNE_ARGS=(--enable-flashinfer-autotune)
+      echo "DS4 FlashInfer autotune: enabled for explicit tuning job" >&2
+      return
+    fi
+    ds4_200g_die "$env_name=$value requested FlashInfer autotune from a production/validation launcher; use a dedicated tuning job with DS4_FLASHINFER_AUTOTUNE_TUNING_JOB=1"
+  fi
+  echo "DS4 FlashInfer autotune: disabled for production/validation startup" >&2
+}
+
 ds4_run_triton_jit_preflight()
 {
   local args=()

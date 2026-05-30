@@ -6,6 +6,12 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/ds4_200g_guard.sh"
 
+if [[ "${QWEN27_ENABLE_FLASHINFER_AUTOTUNE:-0}" =~ ^(1|true|TRUE|yes|YES|on|ON)$ ]]; then
+  echo "QWEN27_ENABLE_FLASHINFER_AUTOTUNE is deprecated; use DS4_ENABLE_FLASHINFER_AUTOTUNE only from a dedicated tuning job" >&2
+  exit 64
+fi
+ds4_set_flashinfer_autotune_args DS4_ENABLE_FLASHINFER_AUTOTUNE
+
 NNODES="${NNODES:-8}"
 MASTER_PORT="${MASTER_PORT:-29527}"
 API_PORT="${API_PORT:-8101}"
@@ -78,11 +84,6 @@ case "${QWEN27_ASYNC_SCHEDULING:-1}" in
     ASYNC_SCHEDULING_ARGS=(--no-async-scheduling)
     ;;
 esac
-
-FLASHINFER_AUTOTUNE_ARGS=(--no-enable-flashinfer-autotune)
-if [[ "${QWEN27_ENABLE_FLASHINFER_AUTOTUNE:-0}" =~ ^(1|true|TRUE|yes|YES|on|ON)$ ]]; then
-  FLASHINFER_AUTOTUNE_ARGS=(--enable-flashinfer-autotune)
-fi
 
 COMMON_ARGS=(
   -m vllm.entrypoints.cli.main serve "$MODEL"

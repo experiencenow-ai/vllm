@@ -30,6 +30,9 @@ sparse_indexer = (
 ).read_text()
 mla_indexer = (root / "vllm/v1/attention/backends/mla/indexer.py").read_text()
 dsv4_tp2 = (root / "tools/ds4_launch_dsv4_flash_tp2_native_benchmark.sh").read_text()
+dsv4_tp2_autotune = (
+    root / "tools/ds4_launch_dsv4_flash_tp2_flashinfer_autotune.sh"
+).read_text()
 dsv4_pp8 = (root / "tools/ds4_launch_dsv4_flash_pp8.sh").read_text()
 qwen_pp8 = (root / "tools/ds4_launch_qwen27_pp8.sh").read_text()
 qwen_nvfp4_pp8 = (root / "tools/ds4_launch_qwen27_nvfp4_pp8.sh").read_text()
@@ -221,19 +224,26 @@ checks = [
         "max_local_cpu_size: ${LMCACHE_MAX_LOCAL_CPU_SIZE:-4.0}" in qwen_pp8
         and "max_local_cpu_size: ${LMCACHE_MAX_LOCAL_CPU_SIZE:-4.0}" in qwen_nvfp4_pp8
         and '--gpu-memory-utilization "${QWEN27_GPU_MEMORY_UTILIZATION:-0.40}"' in qwen_nvfp4_pp8
-        and "FLASHINFER_AUTOTUNE_ARGS=(--no-enable-flashinfer-autotune)" in qwen_pp8
-        and "FLASHINFER_AUTOTUNE_ARGS=(--no-enable-flashinfer-autotune)" in qwen_nvfp4_pp8
+        and "ds4_set_flashinfer_autotune_args DS4_ENABLE_FLASHINFER_AUTOTUNE" in qwen_pp8
+        and "ds4_set_flashinfer_autotune_args DS4_ENABLE_FLASHINFER_AUTOTUNE" in qwen_nvfp4_pp8
         and "LMCACHE_MAX_LOCAL_CPU_SIZE=4.0" in dual_pipeline_doc
-        and "QWEN27_ENABLE_FLASHINFER_AUTOTUNE=0" in dual_pipeline_doc,
+        and "DS4_ENABLE_FLASHINFER_AUTOTUNE=0" in dual_pipeline_doc,
     ),
     (
-        "DSV4 launchers disable FlashInfer autotune unless explicitly requested",
+        "DS4 service launchers fail closed on FlashInfer autotune",
         all(
-            "FLASHINFER_AUTOTUNE_ARGS=(--no-enable-flashinfer-autotune)" in script
-            and "DS4_ENABLE_FLASHINFER_AUTOTUNE" in script
+            "ds4_set_flashinfer_autotune_args DS4_ENABLE_FLASHINFER_AUTOTUNE" in script
             and '"${FLASHINFER_AUTOTUNE_ARGS[@]}"' in script
-            for script in (dsv4_tp2, dsv4_pp8)
-        ),
+            for script in (dsv4_tp2, dsv4_pp8, qwen_pp8, qwen_nvfp4_pp8)
+        )
+        and "production/validation launcher" in guard
+        and "DS4_FLASHINFER_AUTOTUNE_TUNING_JOB" in guard,
+    ),
+    (
+        "FlashInfer autotune is isolated to an explicit tuning wrapper",
+        "DS4_FLASHINFER_AUTOTUNE_TUNING_JOB=1" in dsv4_tp2_autotune
+        and "DS4_ENABLE_FLASHINFER_AUTOTUNE=1" in dsv4_tp2_autotune
+        and "not a production service launcher" in dsv4_tp2_autotune,
     ),
     (
         "Launchers bound FlashInfer runtime JIT parallelism during bringup",

@@ -20,10 +20,7 @@ SPECULATIVE_ARGS=(--speculative-config "${DSV4_SPECULATIVE_CONFIG:-$DEFAULT_SPEC
 if [[ "${DSV4_DISABLE_MTP:-0}" =~ ^(1|true|TRUE|yes|YES|on|ON)$ ]]; then
   SPECULATIVE_ARGS=()
 fi
-FLASHINFER_AUTOTUNE_ARGS=(--no-enable-flashinfer-autotune)
-if [[ "${DS4_ENABLE_FLASHINFER_AUTOTUNE:-0}" =~ ^(1|true|TRUE|yes|YES|on|ON)$ ]]; then
-  FLASHINFER_AUTOTUNE_ARGS=(--enable-flashinfer-autotune)
-fi
+ds4_set_flashinfer_autotune_args DS4_ENABLE_FLASHINFER_AUTOTUNE
 
 export PYTHONPATH="$SOURCE_ROOT${PYTHONPATH:+:$PYTHONPATH}"
 export PATH="$(dirname "$RUNTIME_PYTHON"):$PATH"

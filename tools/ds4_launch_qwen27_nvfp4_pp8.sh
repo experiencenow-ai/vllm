@@ -6,6 +6,12 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/ds4_200g_guard.sh"
 
+if [[ "${QWEN27_ENABLE_FLASHINFER_AUTOTUNE:-0}" =~ ^(1|true|TRUE|yes|YES|on|ON)$ ]]; then
+  echo "QWEN27_ENABLE_FLASHINFER_AUTOTUNE is deprecated; use DS4_ENABLE_FLASHINFER_AUTOTUNE only from a dedicated tuning job" >&2
+  exit 64
+fi
+ds4_set_flashinfer_autotune_args DS4_ENABLE_FLASHINFER_AUTOTUNE
+
 NNODES="${NNODES:-8}"
 PP_SIZE="${QWEN27_PP_SIZE:-$NNODES}"
 MASTER_PORT="${MASTER_PORT:-29537}"
@@ -122,11 +128,6 @@ KV_TRANSFER_CONFIG='{"kv_connector":"LMCacheConnectorV1","kv_role":"kv_both","kv
 SPEC_ARGS=()
 if [[ "${QWEN27_NVFP4_ENABLE_MTP_EXPERIMENTAL:-0}" =~ ^(1|true|TRUE|yes|YES|on|ON)$ ]]; then
   SPEC_ARGS=(--speculative-config "${QWEN27_SPECULATIVE_CONFIG:-{\"method\":\"qwen3_5_mtp\",\"num_speculative_tokens\":3}}")
-fi
-
-FLASHINFER_AUTOTUNE_ARGS=(--no-enable-flashinfer-autotune)
-if [[ "${QWEN27_ENABLE_FLASHINFER_AUTOTUNE:-0}" =~ ^(1|true|TRUE|yes|YES|on|ON)$ ]]; then
-  FLASHINFER_AUTOTUNE_ARGS=(--enable-flashinfer-autotune)
 fi
 
 COMMON_ARGS=(
