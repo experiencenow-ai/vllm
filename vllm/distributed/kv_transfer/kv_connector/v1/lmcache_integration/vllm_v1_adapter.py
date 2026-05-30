@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 # Standard
+import inspect
 import os
 import uuid
 from collections.abc import Generator
@@ -642,6 +643,42 @@ def _init_lmcache_engine(
     return engine
 
 
+def _create_zmq_offload_server(
+    lmcache_engine: LMCacheEngine,
+    vllm_config: "VllmConfig",
+):
+    tp_rank = get_tensor_model_parallel_rank()
+    try:
+        signature = inspect.signature(ZMQOffloadServer.__init__)
+        params = list(signature.parameters.values())
+    except (TypeError, ValueError):
+        return ZMQOffloadServer(lmcache_engine, vllm_config, tp_rank)
+    if any(param.kind == inspect.Parameter.VAR_POSITIONAL for param in params):
+        return ZMQOffloadServer(lmcache_engine, vllm_config, tp_rank)
+    positional = [
+        param
+        for param in params
+        if param.kind
+        in (
+            inspect.Parameter.POSITIONAL_ONLY,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        )
+    ]
+    if positional and positional[0].name == "self":
+        positional = positional[1:]
+    if len(positional) >= 3:
+        return ZMQOffloadServer(lmcache_engine, vllm_config, tp_rank)
+    if len(positional) == 2:
+        logger.info(
+            "Creating LMCache ZMQ offload server with legacy signature "
+            "(lmcache_engine, tp_rank)"
+        )
+        return ZMQOffloadServer(lmcache_engine, tp_rank)
+    raise TypeError(
+        f"Unsupported ZMQOffloadServer.__init__ signature: {signature}"
+    )
+
+
 @dataclass
 class LMCacheConnectorMetadata(KVConnectorMetadata):
     requests: list[ReqMeta] = field(default_factory=list)
@@ -752,10 +789,9 @@ class LMCacheConnectorV1Impl:
                 self.lmcache_engine, lookup_metadata
             )
 
-            self.offload_server = ZMQOffloadServer(
+            self.offload_server = _create_zmq_offload_server(
                 self.lmcache_engine,
                 vllm_config,
-                get_tensor_model_parallel_rank(),
             )
 
             # In case of MLA, the lookup server is only created on worker 0
