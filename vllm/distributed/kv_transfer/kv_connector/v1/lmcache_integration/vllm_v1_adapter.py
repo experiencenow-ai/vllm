@@ -1313,6 +1313,13 @@ class LMCacheConnectorV1Impl:
     ) -> tuple[set[str] | None, set[str] | None]:
         return None, None
 
+    @_lmcache_nvtx_annotate
+    def get_kv_events(self) -> list[Any]:
+        get_events = getattr(self.lmcache_engine, "get_kv_events", None)
+        if callable(get_events):
+            return list(get_events() or [])
+        return []
+
     ###################
     # Scheduler side APIs
     ####################
