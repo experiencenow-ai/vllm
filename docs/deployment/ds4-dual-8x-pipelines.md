@@ -92,10 +92,11 @@ The default queue-facing caps are intentionally conservative for the first
 dual-resident rollout:
 
 ```text
-QWEN27_MAX_NUM_SEQS=12
-QWEN27_MAX_NUM_BATCHED_TOKENS=32768
-QWEN27_GPU_MEMORY_UTILIZATION=0.40
-LMCACHE_MAX_LOCAL_CPU_SIZE=4.0
+QWEN27_MAX_NUM_SEQS=8
+QWEN27_MAX_NUM_BATCHED_TOKENS=8192
+QWEN27_GPU_MEMORY_UTILIZATION=0.24
+QWEN27_KV_CACHE_MEMORY_BYTES=8589934592
+LMCACHE_MAX_LOCAL_CPU_SIZE=2.0
 DS4_ENABLE_FLASHINFER_AUTOTUNE=0
 DS4_FLASHINFER_JIT_MAX_JOBS=1
 QWEN27_ASYNC_SCHEDULING=1
@@ -110,8 +111,10 @@ NVFP4 PP2 smoke with `LMCACHE_MAX_LOCAL_CPU_SIZE=16.0` and
 `QWEN27_GPU_MEMORY_UTILIZATION=0.55` also drove spark0 down to about 2.5 GiB
 available during FlashInfer FP4 autotune. Retesting at 8 GiB local CPU and 0.50
 GPU utilization still let a later autotune pass drive a rank near zero available
-memory. The default host cache is therefore capped at 4 GiB, NVFP4 defaults GPU
-utilization to 0.40, and production/validation launchers fail closed with
+memory. The default host cache is therefore capped at 2 GiB, Qwen defaults to an
+explicit 8 GiB per-rank KV cache, NVFP4 defaults GPU utilization to 0.24 as a
+fallback for manual `QWEN27_KV_CACHE_MEMORY_BYTES=auto` runs, and
+production/validation launchers fail closed with
 `--no-enable-flashinfer-autotune`. FlashInfer runtime CUTLASS JIT can still spawn
 heavy `cicc` compiles even with autotune disabled, so the DS4 launchers default
 `MAX_JOBS` to `DS4_FLASHINFER_JIT_MAX_JOBS=1`. Raise it only in a dedicated
@@ -141,9 +144,10 @@ export VLLM_SIMPLE_KV_OFFLOAD_PERSIST_ROOT=/home/$USER/ds4_hma_store/dsv4_flash_
 The launcher preserves the existing DSV4 Flash recipe:
 
 ```text
-DSV4_MAX_NUM_SEQS=4
-DSV4_MAX_NUM_BATCHED_TOKENS=8192
-DSV4_GPU_MEMORY_UTILIZATION=0.70
+DSV4_MAX_NUM_SEQS=8
+DSV4_MAX_NUM_BATCHED_TOKENS=16384
+DSV4_GPU_MEMORY_UTILIZATION=0.82
+DSV4_KV_CACHE_MEMORY_BYTES=12884901888
 DS4_ENABLE_FLASHINFER_AUTOTUNE=0
 DS4_FLASHINFER_JIT_MAX_JOBS=1
 DSV4_DISABLE_MTP=1 for first memory bringup, then unset after health is proven

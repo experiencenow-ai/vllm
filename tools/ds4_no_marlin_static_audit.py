@@ -220,13 +220,18 @@ checks = [
         and "DEFAULT_LMCACHE_ROOT=\"$HOME/ds4_lmcache/qwen27_nvfp4_pp${PP_SIZE}/${DS4_NODE_ID}\"" in qwen_nvfp4_pp8,
     ),
     (
-        "Qwen launchers keep conservative UMA defaults",
-        "max_local_cpu_size: ${LMCACHE_MAX_LOCAL_CPU_SIZE:-4.0}" in qwen_pp8
-        and "max_local_cpu_size: ${LMCACHE_MAX_LOCAL_CPU_SIZE:-4.0}" in qwen_nvfp4_pp8
-        and '--gpu-memory-utilization "${QWEN27_GPU_MEMORY_UTILIZATION:-0.40}"' in qwen_nvfp4_pp8
+        "Qwen launchers keep bounded coexistence KV defaults",
+        "max_local_cpu_size: ${LMCACHE_MAX_LOCAL_CPU_SIZE:-2.0}" in qwen_pp8
+        and "max_local_cpu_size: ${LMCACHE_MAX_LOCAL_CPU_SIZE:-2.0}" in qwen_nvfp4_pp8
+        and "QWEN27_KV_CACHE_MEMORY_BYTES=\"${QWEN27_KV_CACHE_MEMORY_BYTES:-8589934592}\"" in qwen_pp8
+        and "QWEN27_KV_CACHE_MEMORY_BYTES=\"${QWEN27_KV_CACHE_MEMORY_BYTES:-8589934592}\"" in qwen_nvfp4_pp8
+        and "--kv-cache-memory-bytes \"$QWEN27_KV_CACHE_MEMORY_BYTES\"" in qwen_pp8
+        and "--kv-cache-memory-bytes \"$QWEN27_KV_CACHE_MEMORY_BYTES\"" in qwen_nvfp4_pp8
+        and '--gpu-memory-utilization "${QWEN27_GPU_MEMORY_UTILIZATION:-0.24}"' in qwen_nvfp4_pp8
         and "ds4_set_flashinfer_autotune_args DS4_ENABLE_FLASHINFER_AUTOTUNE" in qwen_pp8
         and "ds4_set_flashinfer_autotune_args DS4_ENABLE_FLASHINFER_AUTOTUNE" in qwen_nvfp4_pp8
-        and "LMCACHE_MAX_LOCAL_CPU_SIZE=4.0" in dual_pipeline_doc
+        and "LMCACHE_MAX_LOCAL_CPU_SIZE=2.0" in dual_pipeline_doc
+        and "QWEN27_KV_CACHE_MEMORY_BYTES=8589934592" in dual_pipeline_doc
         and "DS4_ENABLE_FLASHINFER_AUTOTUNE=0" in dual_pipeline_doc,
     ),
     (
@@ -263,6 +268,13 @@ checks = [
             and '"${SPECULATIVE_ARGS[@]}"' in script
             for script in (dsv4_tp2, dsv4_pp8)
         ),
+    ),
+    (
+        "DSV4 PP8 launcher keeps bounded coexistence KV defaults",
+        "DSV4_KV_CACHE_MEMORY_BYTES=\"${DSV4_KV_CACHE_MEMORY_BYTES:-12884901888}\"" in dsv4_pp8
+        and "--kv-cache-memory-bytes \"$DSV4_KV_CACHE_MEMORY_BYTES\"" in dsv4_pp8
+        and '--max-num-batched-tokens "${DSV4_MAX_NUM_BATCHED_TOKENS:-16384}"' in dsv4_pp8
+        and "DSV4_KV_CACHE_MEMORY_BYTES=12884901888" in dual_pipeline_doc,
     ),
     (
         "LMCache lookup client/server receive LMCache metadata, not VllmConfig",
