@@ -3,16 +3,25 @@
 # Default: build and install immediately
 # Optional: build wheels to a directory for later installation (useful in multi-stage builds)
 set -e
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Default values
 # Keep DEEPGEMM_GIT_REF in sync with cmake/external_projects/deepgemm.cmake
-DEEPGEMM_GIT_REPO="https://github.com/deepseek-ai/DeepGEMM.git"
-DEEPGEMM_GIT_REF="891d57b4db1071624b5c8fa0d1e51cb317fa709f"
+DEEPGEMM_GIT_REPO="${DEEPGEMM_GIT_REPO:-https://github.com/deepseek-ai/DeepGEMM.git}"
+DEEPGEMM_GIT_REF="${DEEPGEMM_GIT_REF:-891d57b4db1071624b5c8fa0d1e51cb317fa709f}"
 WHEEL_DIR=""
 
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
     case $1 in
+        --repo)
+            if [[ -z "$2" || "$2" =~ ^- ]]; then
+                echo "Error: --repo requires an argument." >&2
+                exit 1
+            fi
+            DEEPGEMM_GIT_REPO="$2"
+            shift 2
+            ;;
         --ref)
             if [[ -z "$2" || "$2" =~ ^- ]]; then
                 echo "Error: --ref requires an argument." >&2
@@ -40,6 +49,7 @@ while [[ $# -gt 0 ]]; do
         -h|--help)
             echo "Usage: $0 [OPTIONS]"
             echo "Options:"
+            echo "  --repo REPO        Git repository to clone (default: $DEEPGEMM_GIT_REPO)"
             echo "  --ref REF          Git reference to checkout (default: $DEEPGEMM_GIT_REF)"
             echo "  --cuda-version VER CUDA version (auto-detected if not provided)"
             echo "  --wheel-dir PATH   If set, build wheel into PATH but do not install"
@@ -91,6 +101,15 @@ pushd "$INSTALL_DIR/deepgemm"
 # Checkout the specific reference
 git checkout "$DEEPGEMM_GIT_REF"
 
+# DS4/GB10: the SM12x native DeepSeek-V4 path needs DeepGEMM layout
+# dispatch to treat arch_major 12 as Blackwell for scale-factor transforms.
+# Keep this explicit and fail-closed: if the source shape is not recognized,
+# the patch command exits non-zero before a broken wheel can be built.
+if [ "${VLLM_DS4_PATCH_DEEPGEMM_SM12X:-0}" = "1" ]; then
+    echo "Applying DS4 SM12x DeepGEMM layout patch..."
+    python3 "${SCRIPT_DIR}/ds4_patch_deepgemm_sm12x_layout.py" "$PWD"
+fi
+
 # Clean previous build artifacts
 # (Based on https://github.com/deepseek-ai/DeepGEMM/blob/main/install.sh)
 rm -rf -- build dist *.egg-info 2>/dev/null || true
@@ -111,14 +130,22 @@ fi
 # Default behaviour: install built wheel
 if command -v uv >/dev/null 2>&1; then
     echo "Installing DeepGEMM wheel using uv..."
+    UV_INSTALL_ARGS=()
+    if [ "${DEEPGEMM_FORCE_REINSTALL:-0}" = "1" ]; then
+        UV_INSTALL_ARGS+=(--reinstall)
+    fi
     if [ -n "$VLLM_DOCKER_BUILD_CONTEXT" ]; then
-        uv pip install --system dist/*.whl
+        uv pip install --system "${UV_INSTALL_ARGS[@]}" dist/*.whl
     else
-        uv pip install dist/*.whl
+        uv pip install "${UV_INSTALL_ARGS[@]}" dist/*.whl
     fi
 else
     echo "Installing DeepGEMM wheel using pip..."
-    python3 -m pip install dist/*.whl
+    PIP_INSTALL_ARGS=()
+    if [ "${DEEPGEMM_FORCE_REINSTALL:-0}" = "1" ]; then
+        PIP_INSTALL_ARGS+=(--force-reinstall)
+    fi
+    python3 -m pip install "${PIP_INSTALL_ARGS[@]}" dist/*.whl
 fi
 
 popd

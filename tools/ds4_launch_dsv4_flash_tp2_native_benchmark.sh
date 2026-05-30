@@ -12,6 +12,10 @@ MODEL="${DSV4_FLASH_MODEL:-/home/$USER/models/hf/deepseek-ai/DeepSeek-V4-Flash}"
 RUNTIME_PYTHON="${DS4_VLLM_PYTHON:-/home/$USER/ds4-vllm-local/bin/python}"
 SOURCE_ROOT="${DS4_VLLM_SOURCE_ROOT:-/home/$USER/src/vllm}"
 DEFAULT_SPECULATIVE_CONFIG="{\"model\":\"$MODEL\",\"num_speculative_tokens\":2,\"method\":\"deepseek_mtp\"}"
+DEFAULT_COMPILATION_CONFIG='{"cudagraph_mode":"FULL_AND_PIECEWISE","custom_ops":["all"]}'
+DSV4_LINEAR_BACKEND="${DSV4_LINEAR_BACKEND:-auto}"
+DSV4_MOE_BACKEND="${DSV4_MOE_BACKEND:-auto}"
+DSV4_COMPILATION_CONFIG="${DSV4_COMPILATION_CONFIG:-$DEFAULT_COMPILATION_CONFIG}"
 
 export PYTHONPATH="$SOURCE_ROOT${PYTHONPATH:+:$PYTHONPATH}"
 export PATH="$(dirname "$RUNTIME_PYTHON"):$PATH"
@@ -21,24 +25,29 @@ export VLLM_TRITON_MLA_SPARSE="${VLLM_TRITON_MLA_SPARSE:-1}"
 export VLLM_USE_DEEP_GEMM="${VLLM_USE_DEEP_GEMM:-1}"
 export VLLM_USE_DEEP_GEMM_E8M0="${VLLM_USE_DEEP_GEMM_E8M0:-1}"
 export VLLM_DS4_STRICT_NATIVE_FP4="${VLLM_DS4_STRICT_NATIVE_FP4:-1}"
+export VLLM_DS4_ALLOW_DEEPGEMM_MXFP4_SM12X="${VLLM_DS4_ALLOW_DEEPGEMM_MXFP4_SM12X:-0}"
+export VLLM_DS4_ALLOW_DEEPGEMM_FP8_LINEAR_SM12X="${VLLM_DS4_ALLOW_DEEPGEMM_FP8_LINEAR_SM12X:-0}"
 if [[ "${VLLM_MXFP4_USE_MARLIN:-}" =~ ^(1|true|TRUE|yes|YES)$ ]]; then
   echo "DS4 strict native mode refuses VLLM_MXFP4_USE_MARLIN=$VLLM_MXFP4_USE_MARLIN" >&2
   exit 64
 fi
-unset VLLM_MXFP4_USE_MARLIN
+export VLLM_MXFP4_USE_MARLIN=0
 if [[ "${VLLM_TEST_FORCE_FP8_MARLIN:-}" =~ ^(1|true|TRUE|yes|YES)$ ]]; then
   echo "DS4 strict native mode refuses VLLM_TEST_FORCE_FP8_MARLIN=$VLLM_TEST_FORCE_FP8_MARLIN" >&2
   exit 64
 fi
 export VLLM_TEST_FORCE_FP8_MARLIN=0
+export VLLM_DISABLED_KERNELS="${VLLM_DISABLED_KERNELS:-MarlinNvFp4LinearKernel,EmulationNvFp4LinearKernel,MarlinMxFp4LinearKernel,MarlinMxfp8LinearKernel,EmulationMxfp8LinearKernel,MarlinFP8ScaledMMLinearKernel}"
 export NCCL_IB_DISABLE="${NCCL_IB_DISABLE:-0}"
 export NCCL_NET="${NCCL_NET:-IB}"
 export NCCL_IGNORE_CPU_AFFINITY="${NCCL_IGNORE_CPU_AFFINITY:-1}"
 export NCCL_DEBUG="${NCCL_DEBUG:-INFO}"
 export NCCL_DEBUG_SUBSYS="${NCCL_DEBUG_SUBSYS:-INIT,NET}"
 export VLLM_ALLOW_LONG_MAX_MODEL_LEN="${VLLM_ALLOW_LONG_MAX_MODEL_LEN:-1}"
+export DS4_NATIVE_PREFLIGHT_ACTIVE="${DS4_NATIVE_PREFLIGHT_ACTIVE:-1}"
 ds4_require_200g_fabric
 ds4_run_nccl_preflight 2
+ds4_run_dsv4_native_preflight
 ds4_run_native_blackwell_preflight
 
 COMMON_ARGS=(
@@ -54,18 +63,24 @@ COMMON_ARGS=(
   --distributed-executor-backend mp
   --kv-cache-dtype fp8
   --block-size 256
-  --linear-backend "${DSV4_LINEAR_BACKEND:-deep_gemm}"
-  --moe-backend "${DSV4_MOE_BACKEND:-deep_gemm}"
   --enable-prefix-caching
   --max-model-len "${DSV4_MAX_MODEL_LEN:-200000}"
   --max-num-seqs "${DSV4_MAX_NUM_SEQS:-2}"
   --max-num-batched-tokens "${DSV4_MAX_NUM_BATCHED_TOKENS:-4096}"
   --gpu-memory-utilization "${DSV4_GPU_MEMORY_UTILIZATION:-0.85}"
   --speculative-config "${DSV4_SPECULATIVE_CONFIG:-$DEFAULT_SPECULATIVE_CONFIG}"
-  --compilation-config "${DSV4_COMPILATION_CONFIG:-{\"cudagraph_mode\":\"FULL_AND_PIECEWISE\",\"custom_ops\":[\"all\"]}}"
+  --compilation-config "$DSV4_COMPILATION_CONFIG"
   --tokenizer-mode deepseek_v4
   --load-format safetensors
 )
+
+if [[ "$DSV4_LINEAR_BACKEND" != "auto" ]]; then
+  COMMON_ARGS+=(--linear-backend "$DSV4_LINEAR_BACKEND")
+fi
+
+if [[ "$DSV4_MOE_BACKEND" != "auto" ]]; then
+  COMMON_ARGS+=(--moe-backend "$DSV4_MOE_BACKEND")
+fi
 
 if [[ "$NODE_RANK" == "0" ]]; then
   exec "$RUNTIME_PYTHON" "${COMMON_ARGS[@]}" \
