@@ -17,7 +17,10 @@ DSV4_LINEAR_BACKEND="${DSV4_LINEAR_BACKEND:-auto}"
 DSV4_MOE_BACKEND="${DSV4_MOE_BACKEND:-auto}"
 DSV4_COMPILATION_CONFIG="${DSV4_COMPILATION_CONFIG:-$DEFAULT_COMPILATION_CONFIG}"
 DSV4_KV_CACHE_MEMORY_BYTES="${DSV4_KV_CACHE_MEMORY_BYTES:-12884901888}"
-SPECULATIVE_ARGS=(--speculative-config "${DSV4_SPECULATIVE_CONFIG:-$DEFAULT_SPECULATIVE_CONFIG}")
+SPECULATIVE_ARGS=()
+if [[ "${DSV4_ENABLE_MTP:-0}" =~ ^(1|true|TRUE|yes|YES|on|ON)$ ]]; then
+  SPECULATIVE_ARGS=(--speculative-config "${DSV4_SPECULATIVE_CONFIG:-$DEFAULT_SPECULATIVE_CONFIG}")
+fi
 if [[ "${DSV4_DISABLE_MTP:-0}" =~ ^(1|true|TRUE|yes|YES|on|ON)$ ]]; then
   SPECULATIVE_ARGS=()
 fi
@@ -99,8 +102,8 @@ COMMON_ARGS=(
   --distributed-executor-backend mp
   --max-model-len "${DSV4_MAX_MODEL_LEN:-65536}"
   --max-num-seqs "${DSV4_MAX_NUM_SEQS:-8}"
-  --max-num-batched-tokens "${DSV4_MAX_NUM_BATCHED_TOKENS:-16384}"
-  --gpu-memory-utilization "${DSV4_GPU_MEMORY_UTILIZATION:-0.82}"
+  --max-num-batched-tokens "${DSV4_MAX_NUM_BATCHED_TOKENS:-8192}"
+  --gpu-memory-utilization "${DSV4_GPU_MEMORY_UTILIZATION:-0.50}"
   "${KV_CACHE_MEMORY_ARGS[@]}"
   "${FLASHINFER_AUTOTUNE_ARGS[@]}"
   --block-size 256

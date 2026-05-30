@@ -114,6 +114,8 @@ if TYPE_CHECKING:
     VLLM_DS4_ALLOW_FLASHINFER_TRTLLM_MXFP4_SM12X: bool = False
     VLLM_DS4_ALLOW_DEEPGEMM_FP8_LINEAR_SM12X: bool = False
     VLLM_ENABLE_FLA_PACKED_RECURRENT_DECODE: bool = True
+    VLLM_QWEN_GDN_PROFILE_WARMUP: bool = True
+    VLLM_DS4_PROFILE_LAYER_TRACE: bool = False
     VLLM_DISABLE_PYNCCL: bool = False
     VLLM_USE_OINK_OPS: bool = False
     VLLM_ROCM_USE_AITER: bool = False
@@ -1115,6 +1117,19 @@ environment_variables: dict[str, Callable[[], Any]] = {
     ),
     "VLLM_ENABLE_FLA_PACKED_RECURRENT_DECODE": lambda: bool(
         int(os.getenv("VLLM_ENABLE_FLA_PACKED_RECURRENT_DECODE", "1"))
+    ),
+    # Qwen3.5 / Qwen3.6 Gated DeltaNet prefill warmup runs during
+    # profile_run() when attention metadata is intentionally absent. DS4 PP
+    # bring-up disables it so profile_run(skip_attn=True) remains bounded;
+    # run dedicated warmup/tuning jobs separately.
+    "VLLM_QWEN_GDN_PROFILE_WARMUP": lambda: (
+        os.environ.get("VLLM_QWEN_GDN_PROFILE_WARMUP", "1").strip().lower()
+        in ("1", "true", "yes", "on")
+    ),
+    # Optional DS4 stage-local layer trace for diagnosing PP profile hangs.
+    "VLLM_DS4_PROFILE_LAYER_TRACE": lambda: (
+        os.environ.get("VLLM_DS4_PROFILE_LAYER_TRACE", "0").strip().lower()
+        in ("1", "true", "yes", "on")
     ),
     # Disable pynccl (using torch.distributed instead)
     "VLLM_DISABLE_PYNCCL": lambda: (

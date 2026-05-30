@@ -1091,6 +1091,16 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
         which has fixed kernel parameters (no autotuning), so only the
         prefill (chunked) path needs warming up.
         """
+        if not envs.VLLM_QWEN_GDN_PROFILE_WARMUP:
+            if not self._prefill_kernels_warmed_up:
+                logger.info_once(
+                    "Skipping Qwen GDN prefill profile warmup for %s "
+                    "because VLLM_QWEN_GDN_PROFILE_WARMUP=0.",
+                    self.prefix,
+                )
+            self._prefill_kernels_warmed_up = True
+            return
+
         if self._prefill_kernels_warmed_up:
             return
         self._prefill_kernels_warmed_up = True

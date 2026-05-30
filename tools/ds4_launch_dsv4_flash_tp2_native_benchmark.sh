@@ -16,7 +16,11 @@ DEFAULT_COMPILATION_CONFIG='{"cudagraph_mode":"FULL_AND_PIECEWISE","custom_ops":
 DSV4_LINEAR_BACKEND="${DSV4_LINEAR_BACKEND:-auto}"
 DSV4_MOE_BACKEND="${DSV4_MOE_BACKEND:-auto}"
 DSV4_COMPILATION_CONFIG="${DSV4_COMPILATION_CONFIG:-$DEFAULT_COMPILATION_CONFIG}"
-SPECULATIVE_ARGS=(--speculative-config "${DSV4_SPECULATIVE_CONFIG:-$DEFAULT_SPECULATIVE_CONFIG}")
+DSV4_KV_CACHE_MEMORY_BYTES="${DSV4_KV_CACHE_MEMORY_BYTES:-12884901888}"
+SPECULATIVE_ARGS=()
+if [[ "${DSV4_ENABLE_MTP:-1}" =~ ^(1|true|TRUE|yes|YES|on|ON)$ ]]; then
+  SPECULATIVE_ARGS=(--speculative-config "${DSV4_SPECULATIVE_CONFIG:-$DEFAULT_SPECULATIVE_CONFIG}")
+fi
 if [[ "${DSV4_DISABLE_MTP:-0}" =~ ^(1|true|TRUE|yes|YES|on|ON)$ ]]; then
   SPECULATIVE_ARGS=()
 fi
@@ -70,6 +74,7 @@ COMMON_ARGS=(
   --master-port "$MASTER_PORT"
   --distributed-executor-backend mp
   --kv-cache-dtype fp8
+  --kv-cache-memory-bytes "$DSV4_KV_CACHE_MEMORY_BYTES"
   --block-size 256
   --enable-prefix-caching
   --max-model-len "${DSV4_MAX_MODEL_LEN:-65000}"

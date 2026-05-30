@@ -101,6 +101,8 @@ DS4_ENABLE_FLASHINFER_AUTOTUNE=0
 DS4_FLASHINFER_JIT_MAX_JOBS=1
 QWEN27_ASYNC_SCHEDULING=1
 QWEN27_ENFORCE_EAGER=0
+VLLM_QWEN_GDN_PROFILE_WARMUP=0
+QWEN27_GDN_PREFILL_BACKEND=triton
 PYTHONHASHSEED=0
 ```
 
@@ -128,7 +130,9 @@ not the isolated trigger and the Qwen launcher enables it by default. Set
 `QWEN27_ASYNC_SCHEDULING=0` only as a rollback or bisection switch.
 If the compiled Qwen hybrid layer path stalls during PP8 bringup, set
 `QWEN27_ENFORCE_EAGER=1` for a targeted architecture validation run; keep it off
-for performance runs.
+for performance runs. The normal service path disables Qwen GDN profile warmup
+with `VLLM_QWEN_GDN_PROFILE_WARMUP=0`; set `VLLM_DS4_PROFILE_LAYER_TRACE=1`
+only when you need per-layer PP stall logs.
 
 ## DeepSeek V4 Flash 8-way PP
 
@@ -149,12 +153,12 @@ The launcher preserves the existing DSV4 Flash recipe:
 
 ```text
 DSV4_MAX_NUM_SEQS=8
-DSV4_MAX_NUM_BATCHED_TOKENS=16384
-DSV4_GPU_MEMORY_UTILIZATION=0.82
+DSV4_MAX_NUM_BATCHED_TOKENS=8192
+DSV4_GPU_MEMORY_UTILIZATION=0.50
 DSV4_KV_CACHE_MEMORY_BYTES=12884901888
 DS4_ENABLE_FLASHINFER_AUTOTUNE=0
 DS4_FLASHINFER_JIT_MAX_JOBS=1
-DSV4_DISABLE_MTP=1 for first memory bringup, then unset after health is proven
+DSV4_ENABLE_MTP=0 for PP8 bringup, then set to 1 after health is proven
 --tensor-parallel-size 1
 --pipeline-parallel-size 8
 --nnodes 8

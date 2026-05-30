@@ -8,6 +8,7 @@ from itertools import islice
 import torch
 from torch import nn
 
+from vllm import envs
 from vllm._aiter_ops import rocm_aiter_ops
 from vllm.compilation.decorators import support_torch_compile
 from vllm.config import (
@@ -521,15 +522,32 @@ class Qwen3NextModel(nn.Module, EagleModelMixin):
             residual = intermediate_tensors["residual"]
 
         aux_hidden_states = self._maybe_add_hidden_state([], 0, hidden_states, residual)
+        trace_layers = envs.VLLM_DS4_PROFILE_LAYER_TRACE
+        pp_rank = get_pp_group().rank_in_group
         for layer_idx, layer in enumerate(
             islice(self.layers, self.start_layer, self.end_layer),
             start=self.start_layer,
         ):
+            if trace_layers:
+                logger.info(
+                    "DS4 Qwen PP rank %d entering layer %d (%s) with %d tokens",
+                    pp_rank,
+                    layer_idx,
+                    getattr(layer, "layer_type", "unknown"),
+                    hidden_states.shape[0],
+                )
             hidden_states, residual = layer(
                 positions=positions,
                 hidden_states=hidden_states,
                 residual=residual,
             )
+            if trace_layers:
+                torch.accelerator.synchronize()
+                logger.info(
+                    "DS4 Qwen PP rank %d finished layer %d",
+                    pp_rank,
+                    layer_idx,
+                )
             self._maybe_add_hidden_state(
                 aux_hidden_states, layer_idx + 1, hidden_states, residual
             )

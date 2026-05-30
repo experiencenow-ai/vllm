@@ -231,6 +231,10 @@ checks = [
         and "QWEN27_ENFORCE_EAGER" in qwen_nvfp4_pp8
         and "EAGER_ARGS=(--enforce-eager)" in qwen_pp8
         and "EAGER_ARGS=(--enforce-eager)" in qwen_nvfp4_pp8
+        and "VLLM_QWEN_GDN_PROFILE_WARMUP=\"${VLLM_QWEN_GDN_PROFILE_WARMUP:-0}\"" in qwen_pp8
+        and "VLLM_QWEN_GDN_PROFILE_WARMUP=\"${VLLM_QWEN_GDN_PROFILE_WARMUP:-0}\"" in qwen_nvfp4_pp8
+        and "--gdn-prefill-backend" in qwen_pp8
+        and "--gdn-prefill-backend" in qwen_nvfp4_pp8
         and '--gpu-memory-utilization "${QWEN27_GPU_MEMORY_UTILIZATION:-0.24}"' in qwen_nvfp4_pp8
         and "ds4_set_flashinfer_autotune_args DS4_ENABLE_FLASHINFER_AUTOTUNE" in qwen_pp8
         and "ds4_set_flashinfer_autotune_args DS4_ENABLE_FLASHINFER_AUTOTUNE" in qwen_nvfp4_pp8
@@ -277,7 +281,9 @@ checks = [
         "DSV4 PP8 launcher keeps bounded coexistence KV defaults",
         "DSV4_KV_CACHE_MEMORY_BYTES=\"${DSV4_KV_CACHE_MEMORY_BYTES:-12884901888}\"" in dsv4_pp8
         and "--kv-cache-memory-bytes \"$DSV4_KV_CACHE_MEMORY_BYTES\"" in dsv4_pp8
-        and '--max-num-batched-tokens "${DSV4_MAX_NUM_BATCHED_TOKENS:-16384}"' in dsv4_pp8
+        and '--max-num-batched-tokens "${DSV4_MAX_NUM_BATCHED_TOKENS:-8192}"' in dsv4_pp8
+        and '--gpu-memory-utilization "${DSV4_GPU_MEMORY_UTILIZATION:-0.50}"' in dsv4_pp8
+        and "DSV4_ENABLE_MTP:-0" in dsv4_pp8
         and "DSV4_KV_CACHE_MEMORY_BYTES=12884901888" in dual_pipeline_doc,
     ),
     (
