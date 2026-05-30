@@ -74,6 +74,11 @@ from .utils import request_memory
 
 logger = init_logger(__name__)
 
+
+def ds4_profile_debug_enabled() -> bool:
+    return os.environ.get("VLLM_DS4_PROFILE_DEBUG", "").lower() in ("1", "true", "yes")
+
+
 if TYPE_CHECKING:
     from vllm.model_executor.model_loader.tensorizer import TensorizerConfig
     from vllm.v1.worker.gpu_model_runner import GPUModelRunner
@@ -398,7 +403,11 @@ class Worker(WorkerBase):
             self.init_snapshot,
             weights_memory=int(self.model_runner.model_memory_usage),
         ) as profile_result:
+            if ds4_profile_debug_enabled():
+                logger.info("DS4 profile trace: starting memory profile_run")
             self.model_runner.profile_run()
+            if ds4_profile_debug_enabled():
+                logger.info("DS4 profile trace: finished memory profile_run")
 
             profile_torch_peak = torch.accelerator.memory_stats(self.device).get(
                 "allocated_bytes.all.peak", 0
@@ -413,7 +422,11 @@ class Worker(WorkerBase):
                 and self.vllm_config.compilation_config.cudagraph_mode
                 != CUDAGraphMode.NONE
             ):
+                if ds4_profile_debug_enabled():
+                    logger.info("DS4 profile trace: starting cudagraph memory profile")
                 cudagraph_memory_estimate = self.model_runner.profile_cudagraph_memory()
+                if ds4_profile_debug_enabled():
+                    logger.info("DS4 profile trace: finished cudagraph memory profile")
 
         # Use the pre-cudagraph torch peak to avoid double-counting.
         profile_result.torch_peak_increase = (
@@ -608,11 +621,19 @@ class Worker(WorkerBase):
 
         # Warmup and tune the kernels used during model execution before
         # cuda graph capture.
+        if ds4_profile_debug_enabled():
+            logger.info("DS4 profile trace: starting kernel warmup")
         kernel_warmup(self)
+        if ds4_profile_debug_enabled():
+            logger.info("DS4 profile trace: finished kernel warmup")
 
         cuda_graph_memory_bytes = 0
         if not self.model_config.enforce_eager:
+            if ds4_profile_debug_enabled():
+                logger.info("DS4 profile trace: starting model CUDA graph capture")
             cuda_graph_memory_bytes = self.model_runner.capture_model()
+            if ds4_profile_debug_enabled():
+                logger.info("DS4 profile trace: finished model CUDA graph capture")
 
         # Compare actual vs estimated CUDA graph memory (if we did profiling)
         if (
