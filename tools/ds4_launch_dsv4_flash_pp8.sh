@@ -44,10 +44,12 @@ export NCCL_IGNORE_CPU_AFFINITY="${NCCL_IGNORE_CPU_AFFINITY:-1}"
 export NCCL_DEBUG="${NCCL_DEBUG:-INFO}"
 export NCCL_DEBUG_SUBSYS="${NCCL_DEBUG_SUBSYS:-INIT,NET}"
 export DS4_NATIVE_PREFLIGHT_ACTIVE="${DS4_NATIVE_PREFLIGHT_ACTIVE:-1}"
+ds4_prepare_triton_jit_environment "dsv4-flash-pp${NNODES}"
 ds4_require_200g_fabric
 ds4_run_nccl_preflight "$NNODES"
 ds4_run_dsv4_native_preflight
 ds4_run_native_blackwell_preflight
+ds4_run_triton_jit_preflight
 
 export VLLM_USE_SIMPLE_KV_OFFLOAD="${VLLM_USE_SIMPLE_KV_OFFLOAD:-1}"
 export VLLM_SIMPLE_KV_OFFLOAD_PERSIST_ROOT="${VLLM_SIMPLE_KV_OFFLOAD_PERSIST_ROOT:-/mnt/nvme/ds4_hma_store/dsv4_flash_pp8/simple_cpu_offload}"

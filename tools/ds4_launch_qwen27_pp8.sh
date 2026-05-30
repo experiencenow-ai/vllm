@@ -3,6 +3,8 @@ set -euo pipefail
 
 : "${NODE_RANK:?set NODE_RANK to 0..7 on each Spark}"
 : "${HEAD_ADDR:?set HEAD_ADDR to the rank-0 Spark private IP or hostname}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/ds4_200g_guard.sh"
 
 NNODES="${NNODES:-8}"
 MASTER_PORT="${MASTER_PORT:-29527}"
@@ -19,6 +21,11 @@ export VLLM_PP_LAYER_PARTITION="${QWEN27_PP_LAYER_PARTITION:-9,9,9,8,8,8,8,5}"
 export LMCACHE_CONFIG_FILE="${LMCACHE_CONFIG_FILE:-/tmp/lmcache_qwen27_pp8.yaml}"
 export LMCACHE_ROOT="${LMCACHE_ROOT:-/mnt/nvme/ds4_lmcache/qwen27_pp8}"
 mkdir -p "$LMCACHE_ROOT"
+
+ds4_prepare_triton_jit_environment "qwen27-bf16-pp${NNODES}"
+if [[ "${DS4_QWEN_TRITON_JIT_PREFLIGHT:-1}" == "1" ]]; then
+  ds4_run_triton_jit_preflight
+fi
 
 cat > "$LMCACHE_CONFIG_FILE" <<YAML
 chunk_size: ${LMCACHE_CHUNK_SIZE:-784}

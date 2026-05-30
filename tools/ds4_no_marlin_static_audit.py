@@ -18,6 +18,8 @@ cutlass = (root / "vllm/model_executor/kernels/linear/scaled_mm/cutlass.py").rea
 modelopt = (root / "vllm/model_executor/layers/quantization/modelopt.py").read_text()
 dsv4_tp2 = (root / "tools/ds4_launch_dsv4_flash_tp2_native_benchmark.sh").read_text()
 dsv4_pp8 = (root / "tools/ds4_launch_dsv4_flash_pp8.sh").read_text()
+qwen_pp8 = (root / "tools/ds4_launch_qwen27_pp8.sh").read_text()
+triton_preflight = (root / "tools/ds4_triton_jit_preflight.py").read_text()
 
 checks = [
     (
@@ -81,6 +83,27 @@ checks = [
         "def process_weights_after_loading(self, layer: torch.nn.Module)" in cutlass
         and "weight_scale.dtype != torch.float8_e8m0fnu" in cutlass
         and "_upcast_e8m0_to_fp32(weight_scale).contiguous()" in cutlass,
+    ),
+
+    (
+        "DSV4 launchers prepare and preflight Triton JIT before serving",
+        all(
+            "ds4_prepare_triton_jit_environment" in script
+            and "ds4_run_triton_jit_preflight" in script
+            for script in (dsv4_tp2, dsv4_pp8)
+        ),
+    ),
+    (
+        "Qwen launcher inherits Triton JIT environment guard",
+        "ds4_prepare_triton_jit_environment" in qwen_pp8
+        and "ds4_run_triton_jit_preflight" in qwen_pp8,
+    ),
+    (
+        "Triton JIT preflight checks gcc, Python.h, libcuda, and active launch",
+        "check_python_headers" in triton_preflight
+        and "check_libcuda_compile" in triton_preflight
+        and "check_triton_active_jit" in triton_preflight
+        and "_ds4_triton_launcher_probe" in triton_preflight,
     ),
     (
         "DSV4 launchers keep compilation config override as valid JSON",

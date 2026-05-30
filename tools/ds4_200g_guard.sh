@@ -119,6 +119,182 @@ ds4_run_nccl_preflight()
   RANK="$NODE_RANK" WORLD_SIZE="$world_size" MASTER_ADDR="$HEAD_ADDR" MASTER_PORT="$preflight_port" "$RUNTIME_PYTHON" "$SCRIPT_DIR/ds4_nccl_preflight.py"
 }
 
+
+ds4_env_path_contains()
+{
+  local env_name="$1"
+  local entry="$2"
+  local current="${!env_name:-}"
+  local part
+  IFS=':' read -r -a parts <<< "$current"
+  for part in "${parts[@]}"; do
+    [[ "$part" == "$entry" ]] && return 0
+  done
+  return 1
+}
+
+ds4_prepend_env_path()
+{
+  local env_name="$1"
+  local entry="$2"
+  [[ -n "$entry" && -d "$entry" ]] || return 0
+  if ds4_env_path_contains "$env_name" "$entry"; then
+    return 0
+  fi
+  if [[ -n "${!env_name:-}" ]]; then
+    export "$env_name=$entry:${!env_name}"
+  else
+    export "$env_name=$entry"
+  fi
+}
+
+ds4_find_executable()
+{
+  local configured="$1"
+  shift
+  if [[ -n "$configured" ]]; then
+    if [[ -x "$configured" ]]; then
+      echo "$configured"
+      return 0
+    fi
+    if command -v "$configured" >/dev/null 2>&1; then
+      command -v "$configured"
+      return 0
+    fi
+    return 1
+  fi
+  local candidate
+  for candidate in "$@"; do
+    if command -v "$candidate" >/dev/null 2>&1; then
+      command -v "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
+ds4_find_libcuda_path()
+{
+  local dir candidate
+  local search_dirs=()
+  if [[ -n "${TRITON_LIBCUDA_PATH:-}" ]]; then
+    IFS=':' read -r -a search_dirs <<< "$TRITON_LIBCUDA_PATH"
+  fi
+  if [[ -n "${LD_LIBRARY_PATH:-}" ]]; then
+    local ld_dirs=()
+    IFS=':' read -r -a ld_dirs <<< "$LD_LIBRARY_PATH"
+    search_dirs+=("${ld_dirs[@]}")
+  fi
+  if [[ -n "${LIBRARY_PATH:-}" ]]; then
+    local library_dirs=()
+    IFS=':' read -r -a library_dirs <<< "$LIBRARY_PATH"
+    search_dirs+=("${library_dirs[@]}")
+  fi
+  for dir in \
+    "${CUDA_HOME:-}/lib64" \
+    "${CUDA_HOME:-}/lib64/stubs" \
+    "${CUDA_HOME:-}/compat" \
+    "${CUDA_HOME:-}/compat/lib" \
+    "${CUDA_HOME:-}/compat/lib.real" \
+    "${CUDA_PATH:-}/lib64" \
+    /usr/local/cuda/lib64 \
+    /usr/local/cuda/lib64/stubs \
+    /usr/local/cuda/compat \
+    /usr/local/cuda/compat/lib \
+    /usr/local/cuda/compat/lib.real \
+    /usr/lib/aarch64-linux-gnu \
+    /usr/lib/x86_64-linux-gnu \
+    /usr/lib64 \
+    /usr/lib \
+    /lib/aarch64-linux-gnu \
+    /lib/x86_64-linux-gnu \
+    /run/opengl-driver/lib
+  do
+    [[ -n "$dir" ]] && search_dirs+=("$dir")
+  done
+  for dir in "${search_dirs[@]}"; do
+    [[ -n "$dir" && -d "$dir" ]] || continue
+    for candidate in "$dir/libcuda.so" "$dir/libcuda.so.1" "$dir"/libcuda.so.*; do
+      [[ -e "$candidate" ]] || continue
+      echo "$candidate"
+      return 0
+    done
+  done
+  if command -v ldconfig >/dev/null 2>&1; then
+    ldconfig -p 2>/dev/null | awk '/libcuda\.so/{print $NF; exit}'
+  fi
+}
+
+ds4_prepare_triton_jit_environment()
+{
+  local service_name="${1:-ds4}"
+  local default_work_root
+  if [[ -d /mnt/nvme && -w /mnt/nvme ]]; then
+    default_work_root="/mnt/nvme/ds4_triton/$service_name"
+  else
+    default_work_root="/tmp/ds4_triton/$service_name"
+  fi
+  local work_root="${DS4_TRITON_WORK_ROOT:-$default_work_root}"
+  local cc cxx libcuda_path libcuda_dir symlink_dir
+
+  cc="$(ds4_find_executable "${CC:-${DS4_CC:-}}" gcc cc || true)"
+  [[ -n "$cc" ]] || ds4_200g_die "Triton JIT requires gcc/cc; set CC or DS4_CC"
+  export CC="$cc"
+
+  cxx="$(ds4_find_executable "${CXX:-${DS4_CXX:-}}" g++ c++ || true)"
+  [[ -n "$cxx" ]] || ds4_200g_die "Triton JIT requires g++/c++; set CXX or DS4_CXX"
+  export CXX="$cxx"
+
+  if [[ -z "${CUDA_HOME:-}" && -d /usr/local/cuda ]]; then
+    export CUDA_HOME=/usr/local/cuda
+  fi
+
+  mkdir -p \
+    "$work_root/tmp" \
+    "$work_root/cache" \
+    "$work_root/inductor_cache" \
+    "$work_root/torch_extensions" \
+    "$work_root/vllm_cache" \
+    "$work_root/libcuda" || ds4_200g_die "cannot create writable Triton JIT work root '$work_root'; set DS4_TRITON_WORK_ROOT"
+
+  export TMPDIR="${TMPDIR:-$work_root/tmp}"
+  export TRITON_CACHE_DIR="${TRITON_CACHE_DIR:-$work_root/cache}"
+  export TORCHINDUCTOR_CACHE_DIR="${TORCHINDUCTOR_CACHE_DIR:-$work_root/inductor_cache}"
+  export TORCH_EXTENSIONS_DIR="${TORCH_EXTENSIONS_DIR:-$work_root/torch_extensions}"
+  export VLLM_CACHE_ROOT="${VLLM_CACHE_ROOT:-$work_root/vllm_cache}"
+
+  libcuda_path="$(ds4_find_libcuda_path || true)"
+  [[ -n "$libcuda_path" ]] || ds4_200g_die "Triton JIT requires libcuda.so/libcuda.so.1 visible to the container"
+  libcuda_dir="$(dirname "$libcuda_path")"
+  ds4_prepend_env_path LD_LIBRARY_PATH "$libcuda_dir"
+  ds4_prepend_env_path LIBRARY_PATH "$libcuda_dir"
+
+  if [[ -e "$libcuda_dir/libcuda.so" ]]; then
+    export TRITON_LIBCUDA_PATH="${TRITON_LIBCUDA_PATH:-$libcuda_dir}"
+  else
+    symlink_dir="$work_root/libcuda"
+    ln -sfn "$libcuda_path" "$symlink_dir/libcuda.so"
+    export TRITON_LIBCUDA_PATH="$symlink_dir"
+    ds4_prepend_env_path LD_LIBRARY_PATH "$symlink_dir"
+    ds4_prepend_env_path LIBRARY_PATH "$symlink_dir"
+  fi
+
+  echo "DS4 Triton JIT env: service=$service_name CC=$CC CXX=$CXX TRITON_CACHE_DIR=$TRITON_CACHE_DIR TRITON_LIBCUDA_PATH=$TRITON_LIBCUDA_PATH TMPDIR=$TMPDIR" >&2
+}
+
+ds4_run_triton_jit_preflight()
+{
+  local args=()
+  echo "DS4 Triton JIT preflight: CC=${CC:-<unset>} TRITON_CACHE_DIR=${TRITON_CACHE_DIR:-<unset>} TRITON_LIBCUDA_PATH=${TRITON_LIBCUDA_PATH:-<unset>}" >&2
+  if [[ "${DS4_TRITON_ACTIVE_JIT_PREFLIGHT:-1}" != "1" ]]; then
+    args+=(--skip-active-jit-probe)
+  fi
+  if [[ "${DS4_TRITON_LIBCUDA_LINK_PREFLIGHT:-1}" != "1" ]]; then
+    args+=(--skip-libcuda-link-probe)
+  fi
+  "$RUNTIME_PYTHON" "$SCRIPT_DIR/ds4_triton_jit_preflight.py" "${args[@]}"
+}
+
 ds4_run_native_blackwell_preflight()
 {
   echo "DS4 native Blackwell preflight: strict=$VLLM_DS4_STRICT_NATIVE_FP4 deep_gemm=$VLLM_USE_DEEP_GEMM e8m0=$VLLM_USE_DEEP_GEMM_E8M0" >&2
