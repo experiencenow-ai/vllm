@@ -53,6 +53,22 @@ checks = [
         "VLLM_DS4_ALLOW_DEEPGEMM_MXFP4_SM12X" in mxfp4,
     ),
     (
+        "FlashInfer TRTLLM MXFP4 SM12x opt-in env exists",
+        "VLLM_DS4_ALLOW_FLASHINFER_TRTLLM_MXFP4_SM12X" in mxfp4,
+    ),
+    (
+        "FlashInfer TRTLLM MXFP4 is disabled on Blackwell family-120 by default",
+        "FlashInfer TRTLLM MXFP4 is disabled on CUDA Blackwell" in mxfp4
+        and "family-120 by default because the GB10/SM121 runtime selected" in mxfp4
+        and "sm100f TRTLLM batched GEMM runner" in mxfp4,
+    ),
+    (
+        "Blackwell family-120 MXFP4 auto list prefers CUTLASS unless TRTLLM is opted in",
+        "Mxfp4MoeBackend.FLASHINFER_CUTLASS_MXFP4_MXFP8" in mxfp4
+        and "if _flashinfer_trtllm_mxfp4_allowed_on_current_device()" in mxfp4
+        and "backends.insert(0, Mxfp4MoeBackend.FLASHINFER_TRTLLM_MXFP4_MXFP8)" in mxfp4,
+    ),
+    (
         "DeepGEMM MXFP4 is disabled on Blackwell family-120 by default",
         "DeepGEMM_MXFP4 is disabled on CUDA Blackwell family-120" in mxfp4
         and "csrc/apis/gemm.hpp:99" in mxfp4,

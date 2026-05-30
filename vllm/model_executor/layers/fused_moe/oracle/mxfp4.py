@@ -284,11 +284,18 @@ def _deepgemm_mxfp4_allowed_on_current_device() -> bool:
     return envs.VLLM_DS4_ALLOW_DEEPGEMM_MXFP4_SM12X
 
 
+def _flashinfer_trtllm_mxfp4_allowed_on_current_device() -> bool:
+    if not _is_cuda_blackwell_family_120():
+        return True
+    return envs.VLLM_DS4_ALLOW_FLASHINFER_TRTLLM_MXFP4_SM12X
+
+
 def _get_native_blackwell_mxfp4_backends() -> list[Mxfp4MoeBackend]:
     backends = [
-        Mxfp4MoeBackend.FLASHINFER_TRTLLM_MXFP4_MXFP8,
         Mxfp4MoeBackend.FLASHINFER_CUTLASS_MXFP4_MXFP8,
     ]
+    if _flashinfer_trtllm_mxfp4_allowed_on_current_device():
+        backends.insert(0, Mxfp4MoeBackend.FLASHINFER_TRTLLM_MXFP4_MXFP8)
     if _deepgemm_mxfp4_allowed_on_current_device():
         backends.insert(1, Mxfp4MoeBackend.DEEPGEMM_MXFP4)
     return backends
@@ -312,12 +319,16 @@ def _get_priority_backends_for_gpt_oss() -> list[Mxfp4MoeBackend]:
     the auto list native-only there; unsupported native backends must fail.
     """
     if _is_cuda_blackwell():
-        backends = [
-            Mxfp4MoeBackend.FLASHINFER_TRTLLM_MXFP4_BF16,
-            Mxfp4MoeBackend.FLASHINFER_TRTLLM_MXFP4_MXFP8,
+        backends = []
+        if _flashinfer_trtllm_mxfp4_allowed_on_current_device():
+            backends.extend([
+                Mxfp4MoeBackend.FLASHINFER_TRTLLM_MXFP4_BF16,
+                Mxfp4MoeBackend.FLASHINFER_TRTLLM_MXFP4_MXFP8,
+            ])
+        backends.extend([
             Mxfp4MoeBackend.FLASHINFER_CUTLASS_MXFP4_BF16,
             Mxfp4MoeBackend.FLASHINFER_CUTLASS_MXFP4_MXFP8,
-        ]
+        ])
         if _deepgemm_mxfp4_allowed_on_current_device():
             backends.append(Mxfp4MoeBackend.DEEPGEMM_MXFP4)
         return backends
@@ -435,6 +446,21 @@ def _raise_if_ds4_strict_native_mxfp4_rejects(
             "TRTLLM/CUTLASS MXFP4/MXFP8, or set "
             "VLLM_DS4_ALLOW_DEEPGEMM_MXFP4_SM12X=1 only after the runtime "
             "DeepGEMM wheel proves SM12x fp8_fp4_gemm_nt support."
+            + detail
+        )
+    if (
+        backend in TRTLLM_BACKENDS
+        and not _flashinfer_trtllm_mxfp4_allowed_on_current_device()
+    ):
+        detail = f" Last native-backend rejection: {reason}." if reason else ""
+        raise RuntimeError(
+            "FlashInfer TRTLLM MXFP4 is disabled on CUDA Blackwell "
+            "family-120 by default because the GB10/SM121 runtime selected "
+            "an sm100f TRTLLM batched GEMM runner for DSV4 MXFP4/MXFP8. "
+            "Use the FlashInfer CUTLASS MXFP4/MXFP8 backend, or set "
+            "VLLM_DS4_ALLOW_FLASHINFER_TRTLLM_MXFP4_SM12X=1 only after "
+            "the installed FlashInfer/TRTLLM stack proves native SM12x "
+            "runner coverage."
             + detail
         )
     if _is_native_blackwell_mxfp4_backend(backend):

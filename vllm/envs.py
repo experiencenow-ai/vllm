@@ -111,6 +111,7 @@ if TYPE_CHECKING:
     VLLM_DISABLED_KERNELS: list[str] = []
     VLLM_DS4_STRICT_NATIVE_FP4: bool = False
     VLLM_DS4_ALLOW_DEEPGEMM_MXFP4_SM12X: bool = False
+    VLLM_DS4_ALLOW_FLASHINFER_TRTLLM_MXFP4_SM12X: bool = False
     VLLM_DS4_ALLOW_DEEPGEMM_FP8_LINEAR_SM12X: bool = False
     VLLM_ENABLE_FLA_PACKED_RECURRENT_DECODE: bool = True
     VLLM_DISABLE_PYNCCL: bool = False
@@ -1089,6 +1090,15 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # Blackwell-family-120 production selection unless explicitly opted in.
     "VLLM_DS4_ALLOW_DEEPGEMM_MXFP4_SM12X": lambda: (
         os.environ.get("VLLM_DS4_ALLOW_DEEPGEMM_MXFP4_SM12X", "0")
+        .strip()
+        .lower()
+        in ("1", "true")
+    ),
+    # DS4 / GB10: FlashInfer TRTLLM MXFP4 currently dispatches SM100f
+    # runner kernels on SM121 in our Spark runtime. Keep it out of
+    # Blackwell-family-120 production selection unless explicitly opted in.
+    "VLLM_DS4_ALLOW_FLASHINFER_TRTLLM_MXFP4_SM12X": lambda: (
+        os.environ.get("VLLM_DS4_ALLOW_FLASHINFER_TRTLLM_MXFP4_SM12X", "0")
         .strip()
         .lower()
         in ("1", "true")
