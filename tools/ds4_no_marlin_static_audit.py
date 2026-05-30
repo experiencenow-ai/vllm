@@ -179,7 +179,7 @@ checks = [
         "--pipeline-parallel-size \"$NNODES\"" in qwen_pp8
         and "--distributed-executor-backend mp" in qwen_pp8
         and "QWEN27_PP_LAYER_PARTITION must sum to 64 Qwen decoder layers" in qwen_pp8
-        and "qwen27_bf16_pp${NNODES}/${DS4_NODE_ID}" in qwen_pp8,
+        and "DEFAULT_LMCACHE_ROOT=\"$HOME/ds4_lmcache/qwen27_bf16_pp${NNODES}/${DS4_NODE_ID}\"" in qwen_pp8,
     ),
     (
         "Qwen launchers hardfail without 200G/NCCL preflight",
@@ -202,7 +202,7 @@ checks = [
         "LMCacheConnectorV1" in qwen_nvfp4_pp8
         and '"use_native":true' in qwen_nvfp4_pp8
         and '"lmcache_kv_cache_group_id":"auto"' in qwen_nvfp4_pp8
-        and "qwen27_nvfp4_pp${PP_SIZE}/${DS4_NODE_ID}" in qwen_nvfp4_pp8,
+        and "DEFAULT_LMCACHE_ROOT=\"$HOME/ds4_lmcache/qwen27_nvfp4_pp${PP_SIZE}/${DS4_NODE_ID}\"" in qwen_nvfp4_pp8,
     ),
     (
         "Triton JIT preflight checks gcc, Python.h, libcuda, and active launch",

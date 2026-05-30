@@ -13,6 +13,11 @@ MODEL="${QWEN27_BF16_MODEL:-/home/$USER/models/hf/Qwen/Qwen3.6-27B}"
 RUNTIME_PYTHON="${DS4_VLLM_PYTHON:-/home/$USER/ds4-vllm-local/bin/python}"
 SOURCE_ROOT="${DS4_VLLM_SOURCE_ROOT:-/home/$USER/src/vllm}"
 DS4_NODE_ID="${DS4_NODE_ID:-spark${NODE_RANK}}"
+if [[ -d /mnt/nvme && -w /mnt/nvme ]]; then
+  DEFAULT_LMCACHE_ROOT="/mnt/nvme/ds4_lmcache/qwen27_bf16_pp${NNODES}/${DS4_NODE_ID}"
+else
+  DEFAULT_LMCACHE_ROOT="$HOME/ds4_lmcache/qwen27_bf16_pp${NNODES}/${DS4_NODE_ID}"
+fi
 
 if [[ -z "${QWEN27_PP_LAYER_PARTITION:-}" ]]; then
   if [[ "$NNODES" == "8" ]]; then
@@ -50,7 +55,7 @@ export PYTHONHASHSEED="${PYTHONHASHSEED:-0}"
 export VLLM_ALLOW_LONG_MAX_MODEL_LEN="${VLLM_ALLOW_LONG_MAX_MODEL_LEN:-1}"
 export VLLM_PP_LAYER_PARTITION="$QWEN27_PP_LAYER_PARTITION"
 export LMCACHE_CONFIG_FILE="${LMCACHE_CONFIG_FILE:-/tmp/lmcache_qwen27_bf16_pp${NNODES}_${DS4_NODE_ID}.yaml}"
-export LMCACHE_ROOT="${LMCACHE_ROOT:-/mnt/nvme/ds4_lmcache/qwen27_bf16_pp${NNODES}/${DS4_NODE_ID}}"
+export LMCACHE_ROOT="${LMCACHE_ROOT:-$DEFAULT_LMCACHE_ROOT}"
 mkdir -p "$LMCACHE_ROOT"
 
 ds4_prepare_triton_jit_environment "qwen27-bf16-pp${NNODES}"
