@@ -193,10 +193,12 @@ checks = [
         "Qwen NVFP4 cache-primary launcher uses ModelOpt FP4 without MTP by default",
         "--quantization modelopt" in qwen_nvfp4_pp8
         and "--linear-backend \"${QWEN27_LINEAR_BACKEND:-flashinfer-cutlass}\"" in qwen_nvfp4_pp8
-        and "QWEN27_ATTENTION_BACKEND=\"${QWEN27_ATTENTION_BACKEND:-FLASH_ATTN}\"" in qwen_nvfp4_pp8
+        and "QWEN27_KV_CACHE_DTYPE=\"${QWEN27_KV_CACHE_DTYPE:-fp8}\"" in qwen_nvfp4_pp8
+        and "QWEN27_ATTENTION_BACKEND=\"${QWEN27_ATTENTION_BACKEND:-TRITON_ATTN}\"" in qwen_nvfp4_pp8
         and "--attention-backend \"$QWEN27_ATTENTION_BACKEND\"" in qwen_nvfp4_pp8
+        and "FlashAttention rejects fp8 KV cache" in qwen_nvfp4_pp8
         and "QWEN27_ALLOW_FLASHINFER_ATTENTION_EXPERIMENTAL" in qwen_nvfp4_pp8
-        and "--kv-cache-dtype \"${QWEN27_KV_CACHE_DTYPE:-fp8}\"" in qwen_nvfp4_pp8
+        and "--kv-cache-dtype \"$QWEN27_KV_CACHE_DTYPE\"" in qwen_nvfp4_pp8
         and "QWEN27_NVFP4_ENABLE_MTP_EXPERIMENTAL" in qwen_nvfp4_pp8
         and "SPEC_ARGS=()" in qwen_nvfp4_pp8,
     ),

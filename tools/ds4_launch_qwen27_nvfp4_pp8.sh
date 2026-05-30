@@ -77,9 +77,19 @@ export LMCACHE_ROOT="${LMCACHE_ROOT:-$DEFAULT_LMCACHE_ROOT}"
 export LMCACHE_CONFIG_FILE="${LMCACHE_CONFIG_FILE:-/tmp/lmcache_qwen27_nvfp4_pp${PP_SIZE}_${DS4_NODE_ID}.yaml}"
 mkdir -p "$LMCACHE_ROOT"
 
-QWEN27_ATTENTION_BACKEND="${QWEN27_ATTENTION_BACKEND:-FLASH_ATTN}"
+QWEN27_KV_CACHE_DTYPE="${QWEN27_KV_CACHE_DTYPE:-fp8}"
+QWEN27_ATTENTION_BACKEND="${QWEN27_ATTENTION_BACKEND:-TRITON_ATTN}"
 case "$QWEN27_ATTENTION_BACKEND" in
-  FLASH_ATTN|TRITON_ATTN)
+  TRITON_ATTN)
+    ;;
+  FLASH_ATTN)
+    case "$QWEN27_KV_CACHE_DTYPE" in
+      fp8*)
+        echo "Qwen NVFP4 PP cannot use FLASH_ATTN with QWEN27_KV_CACHE_DTYPE=$QWEN27_KV_CACHE_DTYPE." >&2
+        echo "Reason: FlashAttention rejects fp8 KV cache in this vLLM path; use TRITON_ATTN or switch KV to auto/bfloat16." >&2
+        exit 2
+        ;;
+    esac
     ;;
   FLASHINFER)
     echo "Qwen NVFP4 PP does not default to FLASHINFER attention on GB10." >&2
@@ -135,7 +145,7 @@ COMMON_ARGS=(
   --quantization modelopt
   --linear-backend "${QWEN27_LINEAR_BACKEND:-flashinfer-cutlass}"
   --attention-backend "$QWEN27_ATTENTION_BACKEND"
-  --kv-cache-dtype "${QWEN27_KV_CACHE_DTYPE:-fp8}"
+  --kv-cache-dtype "$QWEN27_KV_CACHE_DTYPE"
   --language-model-only
   --enable-chunked-prefill
   --enable-prefix-caching
