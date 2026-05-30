@@ -4,6 +4,7 @@
 import functools
 import gc
 import itertools
+import os
 import threading
 import time
 from collections import defaultdict
@@ -226,6 +227,11 @@ if TYPE_CHECKING:
     from vllm.v1.worker.encoder_cudagraph import EncoderCudaGraphManager
 
 logger = init_logger(__name__)
+
+
+def ds4_profile_debug_enabled() -> bool:
+    return os.environ.get("VLLM_DS4_PROFILE_DEBUG", "").lower() in ("1", "true", "yes")
+
 
 AttnMetadataDict: TypeAlias = dict[str, AttentionMetadata]
 # list when ubatching is enabled
@@ -6161,20 +6167,43 @@ class GPUModelRunner(
                             self.encoder_cache[f"tmp_{i}"] = output
 
         # Add `is_profile` here to pre-allocate communication buffers
+        if ds4_profile_debug_enabled():
+            logger.info(
+                "DS4 profile trace: profile_run dummy_run start max_num_tokens=%s",
+                self.max_num_tokens,
+            )
         hidden_states, last_hidden_states = self._dummy_run(
             self.max_num_tokens, is_profile=True
         )
+        if ds4_profile_debug_enabled():
+            logger.info("DS4 profile trace: profile_run dummy_run finished")
         if get_pp_group().is_last_rank:
             if self.is_pooling_model:
+                if ds4_profile_debug_enabled():
+                    logger.info("DS4 profile trace: profile_run pooler start")
                 output = self._dummy_pooler_run(hidden_states)
             else:
+                if ds4_profile_debug_enabled():
+                    logger.info("DS4 profile trace: profile_run sampler start")
                 output = self._dummy_sampler_run(last_hidden_states)
+            if ds4_profile_debug_enabled():
+                logger.info("DS4 profile trace: profile_run output finished")
         else:
             output = None
+            if ds4_profile_debug_enabled():
+                logger.info(
+                    "DS4 profile trace: profile_run skipped output on non-last PP rank"
+                )
+        if ds4_profile_debug_enabled():
+            logger.info("DS4 profile trace: profile_run device sync start")
         self._sync_device()
+        if ds4_profile_debug_enabled():
+            logger.info("DS4 profile trace: profile_run device sync finished")
         del hidden_states, output
         self.encoder_cache.clear()
         gc.collect()
+        if ds4_profile_debug_enabled():
+            logger.info("DS4 profile trace: profile_run cleanup finished")
 
     def _init_minimal_kv_cache_for_profiling(self) -> None:
         from vllm.v1.core.kv_cache_utils import (
@@ -6471,7 +6500,23 @@ class GPUModelRunner(
         if num_warmups is None:
             num_warmups = self.compilation_config.cudagraph_num_of_warmups
         force_attention = cudagraph_runtime_mode == CUDAGraphMode.FULL
-        for _ in range(num_warmups):
+        if ds4_profile_debug_enabled():
+            logger.info(
+                "DS4 profile trace: warmup/capture start mode=%s tokens=%s warmups=%s uniform=%s",
+                cudagraph_runtime_mode,
+                desc.num_tokens,
+                num_warmups,
+                desc.uniform,
+            )
+        for i in range(num_warmups):
+            if ds4_profile_debug_enabled():
+                logger.info(
+                    "DS4 profile trace: warmup dummy_run start mode=%s tokens=%s step=%s/%s",
+                    cudagraph_runtime_mode,
+                    desc.num_tokens,
+                    i + 1,
+                    num_warmups,
+                )
             self._dummy_run(
                 desc.num_tokens,
                 cudagraph_runtime_mode=CUDAGraphMode.NONE,
@@ -6482,6 +6527,20 @@ class GPUModelRunner(
                 remove_lora=False,
                 num_active_loras=desc.num_active_loras,
                 profile_seq_lens=profile_seq_lens,
+            )
+            if ds4_profile_debug_enabled():
+                logger.info(
+                    "DS4 profile trace: warmup dummy_run finished mode=%s tokens=%s step=%s/%s",
+                    cudagraph_runtime_mode,
+                    desc.num_tokens,
+                    i + 1,
+                    num_warmups,
+                )
+        if ds4_profile_debug_enabled():
+            logger.info(
+                "DS4 profile trace: graph dummy_run start mode=%s tokens=%s",
+                cudagraph_runtime_mode,
+                desc.num_tokens,
             )
         self._dummy_run(
             desc.num_tokens,
@@ -6494,6 +6553,12 @@ class GPUModelRunner(
             is_graph_capturing=True,
             profile_seq_lens=profile_seq_lens,
         )
+        if ds4_profile_debug_enabled():
+            logger.info(
+                "DS4 profile trace: graph dummy_run finished mode=%s tokens=%s",
+                cudagraph_runtime_mode,
+                desc.num_tokens,
+            )
 
     def _capture_cudagraphs(
         self,
