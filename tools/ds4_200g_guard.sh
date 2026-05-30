@@ -7,9 +7,15 @@ ds4_200g_print_diag()
     echo "NODE_RANK: ${NODE_RANK:-<unset>}"
     echo "HEAD_ADDR: ${HEAD_ADDR:-<unset>}"
     echo "DS4_200G_IFNAME: ${DS4_200G_IFNAME:-<unset>}"
+    echo "DS4_CONTROL_IFNAME: ${DS4_CONTROL_IFNAME:-<unset>}"
+    echo "DS4_200G_ADVERTISE_LOOPBACK: ${DS4_200G_ADVERTISE_LOOPBACK:-<unset>}"
+    echo "DS4_NODE_LOOPBACK: ${DS4_NODE_LOOPBACK:-<unset>}"
+    echo "DS4_200G_NCCL_TRANSPORT: ${DS4_200G_NCCL_TRANSPORT:-<unset>}"
     echo "NCCL_SOCKET_IFNAME: ${NCCL_SOCKET_IFNAME:-<unset>}"
     echo "GLOO_SOCKET_IFNAME: ${GLOO_SOCKET_IFNAME:-<unset>}"
     echo "TP_SOCKET_IFNAME: ${TP_SOCKET_IFNAME:-<unset>}"
+    echo "NCCL_NET: ${NCCL_NET:-<unset>}"
+    echo "NCCL_IB_DISABLE: ${NCCL_IB_DISABLE:-<unset>}"
     echo "VLLM_HOST_IP: ${VLLM_HOST_IP:-<unset>}"
     echo "interfaces:"
     ip -o -4 addr show 2>/dev/null || true
@@ -17,15 +23,20 @@ ds4_200g_print_diag()
       echo "route to HEAD_ADDR:"
       ip route get "$HEAD_ADDR" 2>/dev/null || true
     fi
-    if [[ -n "${DS4_200G_IFNAME:-}" && -d "/sys/class/net/$DS4_200G_IFNAME" ]]; then
-      echo "selected interface:"
-      ip -o -4 addr show dev "$DS4_200G_IFNAME" 2>/dev/null || true
-      if [[ -r "/sys/class/net/$DS4_200G_IFNAME/speed" ]]; then
-        echo "speed: $(cat "/sys/class/net/$DS4_200G_IFNAME/speed" 2>/dev/null)Mb/s"
-      fi
-      if [[ -r "/sys/class/net/$DS4_200G_IFNAME/carrier" ]]; then
-        echo "carrier: $(cat "/sys/class/net/$DS4_200G_IFNAME/carrier" 2>/dev/null)"
-      fi
+    if [[ -n "${DS4_200G_IFNAME:-}" ]]; then
+      echo "selected interface(s):"
+      local diag_ifname
+      IFS=',' read -r -a diag_ifnames <<< "$DS4_200G_IFNAME"
+      for diag_ifname in "${diag_ifnames[@]}"; do
+        [[ -n "$diag_ifname" ]] || continue
+        ip -o -4 addr show dev "$diag_ifname" 2>/dev/null || true
+        if [[ -r "/sys/class/net/$diag_ifname/speed" ]]; then
+          echo "$diag_ifname speed: $(cat "/sys/class/net/$diag_ifname/speed" 2>/dev/null)Mb/s"
+        fi
+        if [[ -r "/sys/class/net/$diag_ifname/carrier" ]]; then
+          echo "$diag_ifname carrier: $(cat "/sys/class/net/$diag_ifname/carrier" 2>/dev/null)"
+        fi
+      done
     fi
   } >&2
 }
@@ -71,34 +82,106 @@ ds4_200g_check_or_export()
   export "$name=$value"
 }
 
+ds4_200g_csv_contains()
+{
+  local csv="$1"
+  local needle="$2"
+  local item
+  IFS=',' read -r -a items <<< "$csv"
+  for item in "${items[@]}"; do
+    [[ "$item" == "$needle" ]] && return 0
+  done
+  return 1
+}
+
+ds4_200g_rank_loopback()
+{
+  if [[ -n "${DS4_NODE_LOOPBACK:-}" ]]; then
+    echo "$DS4_NODE_LOOPBACK"
+    return 0
+  fi
+  if [[ "$NODE_RANK" =~ ^[0-9]+$ ]]; then
+    echo "10.10.100.$((10 + NODE_RANK))"
+    return 0
+  fi
+  return 1
+}
+
 ds4_require_200g_fabric()
 {
-  local ifname speed carrier local_ip bound_dev route_dev hca
+  local ifname ifnames_csv control_ifname speed carrier local_ip bound_dev route_dev hca hcas_csv advertise_ip advertise_bound nccl_transport
   : "${NODE_RANK:?set NODE_RANK before ds4_require_200g_fabric}"
   : "${HEAD_ADDR:?set HEAD_ADDR before ds4_require_200g_fabric}"
   if [[ -z "${DS4_200G_IFNAME:-}" ]]; then
-    ds4_200g_die "DS4_200G_IFNAME is unset; set it to this rank's 200GbE/RoCE interface"
+    ds4_200g_die "DS4_200G_IFNAME is unset; set it to this rank's 200GbE/RoCE interface list"
   fi
-  ifname="$DS4_200G_IFNAME"
-  [[ -d "/sys/class/net/$ifname" ]] || ds4_200g_die "interface '$ifname' does not exist"
-  [[ -r "/sys/class/net/$ifname/speed" ]] || ds4_200g_die "interface '$ifname' does not expose link speed"
-  speed="$(cat "/sys/class/net/$ifname/speed" 2>/dev/null || true)"
-  [[ "$speed" == "200000" ]] || ds4_200g_die "interface '$ifname' speed is ${speed:-unknown}Mb/s, expected 200000Mb/s"
-  carrier="$(cat "/sys/class/net/$ifname/carrier" 2>/dev/null || true)"
-  [[ "$carrier" == "1" ]] || ds4_200g_die "interface '$ifname' carrier is ${carrier:-unknown}, expected 1"
-  local_ip="$(ds4_200g_if_ip "$ifname")"
-  [[ -n "$local_ip" ]] || ds4_200g_die "interface '$ifname' has no IPv4 fabric address"
-  ds4_200g_check_or_export NCCL_SOCKET_IFNAME "$ifname"
-  ds4_200g_check_or_export GLOO_SOCKET_IFNAME "$ifname"
-  ds4_200g_check_or_export TP_SOCKET_IFNAME "$ifname"
-  hca="$(ds4_200g_hca_for_if "$ifname")"
-  [[ -n "$hca" ]] || ds4_200g_die "no RoCE HCA maps to interface '$ifname'"
-  ds4_200g_check_or_export NCCL_IB_DISABLE "0"
-  ds4_200g_check_or_export NCCL_NET "IB"
-  ds4_200g_check_or_export NCCL_IB_HCA "$hca"
+  ifnames_csv="$DS4_200G_IFNAME"
+  hcas_csv=""
+  local_ip=""
+  IFS=',' read -r -a ifnames <<< "$ifnames_csv"
+  for ifname in "${ifnames[@]}"; do
+    [[ -n "$ifname" ]] || ds4_200g_die "DS4_200G_IFNAME contains an empty interface"
+    [[ -d "/sys/class/net/$ifname" ]] || ds4_200g_die "interface '$ifname' does not exist"
+    [[ -r "/sys/class/net/$ifname/speed" ]] || ds4_200g_die "interface '$ifname' does not expose link speed"
+    speed="$(cat "/sys/class/net/$ifname/speed" 2>/dev/null || true)"
+    [[ "$speed" == "200000" ]] || ds4_200g_die "interface '$ifname' speed is ${speed:-unknown}Mb/s, expected 200000Mb/s"
+    carrier="$(cat "/sys/class/net/$ifname/carrier" 2>/dev/null || true)"
+    [[ "$carrier" == "1" ]] || ds4_200g_die "interface '$ifname' carrier is ${carrier:-unknown}, expected 1"
+    if [[ -z "$local_ip" ]]; then
+      local_ip="$(ds4_200g_if_ip "$ifname")"
+    fi
+    hca="$(ds4_200g_hca_for_if "$ifname")"
+    [[ -n "$hca" ]] || ds4_200g_die "no RoCE HCA maps to interface '$ifname'"
+    if [[ -n "$hcas_csv" ]]; then
+      hcas_csv="$hcas_csv,$hca"
+    else
+      hcas_csv="$hca"
+    fi
+  done
+  [[ -n "$local_ip" ]] || ds4_200g_die "selected interface list has no IPv4 fabric address"
+  control_ifname="${DS4_CONTROL_IFNAME:-$ifnames_csv}"
+  IFS=',' read -r -a control_ifnames <<< "$control_ifname"
+  for ifname in "${control_ifnames[@]}"; do
+    [[ -n "$ifname" ]] || ds4_200g_die "DS4_CONTROL_IFNAME contains an empty interface"
+    [[ -d "/sys/class/net/$ifname" ]] || ds4_200g_die "control interface '$ifname' does not exist"
+  done
+  ds4_200g_check_or_export NCCL_SOCKET_IFNAME "$ifnames_csv"
+  ds4_200g_check_or_export GLOO_SOCKET_IFNAME "$control_ifname"
+  ds4_200g_check_or_export TP_SOCKET_IFNAME "$ifnames_csv"
+  nccl_transport="${DS4_200G_NCCL_TRANSPORT:-}"
+  if [[ -z "$nccl_transport" ]]; then
+    if [[ "${DS4_200G_ADVERTISE_LOOPBACK:-0}" =~ ^(1|true|TRUE|yes|YES|on|ON)$ ]]; then
+      nccl_transport="socket"
+    else
+      nccl_transport="ib"
+    fi
+  fi
+  case "$nccl_transport" in
+    socket)
+      export DS4_200G_NCCL_TRANSPORT="socket"
+      ds4_200g_check_or_export NCCL_IB_DISABLE "1"
+      ds4_200g_check_or_export NCCL_NET "Socket"
+      if [[ -n "${NCCL_IB_HCA:-}" ]]; then
+        ds4_200g_die "NCCL_IB_HCA is set while DS4_200G_NCCL_TRANSPORT=socket; unset it or use DS4_200G_NCCL_TRANSPORT=ib"
+      fi
+      ;;
+    ib)
+      export DS4_200G_NCCL_TRANSPORT="ib"
+      ds4_200g_check_or_export NCCL_IB_DISABLE "0"
+      ds4_200g_check_or_export NCCL_NET "IB"
+      ds4_200g_check_or_export NCCL_IB_HCA "$hcas_csv"
+      ;;
+    *)
+      ds4_200g_die "unsupported DS4_200G_NCCL_TRANSPORT=$nccl_transport; expected socket or ib"
+      ;;
+  esac
   bound_dev="$(ds4_200g_bound_dev "$HEAD_ADDR")"
   if [[ "$NODE_RANK" == "0" ]]; then
-    if [[ "$bound_dev" == "$ifname" ]]; then
+    if ds4_200g_csv_contains "$control_ifname" "$bound_dev"; then
+      ds4_200g_check_or_export VLLM_HOST_IP "$HEAD_ADDR"
+      return
+    fi
+    if ds4_200g_csv_contains "$ifnames_csv" "$bound_dev"; then
       ds4_200g_check_or_export VLLM_HOST_IP "$local_ip"
       return
     fi
@@ -106,19 +189,100 @@ ds4_require_200g_fabric()
       ds4_200g_check_or_export VLLM_HOST_IP "$HEAD_ADDR"
       return
     fi
-    ds4_200g_die "rank 0 HEAD_ADDR '$HEAD_ADDR' is bound to '${bound_dev:-no local device}', not 200G interface '$ifname'"
+    ds4_200g_die "rank 0 HEAD_ADDR '$HEAD_ADDR' is bound to '${bound_dev:-no local device}', not 200G interface list '$ifnames_csv'"
+  fi
+  route_dev="$(ds4_200g_route_dev "$HEAD_ADDR")"
+  ds4_200g_csv_contains "$ifnames_csv" "$route_dev" || ds4_200g_die "route to HEAD_ADDR '$HEAD_ADDR' uses '${route_dev:-no route}', not 200G interface list '$ifnames_csv'"
+  if [[ "${DS4_200G_ADVERTISE_LOOPBACK:-0}" =~ ^(1|true|TRUE|yes|YES|on|ON)$ ]]; then
+    advertise_ip="$(ds4_200g_rank_loopback)" || ds4_200g_die "could not derive routed loopback for NODE_RANK=$NODE_RANK"
+    advertise_bound="$(ds4_200g_bound_dev "$advertise_ip")"
+    if [[ "$advertise_bound" != "lo" ]] && ! ds4_200g_csv_contains "$control_ifname" "$advertise_bound"; then
+      ds4_200g_die "advertised loopback '$advertise_ip' is bound to '${advertise_bound:-no local device}', expected lo or control interface '$control_ifname'"
+    fi
+    ds4_200g_check_or_export VLLM_HOST_IP "$advertise_ip"
+    return
   fi
   ds4_200g_check_or_export VLLM_HOST_IP "$local_ip"
-  route_dev="$(ds4_200g_route_dev "$HEAD_ADDR")"
-  [[ "$route_dev" == "$ifname" ]] || ds4_200g_die "route to HEAD_ADDR '$HEAD_ADDR' uses '${route_dev:-no route}', not 200G interface '$ifname'"
 }
 
 ds4_run_nccl_preflight()
 {
   local world_size="$1"
   local preflight_port="${DS4_NCCL_PREFLIGHT_PORT:-$((MASTER_PORT + 1000))}"
-  echo "DS4 200G NCCL preflight: rank=$NODE_RANK/$world_size addr=$HEAD_ADDR port=$preflight_port if=$DS4_200G_IFNAME hca=$NCCL_IB_HCA host_ip=$VLLM_HOST_IP" >&2
-  RANK="$NODE_RANK" WORLD_SIZE="$world_size" MASTER_ADDR="$HEAD_ADDR" MASTER_PORT="$preflight_port" "$RUNTIME_PYTHON" "$SCRIPT_DIR/ds4_nccl_preflight.py"
+  local mode="${DS4_NCCL_PREFLIGHT_MODE:-nccl}"
+  local timeout_s="${DS4_NCCL_PREFLIGHT_TIMEOUT:-90}"
+  echo "DS4 200G NCCL preflight: rank=$NODE_RANK/$world_size addr=$HEAD_ADDR port=$preflight_port if=$DS4_200G_IFNAME transport=${DS4_200G_NCCL_TRANSPORT:-<unset>} hca=${NCCL_IB_HCA:-<unset>} host_ip=$VLLM_HOST_IP" >&2
+  case "$mode" in
+    gloo)
+      if command -v timeout >/dev/null 2>&1; then
+        RANK="$NODE_RANK" WORLD_SIZE="$world_size" MASTER_ADDR="$HEAD_ADDR" MASTER_PORT="$preflight_port" DS4_NCCL_PREFLIGHT_BACKEND=gloo timeout --kill-after=5s "$((timeout_s + 15))s" "$RUNTIME_PYTHON" "$SCRIPT_DIR/ds4_nccl_preflight.py"
+      else
+        RANK="$NODE_RANK" WORLD_SIZE="$world_size" MASTER_ADDR="$HEAD_ADDR" MASTER_PORT="$preflight_port" DS4_NCCL_PREFLIGHT_BACKEND=gloo "$RUNTIME_PYTHON" "$SCRIPT_DIR/ds4_nccl_preflight.py"
+      fi
+      ;;
+    nccl)
+      if command -v timeout >/dev/null 2>&1; then
+        RANK="$NODE_RANK" WORLD_SIZE="$world_size" MASTER_ADDR="$HEAD_ADDR" MASTER_PORT="$preflight_port" timeout --kill-after=5s "$((timeout_s + 15))s" "$RUNTIME_PYTHON" "$SCRIPT_DIR/ds4_nccl_preflight.py"
+      else
+        RANK="$NODE_RANK" WORLD_SIZE="$world_size" MASTER_ADDR="$HEAD_ADDR" MASTER_PORT="$preflight_port" "$RUNTIME_PYTHON" "$SCRIPT_DIR/ds4_nccl_preflight.py"
+      fi
+      ;;
+    store)
+      echo "DS4 store preflight: rank=$NODE_RANK/$world_size addr=$HEAD_ADDR port=$preflight_port" >&2
+      RANK="$NODE_RANK" WORLD_SIZE="$world_size" MASTER_ADDR="$HEAD_ADDR" MASTER_PORT="$preflight_port" DS4_STORE_PREFLIGHT_TIMEOUT="$timeout_s" "$RUNTIME_PYTHON" - <<'PY'
+import os
+import socket
+import sys
+import time
+
+rank = int(os.environ["RANK"])
+world = int(os.environ["WORLD_SIZE"])
+addr = os.environ["MASTER_ADDR"]
+port = int(os.environ["MASTER_PORT"])
+timeout = float(os.environ.get("DS4_STORE_PREFLIGHT_TIMEOUT", "90"))
+
+if rank == 0:
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.bind((addr, port))
+    sock.listen(world)
+    sock.settimeout(timeout)
+    seen = {0}
+    deadline = time.monotonic() + timeout
+    while len(seen) < world:
+        remaining = max(0.1, deadline - time.monotonic())
+        sock.settimeout(remaining)
+        conn, peer = sock.accept()
+        with conn:
+            data = conn.recv(32).decode("ascii", "replace").strip()
+            seen.add(int(data))
+            conn.sendall(b"ok\n")
+    print(f"DS4 store preflight passed on rank 0: {sorted(seen)}", file=sys.stderr)
+else:
+    deadline = time.monotonic() + timeout
+    last = None
+    while time.monotonic() < deadline:
+        try:
+            with socket.create_connection((addr, port), timeout=3.0) as conn:
+                conn.sendall(f"{rank}\n".encode("ascii"))
+                data = conn.recv(32)
+                if data.strip() == b"ok":
+                    print(f"DS4 store preflight passed on rank {rank}", file=sys.stderr)
+                    break
+        except OSError as exc:
+            last = exc
+            time.sleep(0.5)
+    else:
+        raise SystemExit(f"DS4 store preflight failed on rank {rank}: {last}")
+PY
+      ;;
+    skip)
+      echo "DS4 NCCL preflight skipped by DS4_NCCL_PREFLIGHT_MODE=skip" >&2
+      ;;
+    *)
+      ds4_200g_die "unsupported DS4_NCCL_PREFLIGHT_MODE=$mode; expected gloo, nccl, store, or skip"
+      ;;
+  esac
 }
 
 

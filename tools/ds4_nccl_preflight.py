@@ -21,6 +21,7 @@ def _print_env() -> None:
         "MASTER_PORT",
         "RANK",
         "WORLD_SIZE",
+        "DS4_NCCL_PREFLIGHT_BACKEND",
         "DS4_200G_IFNAME",
         "NCCL_SOCKET_IFNAME",
         "GLOO_SOCKET_IFNAME",
@@ -29,6 +30,8 @@ def _print_env() -> None:
         "NCCL_NET",
         "NCCL_IB_HCA",
         "NCCL_IB_DISABLE",
+        "NCCL_DEBUG",
+        "NCCL_DEBUG_SUBSYS",
     ]
     for name in names:
         print(f"{name}={_env(name, '<unset>')}", file=sys.stderr)
@@ -40,27 +43,43 @@ def main() -> int:
     master_addr = _env("MASTER_ADDR")
     master_port = _env("MASTER_PORT")
     timeout_s = int(_env("DS4_NCCL_PREFLIGHT_TIMEOUT", "90"))
+    backend = _env("DS4_NCCL_PREFLIGHT_BACKEND", "nccl")
+    if backend not in {"gloo", "nccl"}:
+        print(
+            "DS4 NCCL preflight failed: "
+            f"unsupported DS4_NCCL_PREFLIGHT_BACKEND={backend}",
+            file=sys.stderr,
+        )
+        return 64
     print(
         "DS4 NCCL preflight starting "
-        f"rank={rank}/{world_size} endpoint={master_addr}:{master_port}",
+        f"rank={rank}/{world_size} endpoint={master_addr}:{master_port} "
+        f"backend={backend}",
         file=sys.stderr,
     )
     _print_env()
-    if not torch.cuda.is_available():
+    if backend == "nccl" and not torch.cuda.is_available():
         print("DS4 NCCL preflight failed: CUDA is not available", file=sys.stderr)
         return 65
     try:
-        torch.cuda.set_device(0)
+        if backend == "nccl":
+            torch.cuda.set_device(0)
+        print("DS4 NCCL preflight stage: init_process_group begin", file=sys.stderr)
         dist.init_process_group(
-            "nccl",
+            backend,
             init_method=f"tcp://{master_addr}:{master_port}",
             rank=rank,
             world_size=world_size,
             timeout=_dt.timedelta(seconds=timeout_s),
         )
-        value = torch.tensor([rank + 1], dtype=torch.float32, device="cuda")
+        print("DS4 NCCL preflight stage: init_process_group complete", file=sys.stderr)
+        device = "cuda" if backend == "nccl" else "cpu"
+        value = torch.tensor([rank + 1], dtype=torch.float32, device=device)
+        print("DS4 NCCL preflight stage: all_reduce begin", file=sys.stderr)
         dist.all_reduce(value, op=dist.ReduceOp.SUM)
-        torch.cuda.synchronize()
+        if backend == "nccl":
+            torch.cuda.synchronize()
+        print("DS4 NCCL preflight stage: all_reduce complete", file=sys.stderr)
         expected = float((world_size * (world_size + 1)) // 2)
         actual = float(value.item())
         if actual != expected:

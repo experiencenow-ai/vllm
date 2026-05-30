@@ -287,12 +287,25 @@ class Worker(WorkerBase):
             # memory snapshot
             # This ensures NCCL buffers are allocated before we measure
             # available memory
+            dist_backend = os.getenv("VLLM_DS4_PP_ONLY_GLOBAL_BACKEND", "")
+            if dist_backend:
+                if (
+                    self.parallel_config.tensor_parallel_size != 1
+                    or self.parallel_config.pipeline_parallel_size <= 1
+                ):
+                    raise RuntimeError(
+                        "VLLM_DS4_PP_ONLY_GLOBAL_BACKEND is only valid for "
+                        "pipeline-only DS4 deployments with TP=1 and PP>1."
+                    )
+            else:
+                dist_backend = current_platform.dist_backend
+
             init_worker_distributed_environment(
                 self.vllm_config,
                 self.rank,
                 self.distributed_init_method,
                 self.local_rank,
-                current_platform.dist_backend,
+                dist_backend,
             )
 
             if self.use_v2_model_runner:

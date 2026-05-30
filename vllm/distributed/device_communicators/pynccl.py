@@ -3,6 +3,7 @@
 
 
 # ===================== import region =====================
+import os
 import threading
 
 import torch
@@ -138,12 +139,21 @@ class PyNcclCommunicator:
                 self.world_size, self.unique_id, self.rank
             )
 
-            stream = current_stream()
-            # A small all_reduce for warmup.
-            data = torch.zeros(1, device=device)
-            self.all_reduce(data)
-            stream.synchronize()
-            del data
+            skip_warmup = os.getenv(
+                "VLLM_DS4_SKIP_PYNCCL_WARMUP_ALLREDUCE", ""
+            ).lower() in ("1", "true", "yes", "on")
+            if skip_warmup:
+                logger.warning_once(
+                    "Skipping PyNCCL warmup all_reduce because "
+                    "VLLM_DS4_SKIP_PYNCCL_WARMUP_ALLREDUCE=1."
+                )
+            else:
+                stream = current_stream()
+                # A small all_reduce for warmup.
+                data = torch.zeros(1, device=device)
+                self.all_reduce(data)
+                stream.synchronize()
+                del data
 
     def destroy(self):
         if self.available and not self.disabled:
