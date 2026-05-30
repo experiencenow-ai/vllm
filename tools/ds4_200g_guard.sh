@@ -225,6 +225,50 @@ ds4_find_libcuda_path()
   fi
 }
 
+ds4_prepare_python_include_environment()
+{
+  local py_tag include_dir
+  local include_dirs=()
+  py_tag="$("$RUNTIME_PYTHON" -c 'import sys; print("python%d.%d" % sys.version_info[:2])')" || ds4_200g_die "cannot determine Python include tag from '$RUNTIME_PYTHON'"
+
+  if [[ -n "${DS4_PYTHON_INCLUDE_DIR:-}" ]]; then
+    include_dirs+=("$DS4_PYTHON_INCLUDE_DIR")
+  fi
+  if [[ -n "${DS4_PYTHON_DEV_ROOT:-}" ]]; then
+    include_dirs+=(
+      "$DS4_PYTHON_DEV_ROOT/usr/include/$py_tag"
+      "$DS4_PYTHON_DEV_ROOT/usr/include"
+      "$DS4_PYTHON_DEV_ROOT/usr/include/aarch64-linux-gnu/$py_tag"
+      "$DS4_PYTHON_DEV_ROOT/usr/include/x86_64-linux-gnu/$py_tag"
+    )
+  fi
+  include_dirs+=(
+    "$HOME/ds4_deps/python3.12-dev/usr/include/$py_tag"
+    "$HOME/ds4_deps/python3.12-dev/usr/include"
+    "$HOME/ds4_deps/python3.12-dev/usr/include/aarch64-linux-gnu/$py_tag"
+    "$HOME/ds4_deps/python3.12-dev/usr/include/x86_64-linux-gnu/$py_tag"
+    "$HOME/standard-runtimes/python3.12-dev-extract/usr/include/$py_tag"
+    "$HOME/standard-runtimes/python3.12-dev-extract/usr/include"
+    "$HOME/standard-runtimes/python3.12-dev-extract/usr/include/aarch64-linux-gnu/$py_tag"
+    "$HOME/standard-runtimes/python3.12-dev-extract/usr/include/x86_64-linux-gnu/$py_tag"
+    "$HOME/.cache/ds4-python312-dev/root/usr/include/$py_tag"
+    "$HOME/.cache/ds4-python312-dev/root/usr/include"
+    "$HOME/.cache/ds4-python312-dev/root/usr/include/aarch64-linux-gnu/$py_tag"
+    "$HOME/.cache/ds4-python312-dev/root/usr/include/x86_64-linux-gnu/$py_tag"
+  )
+
+  for include_dir in "${include_dirs[@]}"; do
+    [[ -n "$include_dir" && -d "$include_dir" ]] || continue
+    ds4_prepend_env_path CPATH "$include_dir"
+    ds4_prepend_env_path C_INCLUDE_PATH "$include_dir"
+    ds4_prepend_env_path CPLUS_INCLUDE_PATH "$include_dir"
+    ds4_prepend_env_path DS4_PYTHON_INCLUDE_DIRS "$include_dir"
+  done
+  if [[ -z "${DS4_PYTHON_INCLUDE_DIRS:-}" ]]; then
+    ds4_200g_die "Triton JIT requires Python.h; install ${py_tag}-dev or set DS4_PYTHON_DEV_ROOT/DS4_PYTHON_INCLUDE_DIR"
+  fi
+}
+
 ds4_prepare_triton_jit_environment()
 {
   local service_name="${1:-ds4}"
@@ -248,6 +292,7 @@ ds4_prepare_triton_jit_environment()
   if [[ -z "${CUDA_HOME:-}" && -d /usr/local/cuda ]]; then
     export CUDA_HOME=/usr/local/cuda
   fi
+  ds4_prepare_python_include_environment
 
   mkdir -p \
     "$work_root/tmp" \
@@ -279,7 +324,7 @@ ds4_prepare_triton_jit_environment()
     ds4_prepend_env_path LIBRARY_PATH "$symlink_dir"
   fi
 
-  echo "DS4 Triton JIT env: service=$service_name CC=$CC CXX=$CXX TRITON_CACHE_DIR=$TRITON_CACHE_DIR TRITON_LIBCUDA_PATH=$TRITON_LIBCUDA_PATH TMPDIR=$TMPDIR" >&2
+  echo "DS4 Triton JIT env: service=$service_name CC=$CC CXX=$CXX TRITON_CACHE_DIR=$TRITON_CACHE_DIR TRITON_LIBCUDA_PATH=$TRITON_LIBCUDA_PATH TMPDIR=$TMPDIR DS4_PYTHON_INCLUDE_DIRS=${DS4_PYTHON_INCLUDE_DIRS:-<unset>}" >&2
 }
 
 ds4_run_triton_jit_preflight()

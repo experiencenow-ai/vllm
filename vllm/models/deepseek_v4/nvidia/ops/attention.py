@@ -204,12 +204,12 @@ class DeepseekV4MultiHeadLatentAttentionWrapper(PluggableLayer):
         self.wo_b = mla_modules.wo_b
 
         # Pick fp8_einsum recipe based on GPU arch:
-        # SM90: FP32 block scales stay [g, r/128, d/128] → sfb_gran_mn=128
-        # SM100: INT32 packed scales become [g, r, ...] → sfb_gran_mn=1
+        # SM90/SM12x: FP32 block scales stay [g, r/128, d/128].
+        # SM100: INT32 packed scales become [g, r, ...] → sfb_gran_mn=1.
         cap = current_platform.get_device_capability()
         assert cap is not None, "DeepseekV4 attention requires a CUDA device"
-        self._einsum_recipe = (1, 128, 128) if cap.major <= 9 else (1, 1, 128)
-        self._tma_aligned_scales = cap.major >= 10
+        self._einsum_recipe = (1, 1, 128) if cap.major == 10 else (1, 128, 128)
+        self._tma_aligned_scales = cap.major == 10
 
         self.rotary_emb = mla_modules.rotary_emb
         self.indexer_rotary_emb = mla_modules.indexer_rotary_emb

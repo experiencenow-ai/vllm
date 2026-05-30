@@ -16,9 +16,14 @@ mxfp4 = (root / "vllm/model_executor/layers/fused_moe/oracle/mxfp4.py").read_tex
 linear = (root / "vllm/model_executor/kernels/linear/__init__.py").read_text()
 cutlass = (root / "vllm/model_executor/kernels/linear/scaled_mm/cutlass.py").read_text()
 modelopt = (root / "vllm/model_executor/layers/quantization/modelopt.py").read_text()
+fp8_utils = (
+    root / "vllm/model_executor/layers/quantization/utils/fp8_utils.py"
+).read_text()
+ds4_attention = (root / "vllm/models/deepseek_v4/nvidia/ops/attention.py").read_text()
 dsv4_tp2 = (root / "tools/ds4_launch_dsv4_flash_tp2_native_benchmark.sh").read_text()
 dsv4_pp8 = (root / "tools/ds4_launch_dsv4_flash_pp8.sh").read_text()
 qwen_pp8 = (root / "tools/ds4_launch_qwen27_pp8.sh").read_text()
+guard = (root / "tools/ds4_200g_guard.sh").read_text()
 triton_preflight = (root / "tools/ds4_triton_jit_preflight.py").read_text()
 
 checks = [
@@ -84,6 +89,16 @@ checks = [
         and "weight_scale.dtype != torch.float8_e8m0fnu" in cutlass
         and "_upcast_e8m0_to_fp32(weight_scale).contiguous()" in cutlass,
     ),
+    (
+        "SM12x DSV4 fp8_einsum uses DeepGEMM-supported FP32 scale recipe",
+        "self._einsum_recipe = (1, 1, 128) if cap.major == 10 else (1, 128, 128)" in ds4_attention
+        and "self._tma_aligned_scales = cap.major == 10" in ds4_attention,
+    ),
+    (
+        "SM12x DSV4 BMM weight scales stay raw for fp8_einsum",
+        "current_platform.has_device_capability(120)" in fp8_utils
+        and "SM12x DeepGEMM fp8_einsum kernels consume raw FP32 scale blocks" in fp8_utils,
+    ),
 
     (
         "DSV4 launchers prepare and preflight Triton JIT before serving",
@@ -104,6 +119,12 @@ checks = [
         and "check_libcuda_compile" in triton_preflight
         and "check_triton_active_jit" in triton_preflight
         and "_ds4_triton_launcher_probe" in triton_preflight,
+    ),
+    (
+        "Triton JIT guard can use user-space Python dev headers",
+        "ds4_prepare_python_include_environment" in guard
+        and "DS4_PYTHON_INCLUDE_DIRS" in guard
+        and "DS4_PYTHON_INCLUDE_DIRS" in triton_preflight,
     ),
     (
         "DSV4 launchers keep compilation config override as valid JSON",
