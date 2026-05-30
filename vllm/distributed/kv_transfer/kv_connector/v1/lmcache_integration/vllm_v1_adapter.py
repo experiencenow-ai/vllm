@@ -679,6 +679,24 @@ def _create_zmq_offload_server(
     )
 
 
+def _lookup_unpin_compat(lmcache_engine, lookup_ids: list[str]) -> None:
+    """Unpin lookup ids across batch and legacy LMCache APIs."""
+    if not lookup_ids:
+        return
+    try:
+        lmcache_engine.lookup_unpin(lookup_ids)
+        return
+    except TypeError as exc:
+        if "unhashable type" not in str(exc):
+            raise
+        logger.info(
+            "LMCache lookup_unpin rejected batched ids; "
+            "falling back to legacy one-id calls"
+        )
+    for lookup_id in lookup_ids:
+        lmcache_engine.lookup_unpin(lookup_id)
+
+
 @dataclass
 class LMCacheConnectorMetadata(KVConnectorMetadata):
     requests: list[ReqMeta] = field(default_factory=list)
@@ -1197,8 +1215,9 @@ class LMCacheConnectorV1Impl:
         connector_metadata = self._parent._get_connector_metadata()
         assert isinstance(connector_metadata, LMCacheConnectorMetadata)
 
-        self.lmcache_engine.lookup_unpin(  # type: ignore
-            connector_metadata.lookup_requests_in_step
+        _lookup_unpin_compat(
+            self.lmcache_engine,
+            connector_metadata.lookup_requests_in_step,
         )
 
         if self.kv_role == "kv_consumer":
