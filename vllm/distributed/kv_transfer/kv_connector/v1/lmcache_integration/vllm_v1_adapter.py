@@ -486,6 +486,38 @@ def _build_lmcache_metadata(
     )
 
 
+def _build_lmcache_metadata_from_vllm_config(
+    lmcache_config: LMCacheEngineConfig,
+    vllm_config: "VllmConfig",
+    role: str,
+):
+    model_config = vllm_config.model_config
+    parallel_config = vllm_config.parallel_config
+    cache_config = vllm_config.cache_config
+    kv_dtype = get_kv_cache_torch_dtype(cache_config.cache_dtype, model_config.dtype)
+    use_mla = mla_enabled(model_config)
+    num_layer = model_config.get_num_layers(parallel_config)
+    num_layer += _calculate_mtp_layers(vllm_config, model_config)
+    chunk_size = lmcache_config.chunk_size
+    num_kv_head = model_config.get_num_kv_heads(parallel_config)
+    head_size = model_config.get_head_size()
+    kv_shape = (num_layer, 1 if use_mla else 2, chunk_size, num_kv_head, head_size)
+    local_world_size = max(1, torch.accelerator.device_count())
+    local_rank = parallel_config.rank % local_world_size
+    metadata = _build_lmcache_metadata(
+        lmcache_config,
+        vllm_config,
+        kv_dtype,
+        kv_shape,
+        use_mla,
+        local_rank,
+        local_world_size,
+    )
+    if hasattr(metadata, "role"):
+        metadata.role = role
+    return metadata
+
+
 def _init_lmcache_engine(
     lmcache_config: LMCacheEngineConfig,
     vllm_config: "VllmConfig",
@@ -604,6 +636,8 @@ def _init_lmcache_engine(
         tpg.broadcast,
         tpg.broadcast_object,
     )
+    if not hasattr(engine, "metadata") or engine.metadata is None:
+        engine.metadata = metadata
 
     return engine
 
@@ -681,8 +715,11 @@ class LMCacheConnectorV1Impl:
         self._stats_monitor = LMCStatsMonitor.GetOrCreate()
         if role == KVConnectorRole.SCHEDULER:
             # Create lookup client using factory
+            lookup_metadata = _build_lmcache_metadata_from_vllm_config(
+                config, vllm_config, "scheduler"
+            )
             self.lookup_client = LookupClientFactory.create_lookup_client(
-                vllm_config, config
+                config, lookup_metadata
             )
             self._unfinished_requests: dict[str, Request] = {}
             self._lookup_requests_in_step: list[str] = []
@@ -706,8 +743,13 @@ class LMCacheConnectorV1Impl:
 
             # Create lookup server using factory
             assert self.lmcache_engine is not None
+            lookup_metadata = getattr(self.lmcache_engine, "metadata", None)
+            if lookup_metadata is None:
+                lookup_metadata = _build_lmcache_metadata_from_vllm_config(
+                    config, vllm_config, "worker"
+                )
             self.lookup_server = LookupClientFactory.create_lookup_server(
-                self.lmcache_engine, vllm_config
+                self.lmcache_engine, lookup_metadata
             )
 
             self.offload_server = ZMQOffloadServer(

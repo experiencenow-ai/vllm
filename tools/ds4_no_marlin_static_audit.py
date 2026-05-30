@@ -33,6 +33,10 @@ dsv4_tp2 = (root / "tools/ds4_launch_dsv4_flash_tp2_native_benchmark.sh").read_t
 dsv4_pp8 = (root / "tools/ds4_launch_dsv4_flash_pp8.sh").read_text()
 qwen_pp8 = (root / "tools/ds4_launch_qwen27_pp8.sh").read_text()
 qwen_nvfp4_pp8 = (root / "tools/ds4_launch_qwen27_nvfp4_pp8.sh").read_text()
+lmcache_adapter = (
+    root
+    / "vllm/distributed/kv_transfer/kv_connector/v1/lmcache_integration/vllm_v1_adapter.py"
+).read_text()
 guard = (root / "tools/ds4_200g_guard.sh").read_text()
 triton_preflight = (root / "tools/ds4_triton_jit_preflight.py").read_text()
 
@@ -208,6 +212,13 @@ checks = [
         and '"use_native":true' in qwen_nvfp4_pp8
         and '"lmcache_kv_cache_group_id":"auto"' in qwen_nvfp4_pp8
         and "DEFAULT_LMCACHE_ROOT=\"$HOME/ds4_lmcache/qwen27_nvfp4_pp${PP_SIZE}/${DS4_NODE_ID}\"" in qwen_nvfp4_pp8,
+    ),
+    (
+        "LMCache lookup client/server receive LMCache metadata, not VllmConfig",
+        "def _build_lmcache_metadata_from_vllm_config(" in lmcache_adapter
+        and "LookupClientFactory.create_lookup_client(\n                config, lookup_metadata\n            )" in lmcache_adapter
+        and "lookup_metadata = getattr(self.lmcache_engine, \"metadata\", None)" in lmcache_adapter
+        and "LookupClientFactory.create_lookup_server(\n                self.lmcache_engine, lookup_metadata\n            )" in lmcache_adapter,
     ),
     (
         "Triton JIT preflight checks gcc, Python.h, libcuda, and active launch",
