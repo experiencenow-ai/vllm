@@ -91,7 +91,6 @@ ds4_require_200g_fabric()
   ds4_200g_check_or_export NCCL_SOCKET_IFNAME "$ifname"
   ds4_200g_check_or_export GLOO_SOCKET_IFNAME "$ifname"
   ds4_200g_check_or_export TP_SOCKET_IFNAME "$ifname"
-  ds4_200g_check_or_export VLLM_HOST_IP "$local_ip"
   hca="$(ds4_200g_hca_for_if "$ifname")"
   [[ -n "$hca" ]] || ds4_200g_die "no RoCE HCA maps to interface '$ifname'"
   ds4_200g_check_or_export NCCL_IB_DISABLE "0"
@@ -100,13 +99,16 @@ ds4_require_200g_fabric()
   bound_dev="$(ds4_200g_bound_dev "$HEAD_ADDR")"
   if [[ "$NODE_RANK" == "0" ]]; then
     if [[ "$bound_dev" == "$ifname" ]]; then
+      ds4_200g_check_or_export VLLM_HOST_IP "$local_ip"
       return
     fi
     if [[ "$bound_dev" == "lo" && "${DS4_200G_ALLOW_LOOPBACK_HEAD:-0}" == "1" && "$HEAD_ADDR" == 10.10.* ]]; then
+      ds4_200g_check_or_export VLLM_HOST_IP "$HEAD_ADDR"
       return
     fi
     ds4_200g_die "rank 0 HEAD_ADDR '$HEAD_ADDR' is bound to '${bound_dev:-no local device}', not 200G interface '$ifname'"
   fi
+  ds4_200g_check_or_export VLLM_HOST_IP "$local_ip"
   route_dev="$(ds4_200g_route_dev "$HEAD_ADDR")"
   [[ "$route_dev" == "$ifname" ]] || ds4_200g_die "route to HEAD_ADDR '$HEAD_ADDR' uses '${route_dev:-no route}', not 200G interface '$ifname'"
 }
