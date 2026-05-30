@@ -432,6 +432,18 @@ class Worker(WorkerBase):
         profile_result.torch_peak_increase = (
             profile_torch_peak - profile_result.before_profile.torch_peak
         )
+        if (
+            profile_result.non_torch_increase < 0
+            and current_platform.is_integrated_gpu(self.device.index)
+        ):
+            logger.warning(
+                "Memory profiling observed reclaimable UMA memory increasing by "
+                "%s GiB during startup; treating non-torch memory increase as "
+                "zero for KV-cache sizing.",
+                format_gib(-profile_result.non_torch_increase),
+            )
+            profile_result.non_torch_increase = 0
+
         profile_result.non_kv_cache_memory = (
             profile_result.non_torch_increase
             + profile_result.torch_peak_increase
@@ -453,15 +465,26 @@ class Worker(WorkerBase):
         free_gpu_memory = profile_result.after_profile.free_memory
         # NOTE(woosuk): Here we assume that the other processes using the same
         # GPU did not change their memory usage during the profiling.
-        assert self.init_snapshot.free_memory >= free_gpu_memory, (
-            "Error in memory profiling. "
-            f"Initial free memory {format_gib(self.init_snapshot.free_memory)} GiB, "
-            f"current free memory {format_gib(free_gpu_memory)} GiB. "
-            "This happens when other processes sharing the same container "
-            "release GPU memory while vLLM is profiling during initialization. "
-            "To fix this, ensure consistent GPU memory allocation or "
-            "isolate vLLM in its own container."
-        )
+        if self.init_snapshot.free_memory < free_gpu_memory:
+            if current_platform.is_integrated_gpu(self.device.index):
+                logger.warning(
+                    "Memory profiling observed free UMA memory increase from "
+                    "%s GiB to %s GiB; clamping to the startup snapshot for "
+                    "KV-cache sizing.",
+                    format_gib(self.init_snapshot.free_memory),
+                    format_gib(free_gpu_memory),
+                )
+                free_gpu_memory = self.init_snapshot.free_memory
+            else:
+                raise RuntimeError(
+                    "Error in memory profiling. "
+                    f"Initial free memory {format_gib(self.init_snapshot.free_memory)} "
+                    f"GiB, current free memory {format_gib(free_gpu_memory)} GiB. "
+                    "This happens when other processes sharing the same container "
+                    "release GPU memory while vLLM is profiling during initialization. "
+                    "To fix this, ensure consistent GPU memory allocation or "
+                    "isolate vLLM in its own container."
+                )
         self.available_kv_cache_memory_bytes = (
             self.requested_memory
             - profile_result.non_kv_cache_memory
