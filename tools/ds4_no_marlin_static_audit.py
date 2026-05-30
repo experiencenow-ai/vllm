@@ -236,6 +236,15 @@ checks = [
         ),
     ),
     (
+        "DSV4 launchers can disable MTP for memory bringup",
+        all(
+            "DSV4_DISABLE_MTP" in script
+            and "SPECULATIVE_ARGS=()" in script
+            and '"${SPECULATIVE_ARGS[@]}"' in script
+            for script in (dsv4_tp2, dsv4_pp8)
+        ),
+    ),
+    (
         "LMCache lookup client/server receive LMCache metadata, not VllmConfig",
         "def _build_lmcache_metadata_from_vllm_config(" in lmcache_adapter
         and "LookupClientFactory.create_lookup_client(\n                config, lookup_metadata\n            )" in lmcache_adapter

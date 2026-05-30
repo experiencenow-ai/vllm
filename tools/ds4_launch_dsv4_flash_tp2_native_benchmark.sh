@@ -16,6 +16,10 @@ DEFAULT_COMPILATION_CONFIG='{"cudagraph_mode":"FULL_AND_PIECEWISE","custom_ops":
 DSV4_LINEAR_BACKEND="${DSV4_LINEAR_BACKEND:-auto}"
 DSV4_MOE_BACKEND="${DSV4_MOE_BACKEND:-auto}"
 DSV4_COMPILATION_CONFIG="${DSV4_COMPILATION_CONFIG:-$DEFAULT_COMPILATION_CONFIG}"
+SPECULATIVE_ARGS=(--speculative-config "${DSV4_SPECULATIVE_CONFIG:-$DEFAULT_SPECULATIVE_CONFIG}")
+if [[ "${DSV4_DISABLE_MTP:-0}" =~ ^(1|true|TRUE|yes|YES|on|ON)$ ]]; then
+  SPECULATIVE_ARGS=()
+fi
 FLASHINFER_AUTOTUNE_ARGS=(--no-enable-flashinfer-autotune)
 if [[ "${DS4_ENABLE_FLASHINFER_AUTOTUNE:-0}" =~ ^(1|true|TRUE|yes|YES|on|ON)$ ]]; then
   FLASHINFER_AUTOTUNE_ARGS=(--enable-flashinfer-autotune)
@@ -75,7 +79,7 @@ COMMON_ARGS=(
   --max-num-batched-tokens "${DSV4_MAX_NUM_BATCHED_TOKENS:-4096}"
   --gpu-memory-utilization "${DSV4_GPU_MEMORY_UTILIZATION:-0.85}"
   "${FLASHINFER_AUTOTUNE_ARGS[@]}"
-  --speculative-config "${DSV4_SPECULATIVE_CONFIG:-$DEFAULT_SPECULATIVE_CONFIG}"
+  "${SPECULATIVE_ARGS[@]}"
   --compilation-config "$DSV4_COMPILATION_CONFIG"
   --tokenizer-mode deepseek_v4
   --load-format safetensors

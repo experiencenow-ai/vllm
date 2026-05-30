@@ -175,6 +175,8 @@ Default latency profile:
 max_model_len=65000
 max_num_seqs=2
 max_num_batched_tokens=4096
+FlashInfer autotune disabled
+MTP enabled unless DSV4_DISABLE_MTP=1
 ```
 
 Throughput profile override:
