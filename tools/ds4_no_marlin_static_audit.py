@@ -218,10 +218,13 @@ checks = [
     ),
     (
         "Qwen launchers keep conservative UMA defaults",
-        "max_local_cpu_size: ${LMCACHE_MAX_LOCAL_CPU_SIZE:-8.0}" in qwen_pp8
-        and "max_local_cpu_size: ${LMCACHE_MAX_LOCAL_CPU_SIZE:-8.0}" in qwen_nvfp4_pp8
-        and '--gpu-memory-utilization "${QWEN27_GPU_MEMORY_UTILIZATION:-0.50}"' in qwen_nvfp4_pp8
-        and "LMCACHE_MAX_LOCAL_CPU_SIZE=8.0" in dual_pipeline_doc,
+        "max_local_cpu_size: ${LMCACHE_MAX_LOCAL_CPU_SIZE:-4.0}" in qwen_pp8
+        and "max_local_cpu_size: ${LMCACHE_MAX_LOCAL_CPU_SIZE:-4.0}" in qwen_nvfp4_pp8
+        and '--gpu-memory-utilization "${QWEN27_GPU_MEMORY_UTILIZATION:-0.40}"' in qwen_nvfp4_pp8
+        and "FLASHINFER_AUTOTUNE_ARGS=(--no-enable-flashinfer-autotune)" in qwen_pp8
+        and "FLASHINFER_AUTOTUNE_ARGS=(--no-enable-flashinfer-autotune)" in qwen_nvfp4_pp8
+        and "LMCACHE_MAX_LOCAL_CPU_SIZE=4.0" in dual_pipeline_doc
+        and "QWEN27_ENABLE_FLASHINFER_AUTOTUNE=0" in dual_pipeline_doc,
     ),
     (
         "LMCache lookup client/server receive LMCache metadata, not VllmConfig",

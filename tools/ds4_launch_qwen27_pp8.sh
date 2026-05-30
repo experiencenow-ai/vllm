@@ -64,7 +64,7 @@ fi
 cat > "$LMCACHE_CONFIG_FILE" <<YAML
 chunk_size: ${LMCACHE_CHUNK_SIZE:-784}
 local_cpu: true
-max_local_cpu_size: ${LMCACHE_MAX_LOCAL_CPU_SIZE:-8.0}
+max_local_cpu_size: ${LMCACHE_MAX_LOCAL_CPU_SIZE:-4.0}
 local_disk: file://$LMCACHE_ROOT
 max_local_disk_size: ${LMCACHE_MAX_LOCAL_DISK_SIZE:-2048.0}
 YAML
@@ -77,6 +77,11 @@ case "${QWEN27_ASYNC_SCHEDULING:-1}" in
     ASYNC_SCHEDULING_ARGS=(--no-async-scheduling)
     ;;
 esac
+
+FLASHINFER_AUTOTUNE_ARGS=(--no-enable-flashinfer-autotune)
+if [[ "${QWEN27_ENABLE_FLASHINFER_AUTOTUNE:-0}" =~ ^(1|true|TRUE|yes|YES|on|ON)$ ]]; then
+  FLASHINFER_AUTOTUNE_ARGS=(--enable-flashinfer-autotune)
+fi
 
 COMMON_ARGS=(
   -m vllm.entrypoints.cli.main serve "$MODEL"
@@ -102,6 +107,7 @@ COMMON_ARGS=(
   --no-disable-hybrid-kv-cache-manager
   --mamba-cache-mode align
   --kv-transfer-config "$KV_TRANSFER_CONFIG"
+  "${FLASHINFER_AUTOTUNE_ARGS[@]}"
 )
 
 if [[ "$NODE_RANK" == "0" ]]; then

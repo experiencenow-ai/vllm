@@ -111,7 +111,7 @@ fi
 cat > "$LMCACHE_CONFIG_FILE" <<YAML
 chunk_size: ${LMCACHE_CHUNK_SIZE:-784}
 local_cpu: true
-max_local_cpu_size: ${LMCACHE_MAX_LOCAL_CPU_SIZE:-8.0}
+max_local_cpu_size: ${LMCACHE_MAX_LOCAL_CPU_SIZE:-4.0}
 local_disk: file://$LMCACHE_ROOT
 max_local_disk_size: ${LMCACHE_MAX_LOCAL_DISK_SIZE:-2048.0}
 YAML
@@ -121,6 +121,11 @@ KV_TRANSFER_CONFIG='{"kv_connector":"LMCacheConnectorV1","kv_role":"kv_both","kv
 SPEC_ARGS=()
 if [[ "${QWEN27_NVFP4_ENABLE_MTP_EXPERIMENTAL:-0}" =~ ^(1|true|TRUE|yes|YES|on|ON)$ ]]; then
   SPEC_ARGS=(--speculative-config "${QWEN27_SPECULATIVE_CONFIG:-{\"method\":\"qwen3_5_mtp\",\"num_speculative_tokens\":3}}")
+fi
+
+FLASHINFER_AUTOTUNE_ARGS=(--no-enable-flashinfer-autotune)
+if [[ "${QWEN27_ENABLE_FLASHINFER_AUTOTUNE:-0}" =~ ^(1|true|TRUE|yes|YES|on|ON)$ ]]; then
+  FLASHINFER_AUTOTUNE_ARGS=(--enable-flashinfer-autotune)
 fi
 
 COMMON_ARGS=(
@@ -137,7 +142,7 @@ COMMON_ARGS=(
   --max-model-len "${QWEN27_MAX_MODEL_LEN:-262144}"
   --max-num-seqs "${QWEN27_MAX_NUM_SEQS:-24}"
   --max-num-batched-tokens "${QWEN27_MAX_NUM_BATCHED_TOKENS:-65536}"
-  --gpu-memory-utilization "${QWEN27_GPU_MEMORY_UTILIZATION:-0.50}"
+  --gpu-memory-utilization "${QWEN27_GPU_MEMORY_UTILIZATION:-0.40}"
   --quantization modelopt
   --linear-backend "${QWEN27_LINEAR_BACKEND:-flashinfer-cutlass}"
   --attention-backend "$QWEN27_ATTENTION_BACKEND"
@@ -150,6 +155,7 @@ COMMON_ARGS=(
   --no-disable-hybrid-kv-cache-manager
   --mamba-cache-mode align
   --kv-transfer-config "$KV_TRANSFER_CONFIG"
+  "${FLASHINFER_AUTOTUNE_ARGS[@]}"
   "${SPEC_ARGS[@]}"
 )
 
