@@ -66,6 +66,11 @@ def python_include_dirs() -> list[Path]:
     include_py = existing_path(sysconfig.get_config_var("INCLUDEPY"))
     if include_py is not None:
         paths.append(include_py)
+    for env_name in ("DS4_PYTHON_INCLUDE_DIRS", "CPATH", "C_INCLUDE_PATH"):
+        for item in os.environ.get(env_name, "").split(os.pathsep):
+            path = existing_path(item.strip())
+            if path is not None and path.is_dir():
+                paths.append(path)
     deduped: list[Path] = []
     seen: set[Path] = set()
     for path in paths:
