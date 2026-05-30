@@ -294,9 +294,11 @@ checks = [
         and "LookupClientFactory.create_lookup_server(\n                self.lmcache_engine, lookup_metadata\n            )" in lmcache_adapter,
     ),
     (
-        "Triton JIT preflight checks gcc, Python.h, libcuda, and active launch",
+        "Triton JIT preflight checks gcc, Python.h, libcuda, native kernels, and active launch",
         "check_python_headers" in triton_preflight
         and "check_libcuda_compile" in triton_preflight
+        and "check_triton_kernels_import" in triton_preflight
+        and "triton_kernels.matmul_ogs" in triton_preflight
         and "check_triton_active_jit" in triton_preflight
         and "_ds4_triton_launcher_probe" in triton_preflight,
     ),

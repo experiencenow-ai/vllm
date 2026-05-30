@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import ctypes.util
+import importlib
 import os
 import shutil
 import subprocess
@@ -22,6 +23,10 @@ import tempfile
 import textwrap
 from pathlib import Path
 from typing import Iterable
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 
 def emit(label: str, value: object) -> None:
@@ -378,6 +383,39 @@ def check_triton_active_jit() -> bool:
         return False
 
 
+def check_triton_kernels_import() -> bool:
+    ok = True
+    try:
+        from vllm.utils.import_utils import import_triton_kernels
+
+        import_triton_kernels()
+    except BaseException as exc:
+        # The bootstrap helper may import more of vLLM than this package probe
+        # needs. Treat that as diagnostic only; the concrete module/symbol
+        # imports below are the fail-closed contract.
+        emit("triton_kernels_bootstrap", f"no: {type(exc).__name__}: {exc}")
+
+    required = {
+        "triton_kernels.matmul_ogs": ("FlexCtx", "PrecisionConfig", "matmul_ogs"),
+        "triton_kernels.numerics": ("InFlexData",),
+        "triton_kernels.tensor": ("wrap_torch_tensor",),
+    }
+    for module_name, names in required.items():
+        try:
+            module = importlib.import_module(module_name)
+        except BaseException as exc:
+            emit(module_name, f"no: {type(exc).__name__}: {exc}")
+            ok = False
+            continue
+        missing = [name for name in names if not hasattr(module, name)]
+        if missing:
+            emit(module_name, f"no: missing:{','.join(missing)}")
+            ok = False
+        else:
+            emit(module_name, f"yes:{getattr(module, '__file__', '<nofile>')}")
+    return ok
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -389,6 +427,11 @@ def main() -> int:
         "--skip-libcuda-link-probe",
         action="store_true",
         help="Skip the host compiler libcuda link probe.",
+    )
+    parser.add_argument(
+        "--skip-triton-kernels-probe",
+        action="store_true",
+        help="Skip required triton_kernels.matmul_ogs package validation.",
     )
     args = parser.parse_args()
 
@@ -405,6 +448,8 @@ def main() -> int:
             ok = check_libcuda_compile(cc, include_dirs) and ok
 
     ok = check_triton_import() and ok
+    if not args.skip_triton_kernels_probe:
+        ok = check_triton_kernels_import() and ok
     if not args.skip_active_jit_probe:
         ok = check_triton_active_jit() and ok
 
