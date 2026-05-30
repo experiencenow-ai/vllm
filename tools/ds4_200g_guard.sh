@@ -109,7 +109,7 @@ ds4_200g_rank_loopback()
 
 ds4_require_200g_fabric()
 {
-  local ifname ifnames_csv control_ifname speed carrier local_ip bound_dev route_dev hca hcas_csv advertise_ip advertise_bound nccl_transport
+  local ifname ifnames_csv control_ifname socket_ifname speed carrier local_ip bound_dev route_dev hca hcas_csv advertise_ip advertise_bound nccl_transport
   : "${NODE_RANK:?set NODE_RANK before ds4_require_200g_fabric}"
   : "${HEAD_ADDR:?set HEAD_ADDR before ds4_require_200g_fabric}"
   if [[ -z "${DS4_200G_IFNAME:-}" ]]; then
@@ -145,9 +145,7 @@ ds4_require_200g_fabric()
     [[ -n "$ifname" ]] || ds4_200g_die "DS4_CONTROL_IFNAME contains an empty interface"
     [[ -d "/sys/class/net/$ifname" ]] || ds4_200g_die "control interface '$ifname' does not exist"
   done
-  ds4_200g_check_or_export NCCL_SOCKET_IFNAME "$ifnames_csv"
   ds4_200g_check_or_export GLOO_SOCKET_IFNAME "$control_ifname"
-  ds4_200g_check_or_export TP_SOCKET_IFNAME "$ifnames_csv"
   nccl_transport="${DS4_200G_NCCL_TRANSPORT:-}"
   if [[ -z "$nccl_transport" ]]; then
     if [[ "${DS4_200G_ADVERTISE_LOOPBACK:-0}" =~ ^(1|true|TRUE|yes|YES|on|ON)$ ]]; then
@@ -159,6 +157,14 @@ ds4_require_200g_fabric()
   case "$nccl_transport" in
     socket)
       export DS4_200G_NCCL_TRANSPORT="socket"
+      socket_ifname="${DS4_200G_SOCKET_IFNAME:-$control_ifname}"
+      IFS=',' read -r -a socket_ifnames <<< "$socket_ifname"
+      for ifname in "${socket_ifnames[@]}"; do
+        [[ -n "$ifname" ]] || ds4_200g_die "DS4_200G_SOCKET_IFNAME contains an empty interface"
+        [[ -d "/sys/class/net/$ifname" ]] || ds4_200g_die "socket interface '$ifname' does not exist"
+      done
+      ds4_200g_check_or_export NCCL_SOCKET_IFNAME "$socket_ifname"
+      ds4_200g_check_or_export TP_SOCKET_IFNAME "$socket_ifname"
       ds4_200g_check_or_export NCCL_IB_DISABLE "1"
       ds4_200g_check_or_export NCCL_NET "Socket"
       if [[ -n "${NCCL_IB_HCA:-}" ]]; then
@@ -167,6 +173,8 @@ ds4_require_200g_fabric()
       ;;
     ib)
       export DS4_200G_NCCL_TRANSPORT="ib"
+      ds4_200g_check_or_export NCCL_SOCKET_IFNAME "$ifnames_csv"
+      ds4_200g_check_or_export TP_SOCKET_IFNAME "$ifnames_csv"
       ds4_200g_check_or_export NCCL_IB_DISABLE "0"
       ds4_200g_check_or_export NCCL_NET "IB"
       ds4_200g_check_or_export NCCL_IB_HCA "$hcas_csv"
