@@ -31,8 +31,8 @@ FullAttentionSpec group instead of the GDN/Mamba state group.
 
 vLLM already projects `KVCacheConfig` onto each PP worker's local layers before
 KV allocation. With the adapter fix above, each Spark stores only the external
-KV/state data for the layer slice it owns. Use local NVMe paths, not a shared
-home-directory path, for the SSD cache roots.
+KV/state data for the layer slice it owns. The default recipe uses per-rank
+home-owned local cache roots; use any special mount only by explicit override.
 
 ## Qwen27 BF16 8-way PP
 
@@ -45,7 +45,7 @@ export NODE_RANK=<0-7>
 export API_PORT=8101
 export MASTER_PORT=29527
 export QWEN27_BF16_MODEL=/home/$USER/models/hf/Qwen/Qwen3.6-27B
-export LMCACHE_ROOT=/mnt/nvme/ds4_lmcache/qwen27_pp8
+export LMCACHE_ROOT=/home/$USER/ds4_lmcache/qwen27_pp8/spark${NODE_RANK}
 
 /home/$USER/src/vllm/tools/ds4_launch_qwen27_pp8.sh
 ```
@@ -118,7 +118,7 @@ export NODE_RANK=<0-7>
 export API_PORT=8102
 export MASTER_PORT=29544
 export DSV4_FLASH_MODEL=/home/$USER/models/hf/deepseek-ai/DeepSeek-V4-Flash
-export VLLM_SIMPLE_KV_OFFLOAD_PERSIST_ROOT=/mnt/nvme/ds4_hma_store/dsv4_flash_pp8/simple_cpu_offload
+export VLLM_SIMPLE_KV_OFFLOAD_PERSIST_ROOT=/home/$USER/ds4_hma_store/dsv4_flash_pp8/simple_cpu_offload/spark${NODE_RANK}
 
 /home/$USER/src/vllm/tools/ds4_launch_dsv4_flash_pp8.sh
 ```
@@ -206,8 +206,8 @@ DS4 persistent SimpleCPUOffload scheduler hit: <nonzero> tokens on replay
 Per-rank SSD ownership check:
 
 ```bash
-find /mnt/nvme/ds4_lmcache/qwen27_pp8 -maxdepth 3 -type f | wc -l
-find /mnt/nvme/ds4_hma_store/dsv4_flash_pp8/simple_cpu_offload -maxdepth 4 -type f | wc -l
+find /home/$USER/ds4_lmcache/qwen27_pp8 -maxdepth 3 -type f | wc -l
+find /home/$USER/ds4_hma_store/dsv4_flash_pp8/simple_cpu_offload -maxdepth 4 -type f | wc -l
 ```
 
 Each Spark should grow its own local cache tree. A shared path with all ranks

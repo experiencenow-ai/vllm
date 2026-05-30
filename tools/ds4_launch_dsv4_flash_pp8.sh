@@ -52,7 +52,7 @@ ds4_run_native_blackwell_preflight
 ds4_run_triton_jit_preflight
 
 export VLLM_USE_SIMPLE_KV_OFFLOAD="${VLLM_USE_SIMPLE_KV_OFFLOAD:-1}"
-export VLLM_SIMPLE_KV_OFFLOAD_PERSIST_ROOT="${VLLM_SIMPLE_KV_OFFLOAD_PERSIST_ROOT:-/mnt/nvme/ds4_hma_store/dsv4_flash_pp8/simple_cpu_offload}"
+export VLLM_SIMPLE_KV_OFFLOAD_PERSIST_ROOT="${VLLM_SIMPLE_KV_OFFLOAD_PERSIST_ROOT:-$HOME/ds4_hma_store/dsv4_flash_pp8/simple_cpu_offload}"
 export VLLM_SIMPLE_KV_OFFLOAD_PERSIST_STRICT="${VLLM_SIMPLE_KV_OFFLOAD_PERSIST_STRICT:-1}"
 export VLLM_SIMPLE_KV_OFFLOAD_PERSIST_RANK="${VLLM_SIMPLE_KV_OFFLOAD_PERSIST_RANK:-$(hostname)-dsv4-pp8-r${NODE_RANK}}"
 mkdir -p "$VLLM_SIMPLE_KV_OFFLOAD_PERSIST_ROOT"

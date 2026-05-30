@@ -331,12 +331,11 @@ ds4_prepare_triton_jit_environment()
 {
   local service_name="${1:-ds4}"
   local default_work_root
-  if [[ -d /mnt/nvme && -w /mnt/nvme ]]; then
-    default_work_root="/mnt/nvme/ds4_triton/$service_name"
-  else
-    default_work_root="/tmp/ds4_triton/$service_name"
-  fi
+  local default_ipc_tmp
+  default_work_root="$HOME/ds4_triton/$service_name"
+  default_ipc_tmp="/tmp/d4i/${MASTER_PORT:-0}_${NODE_RANK:-x}"
   local work_root="${DS4_TRITON_WORK_ROOT:-$default_work_root}"
+  local ipc_tmp="${DS4_IPC_TMPDIR:-$default_ipc_tmp}"
   local cc cxx libcuda_path libcuda_dir libcudart_path libcudart_dir symlink_dir
 
   cc="$(ds4_find_executable "${CC:-${DS4_CC:-}}" gcc cc || true)"
@@ -353,6 +352,7 @@ ds4_prepare_triton_jit_environment()
   ds4_prepare_python_include_environment
 
   mkdir -p \
+    "$ipc_tmp" \
     "$work_root/tmp" \
     "$work_root/cache" \
     "$work_root/inductor_cache" \
@@ -360,7 +360,11 @@ ds4_prepare_triton_jit_environment()
     "$work_root/vllm_cache" \
     "$work_root/libcuda" || ds4_200g_die "cannot create writable Triton JIT work root '$work_root'; set DS4_TRITON_WORK_ROOT"
 
-  export TMPDIR="${TMPDIR:-$work_root/tmp}"
+  export TMPDIR="${TMPDIR:-$ipc_tmp}"
+  if [[ "${#TMPDIR}" -gt 29 ]]; then
+    ds4_200g_die "TMPDIR '$TMPDIR' is ${#TMPDIR} chars; LMCache ZMQ IPC sockets require TMPDIR <= 29 chars. Set DS4_IPC_TMPDIR to a short path like /tmp/d4i/${MASTER_PORT:-0}_${NODE_RANK:-x}, or unset TMPDIR."
+  fi
+  mkdir -p "$TMPDIR" || ds4_200g_die "cannot create short TMPDIR '$TMPDIR'"
   export TRITON_CACHE_DIR="${TRITON_CACHE_DIR:-$work_root/cache}"
   export TORCHINDUCTOR_CACHE_DIR="${TORCHINDUCTOR_CACHE_DIR:-$work_root/inductor_cache}"
   export TORCH_EXTENSIONS_DIR="${TORCH_EXTENSIONS_DIR:-$work_root/torch_extensions}"

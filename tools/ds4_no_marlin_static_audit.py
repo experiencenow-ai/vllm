@@ -39,6 +39,9 @@ lmcache_adapter = (
 ).read_text()
 guard = (root / "tools/ds4_200g_guard.sh").read_text()
 triton_preflight = (root / "tools/ds4_triton_jit_preflight.py").read_text()
+dual_pipeline_doc = (
+    root / "docs/deployment/ds4-dual-8x-pipelines.md"
+).read_text()
 
 checks = [
     (
@@ -232,6 +235,20 @@ checks = [
         "ds4_prepare_python_include_environment" in guard
         and "DS4_PYTHON_INCLUDE_DIRS" in guard
         and "DS4_PYTHON_INCLUDE_DIRS" in triton_preflight,
+    ),
+    (
+        "Triton JIT guard keeps LMCache IPC socket paths short",
+        "default_ipc_tmp=\"/tmp/d4i/${MASTER_PORT:-0}_${NODE_RANK:-x}\"" in guard
+        and "export TMPDIR=\"${TMPDIR:-$ipc_tmp}\"" in guard
+        and "LMCache ZMQ IPC sockets require TMPDIR <= 29 chars" in guard,
+    ),
+    (
+        "DS4 Spark recipes do not default to /mnt/nvme",
+        "/mnt/nvme" not in guard
+        and "/mnt/nvme" not in qwen_pp8
+        and "/mnt/nvme" not in qwen_nvfp4_pp8
+        and "/mnt/nvme" not in dsv4_pp8
+        and "/mnt/nvme" not in dual_pipeline_doc,
     ),
     (
         "DSV4 launchers keep compilation config override as valid JSON",

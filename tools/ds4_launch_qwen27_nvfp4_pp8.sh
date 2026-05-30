@@ -14,11 +14,7 @@ MODEL="${QWEN27_NVFP4_MODEL:-/home/$USER/models/hf/sakamakismile/Qwen3.6-27B-Tex
 RUNTIME_PYTHON="${DS4_VLLM_PYTHON:-/home/$USER/ds4-vllm-local/bin/python}"
 SOURCE_ROOT="${DS4_VLLM_SOURCE_ROOT:-/home/$USER/src/vllm}"
 DS4_NODE_ID="${DS4_NODE_ID:-spark${NODE_RANK}}"
-if [[ -d /mnt/nvme && -w /mnt/nvme ]]; then
-  DEFAULT_LMCACHE_ROOT="/mnt/nvme/ds4_lmcache/qwen27_nvfp4_pp${PP_SIZE}/${DS4_NODE_ID}"
-else
-  DEFAULT_LMCACHE_ROOT="$HOME/ds4_lmcache/qwen27_nvfp4_pp${PP_SIZE}/${DS4_NODE_ID}"
-fi
+DEFAULT_LMCACHE_ROOT="$HOME/ds4_lmcache/qwen27_nvfp4_pp${PP_SIZE}/${DS4_NODE_ID}"
 
 if [[ "$PP_SIZE" != "$NNODES" ]]; then
   echo "Qwen PP launcher expects one PP rank per Spark: PP_SIZE=$PP_SIZE NNODES=$NNODES" >&2
