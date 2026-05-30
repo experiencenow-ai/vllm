@@ -20,6 +20,15 @@ ds4_attention = (root / "vllm/models/deepseek_v4/nvidia/ops/attention.py").read_
 ds4_fp8_einsum = (
     root / "vllm/models/deepseek_v4/nvidia/ops/fp8_einsum.py"
 ).read_text()
+ds4_sm12x_fallbacks = (
+    root / "vllm/models/deepseek_v4/nvidia/ops/sm12x_deep_gemm_fallbacks.py"
+).read_text()
+ds4_sm12x_mqa = (root / "vllm/models/deepseek_v4/nvidia/ops/sm12x_mqa.py").read_text()
+deep_gemm = (root / "vllm/utils/deep_gemm.py").read_text()
+sparse_indexer = (
+    root / "vllm/model_executor/layers/sparse_attn_indexer.py"
+).read_text()
+mla_indexer = (root / "vllm/v1/attention/backends/mla/indexer.py").read_text()
 dsv4_tp2 = (root / "tools/ds4_launch_dsv4_flash_tp2_native_benchmark.sh").read_text()
 dsv4_pp8 = (root / "tools/ds4_launch_dsv4_flash_pp8.sh").read_text()
 qwen_pp8 = (root / "tools/ds4_launch_qwen27_pp8.sh").read_text()
@@ -100,6 +109,33 @@ checks = [
         "def deepseek_v4_sm12x_fp8_einsum(" in ds4_fp8_einsum
         and "def _use_deepseek_v4_sm12x_triton_fp8_einsum(" in ds4_fp8_einsum
         and "deepseek_v4_sm12x_fp8_einsum(a, a_scale, b, b_scale, out)" in ds4_fp8_einsum,
+    ),
+    (
+        "SM12x DSV4 MQA/HC fallbacks are present",
+        "def fp8_paged_mqa_logits_triton(" in ds4_sm12x_mqa
+        and "def tf32_hc_prenorm_gemm_triton(" in ds4_sm12x_mqa
+        and "def fp8_fp4_paged_mqa_topk_indices(" in ds4_sm12x_fallbacks
+        and "def _tf32_hc_prenorm_gemm_sm12x(" in ds4_sm12x_fallbacks,
+    ),
+    (
+        "DeepGEMM wrapper routes SM12x MQA/HC through fallbacks",
+        "def fp8_fp4_mqa_topk_indices(" in deep_gemm
+        and "def fp8_fp4_paged_mqa_topk_indices(" in deep_gemm
+        and "if current_platform.is_device_capability_family(120) and q[1] is None" in deep_gemm
+        and "return _tf32_hc_prenorm_gemm_sm12x(x, fn, out, sqrsum, num_split)" in deep_gemm,
+    ),
+    (
+        "Sparse indexer uses SM12x direct top-k and bounded logits",
+        "fp8_fp4_mqa_topk_indices" in sparse_indexer
+        and "fp8_fp4_paged_mqa_topk_indices" in sparse_indexer
+        and "sparse_indexer_max_logits_bytes()" in sparse_indexer
+        and "used_direct_topk = fp8_fp4_paged_mqa_topk_indices(" in sparse_indexer,
+    ),
+    (
+        "MLA indexer avoids DeepGEMM scheduler metadata on SM12x",
+        "def sparse_indexer_max_logits_bytes(" in mla_indexer
+        and "def _uses_deep_gemm_scheduler_metadata(" in mla_indexer
+        and "and not current_platform.is_device_capability_family(120)" in mla_indexer,
     ),
 
     (
