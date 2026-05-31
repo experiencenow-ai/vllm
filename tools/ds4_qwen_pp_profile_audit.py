@@ -94,6 +94,11 @@ CHECKS = [
         "LMCACHE_PRE_CACHING_HASH_ALGORITHM:-sha256_cbor",
     ),
     (
+        "BF16 Qwen PP uses rank-0 LMCache lookup oracle for multi-node IPC",
+        ROOT / "tools/ds4_launch_qwen27_pp8.sh",
+        "lookup_server_worker_ids: [0]",
+    ),
+    (
         "BF16 Qwen PP forces bounded GDN backend",
         ROOT / "tools/ds4_launch_qwen27_pp8.sh",
         "--gdn-prefill-backend",
@@ -142,6 +147,11 @@ CHECKS = [
         "NVFP4 Qwen PP uses deterministic LMCache chunk hashes",
         ROOT / "tools/ds4_launch_qwen27_nvfp4_pp8.sh",
         "LMCACHE_PRE_CACHING_HASH_ALGORITHM:-sha256_cbor",
+    ),
+    (
+        "NVFP4 Qwen PP uses rank-0 LMCache lookup oracle for multi-node IPC",
+        ROOT / "tools/ds4_launch_qwen27_nvfp4_pp8.sh",
+        "lookup_server_worker_ids: [0]",
     ),
     (
         "NVFP4 Qwen PP disables torch compile by default",

@@ -141,6 +141,7 @@ local_disk: file://$LMCACHE_ROOT
 max_local_disk_size: ${LMCACHE_MAX_LOCAL_DISK_SIZE:-2048.0}
 use_gpu_connector_v3: ${LMCACHE_USE_GPU_CONNECTOR_V3:-true}
 pre_caching_hash_algorithm: ${LMCACHE_PRE_CACHING_HASH_ALGORITHM:-sha256_cbor}
+lookup_server_worker_ids: [0]
 YAML
 
 KV_TRANSFER_CONFIG='{"kv_connector":"LMCacheConnectorV1","kv_role":"kv_both","kv_connector_extra_config":{"use_native":true,"lmcache_kv_cache_group_id":"auto","discard_partial_chunks":false}}'
