@@ -1169,7 +1169,10 @@ class DeepseekV4Model(nn.Module):
         # refreshes it correctly across captured shapes. Only allocated on
         # the last PP rank — that's where MTP target hidden states are
         # produced.
-        if get_pp_group().is_last_rank:
+        if (
+            get_pp_group().is_last_rank
+            and vllm_config.speculative_config is not None
+        ):
             self._mtp_hidden_buffer = torch.empty(
                 vllm_config.scheduler_config.max_num_batched_tokens,
                 self.hc_dim,
@@ -1239,8 +1242,9 @@ class DeepseekV4Model(nn.Module):
             return IntermediateTensors({"hidden_states": hidden_states})
 
         # Stash pre-hc_head residual for the MTP draft (captured copy_).
-        num_tokens = hidden_states.shape[0]
-        self._mtp_hidden_buffer[:num_tokens].copy_(hidden_states.flatten(1))
+        if self._mtp_hidden_buffer is not None:
+            num_tokens = hidden_states.shape[0]
+            self._mtp_hidden_buffer[:num_tokens].copy_(hidden_states.flatten(1))
 
         hidden_states = self.hc_head_op(
             hidden_states,

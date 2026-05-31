@@ -139,6 +139,41 @@ CHECKS = [
         "vllm/model_executor/models/qwen3_next.py",
         "@_compile_disabled",
     ),
+    (
+        "DSV4 PP launcher defaults to resident3 RAM profile",
+        "tools/ds4_launch_dsv4_flash_pp8.sh",
+        'DS4_DSV4_PIPELINE_RAM_PROFILE="${DS4_DSV4_PIPELINE_RAM_PROFILE:-resident3}"',
+    ),
+    (
+        "DSV4 resident3 KV cap is compact",
+        "tools/ds4_launch_dsv4_flash_pp8.sh",
+        "DSV4_KV_CACHE_MEMORY_BYTES:=4294967296",
+    ),
+    (
+        "DSV4 resident3 max batched tokens are bounded",
+        "tools/ds4_launch_dsv4_flash_pp8.sh",
+        "DSV4_MAX_NUM_BATCHED_TOKENS:=4096",
+    ),
+    (
+        "DSV4 resident3 offload cap is compact",
+        "tools/ds4_launch_dsv4_flash_pp8.sh",
+        "DSV4_KV_OFFLOADING_SIZE:=2",
+    ),
+    (
+        "DSV4 resident3 shifts layers away from front ranks",
+        "tools/ds4_launch_dsv4_flash_pp8.sh",
+        'DSV4_FLASH_PP_LAYER_PARTITION="3,4,5,6,7,7,6,5"',
+    ),
+    (
+        "DSV4 validates custom PP layer partition",
+        "tools/ds4_launch_dsv4_flash_pp8.sh",
+        "DSV4_FLASH_PP_LAYER_PARTITION must sum to 43 DSV4 decoder layers",
+    ),
+    (
+        "DSV4 skips MTP hidden buffer when speculation is disabled",
+        "vllm/models/deepseek_v4/nvidia/model.py",
+        "vllm_config.speculative_config is not None",
+    ),
 ]
 
 

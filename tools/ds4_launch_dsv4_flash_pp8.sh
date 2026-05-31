@@ -11,12 +11,54 @@ API_PORT="${API_PORT:-8102}"
 MODEL="${DSV4_FLASH_MODEL:-/home/$USER/models/hf/deepseek-ai/DeepSeek-V4-Flash}"
 RUNTIME_PYTHON="${DS4_VLLM_PYTHON:-/home/$USER/ds4-vllm-local/bin/python}"
 SOURCE_ROOT="${DS4_VLLM_SOURCE_ROOT:-/home/$USER/src/vllm}"
+DS4_DSV4_PIPELINE_RAM_PROFILE="${DS4_DSV4_PIPELINE_RAM_PROFILE:-resident3}"
 DEFAULT_SPECULATIVE_CONFIG="{\"model\":\"$MODEL\",\"num_speculative_tokens\":2,\"method\":\"deepseek_mtp\"}"
-DEFAULT_COMPILATION_CONFIG='{"cudagraph_mode":"FULL_AND_PIECEWISE","custom_ops":["all"],"cudagraph_capture_sizes":[1,2,4,8],"max_cudagraph_capture_size":8}'
 DSV4_LINEAR_BACKEND="${DSV4_LINEAR_BACKEND:-auto}"
 DSV4_MOE_BACKEND="${DSV4_MOE_BACKEND:-auto}"
+case "$DS4_DSV4_PIPELINE_RAM_PROFILE" in
+  resident3|compact|COMPACT)
+    : "${DSV4_MAX_MODEL_LEN:=65536}"
+    : "${DSV4_MAX_NUM_SEQS:=8}"
+    : "${DSV4_MAX_NUM_BATCHED_TOKENS:=4096}"
+    : "${DSV4_KV_CACHE_MEMORY_BYTES:=4294967296}"
+    : "${DSV4_KV_OFFLOADING_SIZE:=2}"
+    : "${DSV4_GPU_MEMORY_UTILIZATION:=0.20}"
+    : "${DSV4_CUDAGRAPH_CAPTURE_SIZES:=1,2,4,8}"
+    : "${DSV4_MAX_CUDAGRAPH_CAPTURE_SIZE:=8}"
+    if [[ "$NNODES" == "8" && -z "${DSV4_FLASH_PP_LAYER_PARTITION:-}" ]]; then
+      DSV4_FLASH_PP_LAYER_PARTITION="3,4,5,6,7,7,6,5"
+    fi
+    ;;
+  tight|TIGHT|resident3-tight)
+    : "${DSV4_MAX_MODEL_LEN:=32768}"
+    : "${DSV4_MAX_NUM_SEQS:=4}"
+    : "${DSV4_MAX_NUM_BATCHED_TOKENS:=4096}"
+    : "${DSV4_KV_CACHE_MEMORY_BYTES:=3221225472}"
+    : "${DSV4_KV_OFFLOADING_SIZE:=1}"
+    : "${DSV4_GPU_MEMORY_UTILIZATION:=0.18}"
+    : "${DSV4_CUDAGRAPH_CAPTURE_SIZES:=1,2,4}"
+    : "${DSV4_MAX_CUDAGRAPH_CAPTURE_SIZE:=4}"
+    if [[ "$NNODES" == "8" && -z "${DSV4_FLASH_PP_LAYER_PARTITION:-}" ]]; then
+      DSV4_FLASH_PP_LAYER_PARTITION="3,4,5,6,7,7,6,5"
+    fi
+    ;;
+  balanced|BALANCED|perf|PERF|performance|PERFORMANCE)
+    : "${DSV4_MAX_MODEL_LEN:=65536}"
+    : "${DSV4_MAX_NUM_SEQS:=8}"
+    : "${DSV4_MAX_NUM_BATCHED_TOKENS:=8192}"
+    : "${DSV4_KV_CACHE_MEMORY_BYTES:=12884901888}"
+    : "${DSV4_KV_OFFLOADING_SIZE:=8}"
+    : "${DSV4_GPU_MEMORY_UTILIZATION:=0.30}"
+    : "${DSV4_CUDAGRAPH_CAPTURE_SIZES:=1,2,4,8}"
+    : "${DSV4_MAX_CUDAGRAPH_CAPTURE_SIZE:=8}"
+    ;;
+  *)
+    echo "Unsupported DS4_DSV4_PIPELINE_RAM_PROFILE=$DS4_DSV4_PIPELINE_RAM_PROFILE; expected resident3, tight, balanced, or perf" >&2
+    exit 1
+    ;;
+esac
+DEFAULT_COMPILATION_CONFIG="{\"cudagraph_mode\":\"FULL_AND_PIECEWISE\",\"custom_ops\":[\"all\"],\"cudagraph_capture_sizes\":[$DSV4_CUDAGRAPH_CAPTURE_SIZES],\"max_cudagraph_capture_size\":$DSV4_MAX_CUDAGRAPH_CAPTURE_SIZE}"
 DSV4_COMPILATION_CONFIG="${DSV4_COMPILATION_CONFIG:-$DEFAULT_COMPILATION_CONFIG}"
-DSV4_KV_CACHE_MEMORY_BYTES="${DSV4_KV_CACHE_MEMORY_BYTES:-12884901888}"
 ASYNC_SCHEDULING_ARGS=(--no-async-scheduling)
 if [[ "${DSV4_ENABLE_ASYNC_SCHEDULING_EXPERIMENTAL:-0}" =~ ^(1|true|TRUE|yes|YES|on|ON)$ ]]; then
   ASYNC_SCHEDULING_ARGS=(--async-scheduling)
@@ -88,10 +130,24 @@ export VLLM_SIMPLE_KV_OFFLOAD_PERSIST_RANK="${VLLM_SIMPLE_KV_OFFLOAD_PERSIST_RAN
 mkdir -p "$VLLM_SIMPLE_KV_OFFLOAD_PERSIST_ROOT"
 
 if [[ -n "${DSV4_FLASH_PP_LAYER_PARTITION:-}" ]]; then
+  "$RUNTIME_PYTHON" - "$NNODES" "$DSV4_FLASH_PP_LAYER_PARTITION" <<'PY'
+import sys
+stages = int(sys.argv[1])
+raw = sys.argv[2]
+parts = [int(item) for item in raw.split(",") if item.strip()]
+if len(parts) != stages:
+    raise SystemExit(f"DSV4_FLASH_PP_LAYER_PARTITION has {len(parts)} stages but NNODES={stages}: {raw}")
+if sum(parts) != 43:
+    raise SystemExit(f"DSV4_FLASH_PP_LAYER_PARTITION must sum to 43 DSV4 decoder layers, got {sum(parts)}: {raw}")
+if any(part <= 0 for part in parts):
+    raise SystemExit(f"DSV4_FLASH_PP_LAYER_PARTITION stages must all be positive: {raw}")
+PY
   export VLLM_PP_LAYER_PARTITION="$DSV4_FLASH_PP_LAYER_PARTITION"
 else
   unset VLLM_PP_LAYER_PARTITION
 fi
+
+echo "DSV4 PP${NNODES} profile=$DS4_DSV4_PIPELINE_RAM_PROFILE max_model_len=$DSV4_MAX_MODEL_LEN max_num_seqs=$DSV4_MAX_NUM_SEQS max_num_batched_tokens=$DSV4_MAX_NUM_BATCHED_TOKENS kv_cache_memory_bytes=$DSV4_KV_CACHE_MEMORY_BYTES kv_offloading_size=$DSV4_KV_OFFLOADING_SIZE gpu_memory_utilization=$DSV4_GPU_MEMORY_UTILIZATION pp_layer_partition=${DSV4_FLASH_PP_LAYER_PARTITION:-auto}" >&2
 
 KV_CACHE_MEMORY_ARGS=()
 case "$DSV4_KV_CACHE_MEMORY_BYTES" in
@@ -112,17 +168,17 @@ COMMON_ARGS=(
   --master-addr "$HEAD_ADDR"
   --master-port "$MASTER_PORT"
   --distributed-executor-backend mp
-  --max-model-len "${DSV4_MAX_MODEL_LEN:-65536}"
-  --max-num-seqs "${DSV4_MAX_NUM_SEQS:-8}"
-  --max-num-batched-tokens "${DSV4_MAX_NUM_BATCHED_TOKENS:-8192}"
-  --gpu-memory-utilization "${DSV4_GPU_MEMORY_UTILIZATION:-0.30}"
+  --max-model-len "$DSV4_MAX_MODEL_LEN"
+  --max-num-seqs "$DSV4_MAX_NUM_SEQS"
+  --max-num-batched-tokens "$DSV4_MAX_NUM_BATCHED_TOKENS"
+  --gpu-memory-utilization "$DSV4_GPU_MEMORY_UTILIZATION"
   "${KV_CACHE_MEMORY_ARGS[@]}"
   "${FLASHINFER_AUTOTUNE_ARGS[@]}"
   --block-size 256
   --kv-cache-dtype fp8
   --enable-prefix-caching
   "${ASYNC_SCHEDULING_ARGS[@]}"
-  --kv-offloading-size "${DSV4_KV_OFFLOADING_SIZE:-8}"
+  --kv-offloading-size "$DSV4_KV_OFFLOADING_SIZE"
   --kv-offloading-backend native
   --kv-cache-metrics
   --enable-logging-iteration-details
