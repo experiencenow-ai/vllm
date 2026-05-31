@@ -31,6 +31,7 @@ def _env_flag(name: str, default: bool) -> bool:
 
 _SM120_MQA_LOGITS_MAX_SCORE_BYTES = 64 * 1024 * 1024
 _SM120_MQA_TRITON_TOPK_MAX_LOGITS_BYTES = 512 * 1024 * 1024
+_SM120_MQA_TOPK_CHUNK_SIZE = 8192
 _SM120_PAGED_MQA_TOPK_CHUNK_SIZE = 8192
 
 
@@ -248,52 +249,131 @@ def _fp8_mqa_logits_topk_triton(
     out: torch.Tensor,
 ) -> bool:
     q_values, q_scale = q
-    if not _env_flag("VLLM_DS4_SM12X_MQA_TOPK_TRITON", False):
+    if not _env_flag("VLLM_DS4_SM12X_MQA_TOPK_TRITON", True):
         logger.warning_once(
             "DS4 SM12x dense-MQA top-k Triton path disabled by "
-            "VLLM_DS4_SM12X_MQA_TOPK_TRITON=0; using bounded top-k path")
+            "VLLM_DS4_SM12X_MQA_TOPK_TRITON=0")
         return False
     k_values, _ = kv
     if not (q_scale is None and q_values.dim() == 3 and k_values.dim() == 2):
         return False
 
-    logits_bytes = q_values.shape[0] * k_values.shape[0] * torch.float32.itemsize
-    if logits_bytes > _SM120_MQA_TRITON_TOPK_MAX_LOGITS_BYTES:
-        return False
+    return _fp8_mqa_logits_topk_triton_chunked(
+        q_values,
+        kv,
+        weights,
+        cu_seqlen_ks,
+        cu_seqlen_ke,
+        out,
+    )
+
+
+def _fp8_mqa_logits_topk_triton_chunked(
+    q_values: torch.Tensor,
+    kv: tuple[torch.Tensor, torch.Tensor],
+    weights: torch.Tensor,
+    cu_seqlen_ks: torch.Tensor,
+    cu_seqlen_ke: torch.Tensor,
+    out: torch.Tensor,
+) -> bool:
+    k_values, k_scales = kv
+    seq_len, _num_heads, _ = q_values.shape
+    seq_len_kv = k_values.shape[0]
+    topk_tokens = out.shape[1]
+    out.fill_(-1)
+    if seq_len == 0 or seq_len_kv == 0 or topk_tokens == 0:
+        return True
+
+    max_logits_bytes = _env_int(
+        "VLLM_DS4_SM12X_MQA_TOPK_MAX_LOGITS_BYTES",
+        _SM120_MQA_TRITON_TOPK_MAX_LOGITS_BYTES,
+    )
+    env_chunk_size = _env_int(
+        "VLLM_DS4_SM12X_MQA_TOPK_CHUNK_SIZE",
+        _SM120_MQA_TOPK_CHUNK_SIZE,
+    )
+    max_chunk_by_bytes = max(1, max_logits_bytes // (seq_len * torch.float32.itemsize))
+    chunk_size = max(1, min(seq_len_kv, env_chunk_size, max_chunk_by_bytes))
+    best_values = torch.full(
+        (seq_len, topk_tokens),
+        float("-inf"),
+        device=q_values.device,
+        dtype=torch.float32,
+    )
+    next_best_values = torch.empty_like(best_values)
+    max_chunk_topk = min(topk_tokens, chunk_size)
+    chunk_values_buf = torch.empty(
+        (seq_len, max_chunk_topk),
+        device=q_values.device,
+        dtype=torch.float32,
+    )
+    chunk_indices_buf = torch.empty(
+        (seq_len, max_chunk_topk),
+        device=q_values.device,
+        dtype=torch.int64,
+    )
+    chunk_indices_i32 = torch.empty(
+        (seq_len, max_chunk_topk),
+        device=q_values.device,
+        dtype=torch.int32,
+    )
+    candidate_values = torch.empty(
+        (seq_len, topk_tokens + max_chunk_topk),
+        device=q_values.device,
+        dtype=torch.float32,
+    )
+    candidate_indices = torch.empty(
+        (seq_len, topk_tokens + max_chunk_topk),
+        device=q_values.device,
+        dtype=torch.int32,
+    )
+    selected = torch.empty(
+        (seq_len, topk_tokens),
+        device=q_values.device,
+        dtype=torch.int64,
+    )
 
     from vllm.models.deepseek_v4.nvidia.ops.sm12x_mqa import (
         fp8_mqa_logits_triton,
     )
 
-    logits = fp8_mqa_logits_triton(q_values, kv, weights, cu_seqlen_ks, cu_seqlen_ke)
-    topk_tokens = out.shape[1]
-    select_k = min(topk_tokens, logits.shape[1])
-    out.fill_(-1)
-    if select_k == 0:
-        return True
+    for k_start in range(0, seq_len_kv, chunk_size):
+        k_end = min(k_start + chunk_size, seq_len_kv)
+        rel_ks = torch.clamp(cu_seqlen_ks - k_start, min=0, max=k_end - k_start)
+        rel_ke = torch.clamp(cu_seqlen_ke - k_start, min=0, max=k_end - k_start)
+        logits = fp8_mqa_logits_triton(
+            q_values,
+            (k_values[k_start:k_end], k_scales[k_start:k_end]),
+            weights,
+            rel_ks,
+            rel_ke,
+        )
+        chunk_topk = min(topk_tokens, logits.shape[1])
+        if chunk_topk == 0:
+            continue
+        chunk_values = chunk_values_buf[:, :chunk_topk]
+        chunk_indices = chunk_indices_buf[:, :chunk_topk]
+        torch.topk(logits, chunk_topk, dim=1, out=(chunk_values, chunk_indices))
+        chunk_indices_out = chunk_indices_i32[:, :chunk_topk]
+        chunk_indices_out.copy_(chunk_indices)
+        chunk_indices_out.add_(k_start)
 
-    selected = out[:, :select_k]
-    topk_op = _top_k_per_row_prefill_op()
-    if topk_op is not None:
-        topk_op(
-            logits,
-            cu_seqlen_ks,
-            cu_seqlen_ke,
-            selected,
-            logits.shape[0],
-            logits.stride(0),
-            logits.stride(1),
-            select_k,
+        candidate_cols = topk_tokens + chunk_topk
+        candidate_values_view = candidate_values[:, :candidate_cols]
+        candidate_indices_view = candidate_indices[:, :candidate_cols]
+        candidate_values_view[:, :topk_tokens].copy_(best_values)
+        candidate_values_view[:, topk_tokens:candidate_cols].copy_(chunk_values)
+        candidate_indices_view[:, :topk_tokens].copy_(out)
+        candidate_indices_view[:, topk_tokens:candidate_cols].copy_(chunk_indices_out)
+        torch.topk(
+            candidate_values_view,
+            topk_tokens,
+            dim=1,
+            out=(next_best_values, selected),
         )
-        selected.add_(cu_seqlen_ks[:, None])
-        valid = (selected >= cu_seqlen_ks[:, None]) & (
-            selected < cu_seqlen_ke[:, None]
-        )
-        selected.masked_fill_(~valid, -1)
-    else:
-        values, indices = torch.topk(logits, select_k, dim=1)
-        selected.copy_(indices.to(torch.int32))
-        selected.masked_fill_(~torch.isfinite(values), -1)
+        torch.gather(candidate_indices_view, 1, selected, out=out)
+        best_values, next_best_values = next_best_values, best_values
+        out.masked_fill_(~torch.isfinite(best_values), -1)
     return True
 
 
@@ -321,6 +401,14 @@ def fp8_fp4_mqa_topk_indices(
         topk_indices,
     ):
         return True
+    if not _env_flag("VLLM_DS4_ALLOW_SM12X_MQA_TOPK_TORCH_FALLBACK", False):
+        raise RuntimeError(
+            "DS4 SM12x dense-MQA top-k requires the bounded Triton path. "
+            "The Torch fallback is forbidden by default because it is slow "
+            "and has produced CUDA illegal-address failures on GB10. "
+            "Set VLLM_DS4_SM12X_MQA_TOPK_TRITON=1 or explicitly opt in with "
+            "VLLM_DS4_ALLOW_SM12X_MQA_TOPK_TORCH_FALLBACK=1 for diagnostics."
+        )
     _fp8_mqa_logits_topk_torch(
         q,
         kv,
