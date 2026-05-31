@@ -131,6 +131,7 @@ if TYPE_CHECKING:
     VLLM_DS4_PROFILE_ABORT_SECONDS: int = 0
     VLLM_DS4_COHORT_ADMISSION: bool = False
     VLLM_DS4_COHORT_ADMISSION_MIN_PROMPTS: int = 2
+    VLLM_DS4_COHORT_PAUSE_DURING_ADMISSION: bool = False
     VLLM_DS4_PP_ONLY_GLOBAL_BACKEND: str = ""
     VLLM_DS4_PP_DISABLE_DEVICE_COMMUNICATOR: bool = False
     VLLM_DS4_SKIP_PYNCCL_WARMUP_ALLREDUCE: bool = False
@@ -1217,15 +1218,23 @@ environment_variables: dict[str, Callable[[], Any]] = {
         os.environ.get("VLLM_DS4_PROFILE_ABORT_SECONDS", "0")
     ),
     # DS4 file-driven API benchmark/cohort mode. OpenAI completions may carry
-    # hundreds of prompts in one request; admit all prompts while the scheduler
-    # is paused so PP services see the intended full batch instead of early
-    # partial waves.
+    # hundreds of prompts in one request; admit them through direct add_request
+    # calls so the engine sees one cohort while the API response still drains
+    # per-prompt outputs. Parking the scheduler during admission is kept as an
+    # explicit diagnostic option because it can strand PP services if resume
+    # does not restart scheduling correctly.
     "VLLM_DS4_COHORT_ADMISSION": lambda: (
         os.environ.get("VLLM_DS4_COHORT_ADMISSION", "0").strip().lower()
         in ("1", "true", "yes", "on")
     ),
     "VLLM_DS4_COHORT_ADMISSION_MIN_PROMPTS": lambda: int(
         os.environ.get("VLLM_DS4_COHORT_ADMISSION_MIN_PROMPTS", "2")
+    ),
+    "VLLM_DS4_COHORT_PAUSE_DURING_ADMISSION": lambda: (
+        os.environ.get("VLLM_DS4_COHORT_PAUSE_DURING_ADMISSION", "0")
+        .strip()
+        .lower()
+        in ("1", "true", "yes", "on")
     ),
     "VLLM_DS4_PP_ONLY_GLOBAL_BACKEND": lambda: os.environ.get(
         "VLLM_DS4_PP_ONLY_GLOBAL_BACKEND", ""

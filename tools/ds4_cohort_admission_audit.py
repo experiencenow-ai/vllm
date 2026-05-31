@@ -26,7 +26,8 @@ def main() -> int:
     failures += check(
         "env exposes DS4 cohort admission switch",
         "VLLM_DS4_COHORT_ADMISSION" in envs
-        and "VLLM_DS4_COHORT_ADMISSION_MIN_PROMPTS" in envs,
+        and "VLLM_DS4_COHORT_ADMISSION_MIN_PROMPTS" in envs
+        and "VLLM_DS4_COHORT_PAUSE_DURING_ADMISSION" in envs,
     )
     failures += check(
         "OpenAI completions use cohort admission guard",
@@ -35,9 +36,17 @@ def main() -> int:
         and "envs.VLLM_DS4_COHORT_ADMISSION_MIN_PROMPTS" in serving,
     )
     failures += check(
-        "cohort admission pauses and resumes scheduler",
-        'pause_generation(mode="keep", clear_cache=False)' in serving
-        and "resume_generation()" in serving,
+        "cohort admission does not pause scheduler by default",
+        "envs.VLLM_DS4_COHORT_PAUSE_DURING_ADMISSION" in serving
+        and "pause=%s" in serving
+        and "resume_generation()" not in serving,
+    )
+    failures += check(
+        "cohort admission wakes scheduling explicitly",
+        "_ds4_wake_completion_cohort" in serving
+        and 'getattr(self.engine_client, "wake_up", None)' in serving
+        and 'wake_up(tags=["scheduling"])' in serving
+        and "left the scheduler paused" in serving,
     )
     failures += check(
         "cohort admission calls add_request directly",
@@ -58,7 +67,9 @@ def main() -> int:
         "DSV4 PP8 enables cohort admission by default",
         'VLLM_DS4_COHORT_ADMISSION="${VLLM_DS4_COHORT_ADMISSION:-1}"'
         in dsv4
-        and "VLLM_DS4_COHORT_ADMISSION_MIN_PROMPTS" in dsv4,
+        and "VLLM_DS4_COHORT_ADMISSION_MIN_PROMPTS" in dsv4
+        and 'VLLM_DS4_COHORT_PAUSE_DURING_ADMISSION="${VLLM_DS4_COHORT_PAUSE_DURING_ADMISSION:-0}"'
+        in dsv4,
     )
     return 1 if failures else 0
 
