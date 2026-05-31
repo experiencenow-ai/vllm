@@ -115,10 +115,13 @@ if TYPE_CHECKING:
     VLLM_DS4_ALLOW_DEEPGEMM_FP8_LINEAR_SM12X: bool = False
     VLLM_ENABLE_FLA_PACKED_RECURRENT_DECODE: bool = True
     VLLM_QWEN_GDN_PROFILE_WARMUP: bool = True
+    VLLM_DS4_PROFILE_DEBUG: bool = False
     VLLM_DS4_PROFILE_LAYER_TRACE: bool = False
     VLLM_DS4_PROFILE_RUN_MAX_TOKENS: int | None = None
     VLLM_DS4_PROFILE_WATCHDOG_SECONDS: int = 0
     VLLM_DS4_PROFILE_ABORT_SECONDS: int = 0
+    VLLM_DS4_PP_ONLY_GLOBAL_BACKEND: str = ""
+    VLLM_DS4_SKIP_PYNCCL_WARMUP_ALLREDUCE: bool = False
     VLLM_DISABLE_PYNCCL: bool = False
     VLLM_USE_OINK_OPS: bool = False
     VLLM_ROCM_USE_AITER: bool = False
@@ -1129,6 +1132,10 @@ environment_variables: dict[str, Callable[[], Any]] = {
         os.environ.get("VLLM_QWEN_GDN_PROFILE_WARMUP", "1").strip().lower()
         in ("1", "true", "yes", "on")
     ),
+    "VLLM_DS4_PROFILE_DEBUG": lambda: (
+        os.environ.get("VLLM_DS4_PROFILE_DEBUG", "0").strip().lower()
+        in ("1", "true", "yes", "on")
+    ),
     # Optional DS4 stage-local layer trace for diagnosing PP profile hangs.
     "VLLM_DS4_PROFILE_LAYER_TRACE": lambda: (
         os.environ.get("VLLM_DS4_PROFILE_LAYER_TRACE", "0").strip().lower()
@@ -1150,6 +1157,15 @@ environment_variables: dict[str, Callable[[], Any]] = {
     ),
     "VLLM_DS4_PROFILE_ABORT_SECONDS": lambda: int(
         os.environ.get("VLLM_DS4_PROFILE_ABORT_SECONDS", "0")
+    ),
+    "VLLM_DS4_PP_ONLY_GLOBAL_BACKEND": lambda: os.environ.get(
+        "VLLM_DS4_PP_ONLY_GLOBAL_BACKEND", ""
+    ),
+    "VLLM_DS4_SKIP_PYNCCL_WARMUP_ALLREDUCE": lambda: (
+        os.environ.get("VLLM_DS4_SKIP_PYNCCL_WARMUP_ALLREDUCE", "0")
+        .strip()
+        .lower()
+        in ("1", "true", "yes", "on")
     ),
     # Disable pynccl (using torch.distributed instead)
     "VLLM_DISABLE_PYNCCL": lambda: (

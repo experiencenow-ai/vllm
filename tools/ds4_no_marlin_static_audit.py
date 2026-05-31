@@ -253,6 +253,13 @@ checks = [
         and "DS4_FLASHINFER_AUTOTUNE_TUNING_JOB" in guard,
     ),
     (
+        "DS4 service launchers skip DeepGEMM warmup by default",
+        all(
+            "VLLM_DEEP_GEMM_WARMUP=\"${VLLM_DEEP_GEMM_WARMUP:-skip}\"" in script
+            for script in (dsv4_tp2, dsv4_pp8, qwen_pp8, qwen_nvfp4_pp8)
+        ),
+    ),
+    (
         "FlashInfer autotune is isolated to an explicit tuning wrapper",
         "DS4_FLASHINFER_AUTOTUNE_TUNING_JOB=1" in dsv4_tp2_autotune
         and "DS4_ENABLE_FLASHINFER_AUTOTUNE=1" in dsv4_tp2_autotune

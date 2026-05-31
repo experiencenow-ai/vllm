@@ -69,6 +69,11 @@ CHECKS = [
         "VLLM_DS4_PROFILE_RUN_MAX_TOKENS:-512",
     ),
     (
+        "BF16 Qwen PP skips DeepGEMM warmup by default",
+        ROOT / "tools/ds4_launch_qwen27_pp8.sh",
+        "VLLM_DEEP_GEMM_WARMUP:-skip",
+    ),
+    (
         "BF16 Qwen PP forces bounded GDN backend",
         ROOT / "tools/ds4_launch_qwen27_pp8.sh",
         "--gdn-prefill-backend",
@@ -87,6 +92,11 @@ CHECKS = [
         "NVFP4 Qwen PP bounds profile run by default",
         ROOT / "tools/ds4_launch_qwen27_nvfp4_pp8.sh",
         "VLLM_DS4_PROFILE_RUN_MAX_TOKENS:-512",
+    ),
+    (
+        "NVFP4 Qwen PP skips DeepGEMM warmup by default",
+        ROOT / "tools/ds4_launch_qwen27_nvfp4_pp8.sh",
+        "VLLM_DEEP_GEMM_WARMUP:-skip",
     ),
     (
         "NVFP4 Qwen PP disables torch compile by default",
