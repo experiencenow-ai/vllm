@@ -127,6 +127,7 @@ if TYPE_CHECKING:
     VLLM_DS4_PROFILE_WATCHDOG_SECONDS: int = 0
     VLLM_DS4_PROFILE_ABORT_SECONDS: int = 0
     VLLM_DS4_PP_ONLY_GLOBAL_BACKEND: str = ""
+    VLLM_DS4_PP_DISABLE_DEVICE_COMMUNICATOR: bool = False
     VLLM_DS4_SKIP_PYNCCL_WARMUP_ALLREDUCE: bool = False
     VLLM_DISABLE_PYNCCL: bool = False
     VLLM_USE_OINK_OPS: bool = False
@@ -1190,6 +1191,12 @@ environment_variables: dict[str, Callable[[], Any]] = {
     ),
     "VLLM_DS4_PP_ONLY_GLOBAL_BACKEND": lambda: os.environ.get(
         "VLLM_DS4_PP_ONLY_GLOBAL_BACKEND", ""
+    ),
+    "VLLM_DS4_PP_DISABLE_DEVICE_COMMUNICATOR": lambda: (
+        os.environ.get("VLLM_DS4_PP_DISABLE_DEVICE_COMMUNICATOR", "0")
+        .strip()
+        .lower()
+        in ("1", "true", "yes", "on")
     ),
     "VLLM_DS4_SKIP_PYNCCL_WARMUP_ALLREDUCE": lambda: (
         os.environ.get("VLLM_DS4_SKIP_PYNCCL_WARMUP_ALLREDUCE", "0")

@@ -337,6 +337,7 @@ checks = [
         and "ASYNC_SCHEDULING_ARGS=(--no-async-scheduling)" in dsv4_pp8
         and "DSV4_ENABLE_ASYNC_SCHEDULING_EXPERIMENTAL" in dsv4_pp8
         and '"${ASYNC_SCHEDULING_ARGS[@]}"' in dsv4_pp8
+        and "VLLM_DS4_PP_DISABLE_DEVICE_COMMUNICATOR" in dsv4_pp8
         and "DSV4_KV_CACHE_MEMORY_BYTES=12884901888" in dual_pipeline_doc,
     ),
     (

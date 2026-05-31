@@ -1674,8 +1674,24 @@ def initialize_model_parallel(
             .unbind(0)
         )
         group_ranks = [x.tolist() for x in group_ranks]
+    pp_use_device_communicator = True
+    if envs.VLLM_DS4_PP_DISABLE_DEVICE_COMMUNICATOR:
+        if tensor_model_parallel_size != 1 or pipeline_model_parallel_size <= 1:
+            raise RuntimeError(
+                "VLLM_DS4_PP_DISABLE_DEVICE_COMMUNICATOR is only valid for "
+                "pipeline-only deployments with TP=1 and PP>1."
+            )
+        pp_use_device_communicator = False
+        logger.info(
+            "DS4 PP group device communicator disabled; pipeline send/recv and "
+            "async sampled-token broadcast use the torch PP process group."
+        )
     _PP = init_model_parallel_group(
-        group_ranks, get_world_group().local_rank, backend, group_name="pp"
+        group_ranks,
+        get_world_group().local_rank,
+        backend,
+        group_name="pp",
+        use_device_communicator=pp_use_device_communicator,
     )
 
     global _DP
