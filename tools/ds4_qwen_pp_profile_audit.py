@@ -156,7 +156,7 @@ CHECKS = [
     (
         "NVFP4 Qwen PP bounds CUDA graph capture sizes by default",
         ROOT / "tools/ds4_launch_qwen27_nvfp4_pp8.sh",
-        "QWEN27_CUDAGRAPH_CAPTURE_SIZES:=1,2,4,8",
+        "QWEN27_CUDAGRAPH_CAPTURE_SIZES:=1,2,4,8,12",
     ),
     (
         "NVFP4 Qwen PP makes async scheduling experimental",

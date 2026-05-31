@@ -227,8 +227,10 @@ checks = [
         and "QWEN27_KV_CACHE_MEMORY_BYTES:=4294967296" in qwen_nvfp4_pp8
         and "LMCACHE_MAX_LOCAL_CPU_SIZE:=0.5" in qwen_pp8
         and "LMCACHE_MAX_LOCAL_CPU_SIZE:=0.5" in qwen_nvfp4_pp8
-        and "QWEN27_CUDAGRAPH_CAPTURE_SIZES:=1,2,4,8" in qwen_pp8
-        and "QWEN27_CUDAGRAPH_CAPTURE_SIZES:=1,2,4,8" in qwen_nvfp4_pp8
+        and "QWEN27_MAX_NUM_SEQS:=12" in qwen_pp8
+        and "QWEN27_MAX_NUM_SEQS:=12" in qwen_nvfp4_pp8
+        and "QWEN27_CUDAGRAPH_CAPTURE_SIZES:=1,2,4,8,12" in qwen_pp8
+        and "QWEN27_CUDAGRAPH_CAPTURE_SIZES:=1,2,4,8,12" in qwen_nvfp4_pp8
         and "QWEN27_ENABLE_ASYNC_SCHEDULING_EXPERIMENTAL" in qwen_pp8
         and "QWEN27_ENABLE_ASYNC_SCHEDULING_EXPERIMENTAL" in qwen_nvfp4_pp8
         and "QWEN27_REASONING_PARSER:-none" in qwen_pp8

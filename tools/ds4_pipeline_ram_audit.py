@@ -70,14 +70,24 @@ CHECKS = [
         "LMCACHE_MAX_LOCAL_CPU_SIZE:=0.5",
     ),
     (
+        "Qwen NVFP4 resident3 max seqs allows 12-way batch",
+        "tools/ds4_launch_qwen27_nvfp4_pp8.sh",
+        "QWEN27_MAX_NUM_SEQS:=12",
+    ),
+    (
+        "Qwen BF16 resident3 max seqs allows 12-way batch",
+        "tools/ds4_launch_qwen27_pp8.sh",
+        "QWEN27_MAX_NUM_SEQS:=12",
+    ),
+    (
         "Qwen NVFP4 launcher constrains graph capture sizes",
         "tools/ds4_launch_qwen27_nvfp4_pp8.sh",
-        "QWEN27_CUDAGRAPH_CAPTURE_SIZES:=1,2,4,8",
+        "QWEN27_CUDAGRAPH_CAPTURE_SIZES:=1,2,4,8,12",
     ),
     (
         "Qwen BF16 launcher constrains graph capture sizes",
         "tools/ds4_launch_qwen27_pp8.sh",
-        "QWEN27_CUDAGRAPH_CAPTURE_SIZES:=1,2,4,8",
+        "QWEN27_CUDAGRAPH_CAPTURE_SIZES:=1,2,4,8,12",
     ),
     (
         "Qwen NVFP4 preserves rank-zero LMCache lookup",
