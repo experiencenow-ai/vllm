@@ -36,6 +36,7 @@ sparse_mla_env = (
 sparse_mla_kernels = (
     root / "vllm/v1/attention/backends/mla/sparse_mla_kernels.py"
 ).read_text()
+sparse_swa = (root / "vllm/v1/attention/backends/mla/sparse_swa.py").read_text()
 dsv4_tp2 = (root / "tools/ds4_launch_dsv4_flash_tp2_native_benchmark.sh").read_text()
 dsv4_tp2_autotune = (
     root / "tools/ds4_launch_dsv4_flash_tp2_flashinfer_autotune.sh"
@@ -193,6 +194,11 @@ checks = [
         and "def fp8ds_paged_sparse_mla_attention_with_sink_multihead(" in sparse_mla_kernels
         and "def fp8ds_global_paged_sparse_mla_attention_with_sink_multihead(" in sparse_mla_kernels
         and "def splitkv_sparse_mla_attention_with_sink(" in sparse_mla_kernels,
+    ),
+    (
+        "Triton sparse MLA skips FlashMLA tile scheduler allocation",
+        "from vllm.v1.attention.backends.mla.sparse_mla_env import is_triton_sparse_mla_enabled" in sparse_swa
+        and "if is_triton_sparse_mla_enabled(self.device):\n            return out" in sparse_swa,
     ),
 
     (
