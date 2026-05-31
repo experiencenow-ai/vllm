@@ -134,6 +134,9 @@ if TYPE_CHECKING:
     VLLM_DS4_SM12X_MQA_ROWWISE_MIN_TOKENS: int = 0
     VLLM_DS4_SM12X_PAGED_MQA_TOPK_CHUNK_SIZE: int = 8192
     VLLM_DS4_SM12X_MQA_TOPK_TRITON: bool = False
+    VLLM_DS4_SM12X_MQA_TOPK_CHUNK_SIZE: int = 8192
+    VLLM_DS4_SM12X_MQA_TOPK_MAX_LOGITS_BYTES: int = 536870912
+    VLLM_DS4_ALLOW_SM12X_MQA_TOPK_TORCH_FALLBACK: bool = False
     VLLM_DS4_DEQUANT_GATHER_K_CUTEDSL: bool = True
     VLLM_DS4_DEQUANT_GATHER_K_CUTEDSL_MAX_ROWS: int = -1
     VLLM_DISABLE_PYNCCL: bool = False
@@ -1228,6 +1231,18 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # address during DSV4 PP8 API traffic. Keep it opt-in until fixed/measured.
     "VLLM_DS4_SM12X_MQA_TOPK_TRITON": lambda: (
         os.environ.get("VLLM_DS4_SM12X_MQA_TOPK_TRITON", "0").strip().lower()
+        in ("1", "true", "yes", "on")
+    ),
+    "VLLM_DS4_SM12X_MQA_TOPK_CHUNK_SIZE": lambda: int(
+        os.environ.get("VLLM_DS4_SM12X_MQA_TOPK_CHUNK_SIZE", "8192")
+    ),
+    "VLLM_DS4_SM12X_MQA_TOPK_MAX_LOGITS_BYTES": lambda: int(
+        os.environ.get("VLLM_DS4_SM12X_MQA_TOPK_MAX_LOGITS_BYTES", "536870912")
+    ),
+    "VLLM_DS4_ALLOW_SM12X_MQA_TOPK_TORCH_FALLBACK": lambda: (
+        os.environ.get("VLLM_DS4_ALLOW_SM12X_MQA_TOPK_TORCH_FALLBACK", "0")
+        .strip()
+        .lower()
         in ("1", "true", "yes", "on")
     ),
     # DS4 / GB10: production DSV4 uses the native CuteDSL K-cache

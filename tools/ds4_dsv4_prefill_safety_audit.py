@@ -6,11 +6,13 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 CACHE_UTILS = ROOT / "vllm/models/deepseek_v4/common/ops/cache_utils.py"
+CUTEDSL_GATHER = ROOT / "vllm/models/deepseek_v4/nvidia/ops/dequant_gather_k_cutedsl.py"
 ENVS = ROOT / "vllm/envs.py"
 PP8 = ROOT / "tools/ds4_launch_dsv4_flash_pp8.sh"
 TP2 = ROOT / "tools/ds4_launch_dsv4_flash_tp2_native_benchmark.sh"
 
 cache_utils = CACHE_UTILS.read_text()
+cutedsl_gather = CUTEDSL_GATHER.read_text()
 envs = ENVS.read_text()
 checks = [
     (
@@ -30,6 +32,11 @@ checks = [
         "cutedsl_gate_precedes_import",
         "if _should_use_cutedsl_dequantize_and_gather_k_cache(out):"
         in cache_utils,
+    ),
+    (
+        "cutedsl_gather_uses_known_good_load_cache_enum",
+        "cpasync.CopyG2SOp(cute.nvgpu.LoadCacheMode.GLOBAL)" in cutedsl_gather
+        and "cpasync.CopyG2SOp(cpasync.LoadCacheMode.GLOBAL)" not in cutedsl_gather,
     ),
     (
         "bounded_triton_path_remains",
@@ -63,6 +70,12 @@ checks = [
         "envs_register_sm12x_mqa_vars",
         "VLLM_DS4_SM12X_MQA_ROWWISE" in envs
         and "VLLM_DS4_SM12X_PAGED_MQA_TOPK_CHUNK_SIZE" in envs,
+    ),
+    (
+        "envs_register_dense_mqa_topk_vars",
+        "VLLM_DS4_SM12X_MQA_TOPK_CHUNK_SIZE" in envs
+        and "VLLM_DS4_SM12X_MQA_TOPK_MAX_LOGITS_BYTES" in envs
+        and "VLLM_DS4_ALLOW_SM12X_MQA_TOPK_TORCH_FALLBACK" in envs,
     ),
 ]
 
