@@ -22,6 +22,13 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def _env_flag(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() not in {"", "0", "false", "no", "off"}
+
+
 _SM120_MQA_LOGITS_MAX_SCORE_BYTES = 64 * 1024 * 1024
 _SM120_MQA_TRITON_TOPK_MAX_LOGITS_BYTES = 512 * 1024 * 1024
 _SM120_PAGED_MQA_TOPK_CHUNK_SIZE = 8192
@@ -241,6 +248,11 @@ def _fp8_mqa_logits_topk_triton(
     out: torch.Tensor,
 ) -> bool:
     q_values, q_scale = q
+    if not _env_flag("VLLM_DS4_SM12X_MQA_TOPK_TRITON", False):
+        logger.warning_once(
+            "DS4 SM12x dense-MQA top-k Triton path disabled by "
+            "VLLM_DS4_SM12X_MQA_TOPK_TRITON=0; using bounded top-k path")
+        return False
     k_values, _ = kv
     if not (q_scale is None and q_values.dim() == 3 and k_values.dim() == 2):
         return False

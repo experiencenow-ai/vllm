@@ -22,11 +22,16 @@ checks = [
 ]
 fallback_text = (ROOT / "vllm/models/deepseek_v4/nvidia/ops/sm12x_deep_gemm_fallbacks.py").read_text()
 checks.append(("topk_chunk_env", "VLLM_DS4_SM12X_PAGED_MQA_TOPK_CHUNK_SIZE" in fallback_text))
+checks.append(("dense_mqa_topk_triton_opt_in",
+               "VLLM_DS4_SM12X_MQA_TOPK_TRITON" in fallback_text
+               and "using bounded top-k path" in fallback_text))
 
 for script in (PP8, TP2):
     script_text = script.read_text()
     checks.append((f"{script.name}_rowwise_max_rows",
                    "VLLM_DS4_SM12X_MQA_ROWWISE_MAX_ROWS" in script_text))
+    checks.append((f"{script.name}_dense_mqa_topk_triton_off",
+                   "VLLM_DS4_SM12X_MQA_TOPK_TRITON:-0" in script_text))
 
 failed = False
 for name, ok in checks:
