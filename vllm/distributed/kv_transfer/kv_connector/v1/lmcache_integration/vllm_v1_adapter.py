@@ -6,6 +6,7 @@ import os
 import uuid
 from collections.abc import Generator
 from dataclasses import dataclass, field
+from itertools import islice
 from typing import TYPE_CHECKING, Any
 
 import torch
@@ -34,12 +35,14 @@ try:
     from lmcache.v1.gpu_connector import (
         VLLMBufferLayerwiseGPUConnector,
         VLLMPagedMemGPUConnectorV2,
+        VLLMPagedMemGPUConnectorV3,
         VLLMPagedMemLayerwiseGPUConnector,
     )
 except ImportError:
     from lmcache.v1.gpu_connector.gpu_connectors import (
         VLLMBufferLayerwiseGPUConnector,
         VLLMPagedMemGPUConnectorV2,
+        VLLMPagedMemGPUConnectorV3,
         VLLMPagedMemLayerwiseGPUConnector,
     )
 
@@ -66,6 +69,7 @@ from vllm.distributed.kv_transfer.kv_connector.v1.lmcache_integration.hma_block_
     build_slot_mappings_for_block_id_groups,
     choose_lmcache_kv_cache_group_id,
     extend_block_id_groups,
+    get_lmcache_kv_cache_group_layer_names,
     normalize_block_id_groups,
 )
 from vllm.distributed.kv_transfer.kv_connector.v1.lmcache_integration.utils import (
@@ -81,6 +85,14 @@ from vllm.utils.math_utils import cdiv
 from vllm.utils.torch_utils import get_kv_cache_torch_dtype
 from vllm.v1.attention.backend import AttentionMetadata
 from vllm.v1.core.sched.output import SchedulerOutput
+from vllm.v1.kv_cache_interface import (
+    AttentionSpec,
+    KVCacheConfig,
+    KVCacheSpec,
+    KVCacheSpecKind,
+    UniformTypeKVCacheSpecs,
+    get_kv_cache_spec_kind,
+)
 from vllm.version import __version__ as VLLM_VERSION
 
 if TYPE_CHECKING:
@@ -487,22 +499,85 @@ def _build_lmcache_metadata(
     )
 
 
+def _unwrap_uniform_kv_cache_spec(kv_cache_spec: KVCacheSpec) -> KVCacheSpec:
+    if isinstance(kv_cache_spec, UniformTypeKVCacheSpecs):
+        return next(iter(kv_cache_spec.kv_cache_specs.values()))
+    return kv_cache_spec
+
+
+def _get_lmcache_kv_group_shape(
+    lmcache_config: LMCacheEngineConfig,
+    vllm_config: "VllmConfig",
+    kv_cache_config: KVCacheConfig | None,
+    kv_cache_group_id: int,
+) -> tuple[tuple[int, int, int, int, int], bool] | None:
+    if kv_cache_config is None:
+        return None
+    groups = kv_cache_config.kv_cache_groups
+    if kv_cache_group_id < 0 or kv_cache_group_id >= len(groups):
+        raise ValueError(
+            f"LMCache KV cache group id {kv_cache_group_id} is outside the "
+            f"available KV cache groups [0, {len(groups) - 1}]."
+        )
+    group = groups[kv_cache_group_id]
+    kv_cache_spec = _unwrap_uniform_kv_cache_spec(group.kv_cache_spec)
+    if not isinstance(kv_cache_spec, AttentionSpec):
+        group_kind = get_kv_cache_spec_kind(group.kv_cache_spec)
+        raise ValueError(
+            "LMCache HMA requires a paged attention KV cache group, but "
+            f"group {kv_cache_group_id} is {group_kind.value}."
+        )
+    group_kind = get_kv_cache_spec_kind(group.kv_cache_spec)
+    use_mla = group_kind in (
+        KVCacheSpecKind.MLA_ATTENTION,
+        KVCacheSpecKind.SLIDING_WINDOW_MLA,
+    )
+    num_layers = len(group.layer_names)
+    if num_layers == 0:
+        raise ValueError(
+            f"LMCache KV cache group {kv_cache_group_id} has no local layers."
+        )
+    kv_shape = (
+        num_layers,
+        1 if use_mla else 2,
+        lmcache_config.chunk_size,
+        kv_cache_spec.num_kv_heads,
+        kv_cache_spec.head_size,
+    )
+    logger.info(
+        "LMCache HMA group %d has %d local layer(s), kind=%s, kv_shape=%s",
+        kv_cache_group_id,
+        num_layers,
+        group_kind.value,
+        kv_shape,
+    )
+    return kv_shape, use_mla
+
+
 def _build_lmcache_metadata_from_vllm_config(
     lmcache_config: LMCacheEngineConfig,
     vllm_config: "VllmConfig",
     role: str,
+    kv_cache_config: KVCacheConfig | None = None,
+    kv_cache_group_id: int = 0,
 ):
     model_config = vllm_config.model_config
     parallel_config = vllm_config.parallel_config
     cache_config = vllm_config.cache_config
     kv_dtype = get_kv_cache_torch_dtype(cache_config.cache_dtype, model_config.dtype)
-    use_mla = mla_enabled(model_config)
-    num_layer = model_config.get_num_layers(parallel_config)
-    num_layer += _calculate_mtp_layers(vllm_config, model_config)
-    chunk_size = lmcache_config.chunk_size
-    num_kv_head = model_config.get_num_kv_heads(parallel_config)
-    head_size = model_config.get_head_size()
-    kv_shape = (num_layer, 1 if use_mla else 2, chunk_size, num_kv_head, head_size)
+    group_shape = _get_lmcache_kv_group_shape(
+        lmcache_config, vllm_config, kv_cache_config, kv_cache_group_id
+    )
+    if group_shape is None:
+        use_mla = mla_enabled(model_config)
+        num_layer = model_config.get_num_layers(parallel_config)
+        num_layer += _calculate_mtp_layers(vllm_config, model_config)
+        chunk_size = lmcache_config.chunk_size
+        num_kv_head = model_config.get_num_kv_heads(parallel_config)
+        head_size = model_config.get_head_size()
+        kv_shape = (num_layer, 1 if use_mla else 2, chunk_size, num_kv_head, head_size)
+    else:
+        kv_shape, use_mla = group_shape
     local_world_size = max(1, torch.accelerator.device_count())
     local_rank = parallel_config.rank % local_world_size
     metadata = _build_lmcache_metadata(
@@ -522,6 +597,8 @@ def _build_lmcache_metadata_from_vllm_config(
 def _init_lmcache_engine(
     lmcache_config: LMCacheEngineConfig,
     vllm_config: "VllmConfig",
+    kv_cache_config: KVCacheConfig | None = None,
+    kv_cache_group_id: int = 0,
 ) -> LMCacheEngine:
     """Initialize the LMCache engine by the given model config and parallel
     config. This function will check the environment variable
@@ -549,7 +626,13 @@ def _init_lmcache_engine(
 
     kv_dtype = get_kv_cache_torch_dtype(cache_config.cache_dtype, model_config.dtype)
 
-    use_mla = mla_enabled(model_config)
+    group_shape = _get_lmcache_kv_group_shape(
+        lmcache_config, vllm_config, kv_cache_config, kv_cache_group_id
+    )
+    if group_shape is None:
+        use_mla = mla_enabled(model_config)
+    else:
+        use_mla = group_shape[1]
     if use_mla and (
         lmcache_config.remote_serde != "naive"
         and lmcache_config.remote_serde is not None
@@ -557,13 +640,18 @@ def _init_lmcache_engine(
         raise ValueError("MLA only works with naive serde mode..")
 
     # construct kv shape (for mem pool)
-    num_layer = model_config.get_num_layers(parallel_config)
-    num_mtp_layers = _calculate_mtp_layers(vllm_config, model_config)
-    num_layer += num_mtp_layers
-    chunk_size = lmcache_config.chunk_size
-    num_kv_head = model_config.get_num_kv_heads(parallel_config)
-    head_size = model_config.get_head_size()
-    kv_shape = (num_layer, 1 if use_mla else 2, chunk_size, num_kv_head, head_size)
+    if group_shape is None:
+        num_layer = model_config.get_num_layers(parallel_config)
+        num_mtp_layers = _calculate_mtp_layers(vllm_config, model_config)
+        num_layer += num_mtp_layers
+        chunk_size = lmcache_config.chunk_size
+        num_kv_head = model_config.get_num_kv_heads(parallel_config)
+        head_size = model_config.get_head_size()
+        kv_shape = (num_layer, 1 if use_mla else 2, chunk_size, num_kv_head, head_size)
+    else:
+        kv_shape = group_shape[0]
+        num_mtp_layers = 0
+        num_layer, _, _, num_kv_head, head_size = kv_shape
     logger.info(
         "use mla: %s, kv shape: %s, num_mtp_layers: %s",
         use_mla,
@@ -590,6 +678,7 @@ def _init_lmcache_engine(
     vllm_gpu_connector: (
         VLLMBufferLayerwiseGPUConnector
         | VLLMPagedMemGPUConnectorV2
+        | VLLMPagedMemGPUConnectorV3
         | VLLMPagedMemLayerwiseGPUConnector
     )
 
@@ -618,6 +707,12 @@ def _init_lmcache_engine(
                 dtype=kv_dtype,
                 device=device,
             )
+    elif getattr(lmcache_config, "use_gpu_connector_v3", False):
+        vllm_gpu_connector = VLLMPagedMemGPUConnectorV3.from_metadata(
+            metadata,
+            use_gpu=use_gpu,
+            device=device,
+        )
     else:
         vllm_gpu_connector = VLLMPagedMemGPUConnectorV2(
             hidden_dim_size,
@@ -771,7 +866,11 @@ class LMCacheConnectorV1Impl:
         if role == KVConnectorRole.SCHEDULER:
             # Create lookup client using factory
             lookup_metadata = _build_lmcache_metadata_from_vllm_config(
-                config, vllm_config, "scheduler"
+                config,
+                vllm_config,
+                "scheduler",
+                kv_cache_config,
+                self._lmcache_kv_cache_group_id,
             )
             self.lookup_client = LookupClientFactory.create_lookup_client(
                 config, lookup_metadata
@@ -783,6 +882,8 @@ class LMCacheConnectorV1Impl:
             self.lmcache_engine = _init_lmcache_engine(
                 config,
                 vllm_config,
+                kv_cache_config,
+                self._lmcache_kv_cache_group_id,
             )
 
             self.use_layerwise = config.use_layerwise
@@ -801,7 +902,11 @@ class LMCacheConnectorV1Impl:
             lookup_metadata = getattr(self.lmcache_engine, "metadata", None)
             if lookup_metadata is None:
                 lookup_metadata = _build_lmcache_metadata_from_vllm_config(
-                    config, vllm_config, "worker"
+                    config,
+                    vllm_config,
+                    "worker",
+                    kv_cache_config,
+                    self._lmcache_kv_cache_group_id,
                 )
             self.lookup_server = LookupClientFactory.create_lookup_server(
                 self.lmcache_engine, lookup_metadata
@@ -818,6 +923,9 @@ class LMCacheConnectorV1Impl:
                 self.lmcache_engine.post_init(async_lookup_server=self.lookup_server)
 
         self.kv_caches: dict[str, torch.Tensor] = {}
+        self._lmcache_kv_cache_layer_names = get_lmcache_kv_cache_group_layer_names(
+            kv_cache_config, self._lmcache_kv_cache_group_id
+        )
 
         self._block_size = vllm_config.cache_config.block_size
 
@@ -954,6 +1062,36 @@ class LMCacheConnectorV1Impl:
             if layer_name not in self.kv_caches:
                 self.kv_caches[layer_name] = attn_layer.kv_cache
 
+        self.kv_caches = self._filter_lmcache_kv_caches(self.kv_caches)
+
+    def _filter_lmcache_kv_caches(
+        self, kv_caches: dict[str, torch.Tensor]
+    ) -> dict[str, torch.Tensor]:
+        if len(self._lmcache_kv_cache_layer_names) == 0:
+            return kv_caches
+        selected = {
+            layer_name: kv_caches[layer_name]
+            for layer_name in self._lmcache_kv_cache_layer_names
+            if layer_name in kv_caches
+        }
+        if len(selected) == 0:
+            available = ", ".join(islice(kv_caches.keys(), 8))
+            requested = ", ".join(islice(self._lmcache_kv_cache_layer_names, 8))
+            raise ValueError(
+                "LMCache HMA selected KV cache group "
+                f"{self._lmcache_kv_cache_group_id}, but none of its layer "
+                f"names are present in registered caches. requested=[{requested}] "
+                f"available=[{available}]"
+            )
+        logger.info(
+            "LMCache HMA registered %d/%d selected KV cache layer(s) "
+            "for group %d",
+            len(selected),
+            len(self._lmcache_kv_cache_layer_names),
+            self._lmcache_kv_cache_group_id,
+        )
+        return selected
+
     ####################
     # Worker side APIs
     ####################
@@ -968,7 +1106,7 @@ class LMCacheConnectorV1Impl:
         # TODO(chunxiaozheng): `_init_kv_caches_from_forward_context` is
         #  not called, we should consider removing it.
         assert len(self.kv_caches) == 0 and len(kv_caches) > 0
-        self.kv_caches = kv_caches
+        self.kv_caches = self._filter_lmcache_kv_caches(kv_caches)
         if self.lmcache_engine is not None:
             kvcaches = list(self.kv_caches.values())
             self.lmcache_engine.post_init(kvcaches=kvcaches)

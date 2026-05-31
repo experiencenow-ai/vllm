@@ -59,6 +59,12 @@ if TYPE_CHECKING:
     VLLM_XLA_CACHE_PATH: str = os.path.join(VLLM_CACHE_ROOT, "xla_cache")
     VLLM_XLA_CHECK_RECOMPILATION: bool = False
     VLLM_SPARSE_INDEXER_MAX_LOGITS_MB: int = 512
+    VLLM_TRITON_MLA_SPARSE: bool | None = None
+    VLLM_TRITON_MLA_SPARSE_TOPK_CHUNK_SIZE: int = 512
+    VLLM_TRITON_MLA_SPARSE_QUERY_CHUNK_SIZE: int = 256
+    VLLM_TRITON_MLA_SPARSE_HEAD_BLOCK_SIZE: int | None = None
+    VLLM_TRITON_MLA_SPARSE_MATMUL_DECODE: bool | None = None
+    VLLM_TRITON_MLA_SPARSE_SPLITKV_DECODE: bool = False
     VLLM_USE_RAY_COMPILED_DAG_CHANNEL_TYPE: Literal["auto", "nccl", "shm"] = "auto"
     VLLM_USE_RAY_COMPILED_DAG_OVERLAP_COMM: bool = False
     VLLM_USE_RAY_WRAPPED_PP_COMM: bool = True
@@ -115,7 +121,13 @@ if TYPE_CHECKING:
     VLLM_DS4_ALLOW_DEEPGEMM_FP8_LINEAR_SM12X: bool = False
     VLLM_ENABLE_FLA_PACKED_RECURRENT_DECODE: bool = True
     VLLM_QWEN_GDN_PROFILE_WARMUP: bool = True
+    VLLM_DS4_PROFILE_DEBUG: bool = False
     VLLM_DS4_PROFILE_LAYER_TRACE: bool = False
+    VLLM_DS4_PROFILE_RUN_MAX_TOKENS: int | None = None
+    VLLM_DS4_PROFILE_WATCHDOG_SECONDS: int = 0
+    VLLM_DS4_PROFILE_ABORT_SECONDS: int = 0
+    VLLM_DS4_PP_ONLY_GLOBAL_BACKEND: str = ""
+    VLLM_DS4_SKIP_PYNCCL_WARMUP_ALLREDUCE: bool = False
     VLLM_DISABLE_PYNCCL: bool = False
     VLLM_USE_OINK_OPS: bool = False
     VLLM_ROCM_USE_AITER: bool = False
@@ -1002,6 +1014,30 @@ environment_variables: dict[str, Callable[[], Any]] = {
     "VLLM_SPARSE_INDEXER_MAX_LOGITS_MB": lambda: int(
         os.getenv("VLLM_SPARSE_INDEXER_MAX_LOGITS_MB", "512")
     ),
+    # ``VLLM_TRITON_MLA_SPARSE`` unset means auto-select where FlashMLA sparse
+    # decode is not available. DS4 launchers set it explicitly on GB10/SM12x.
+    "VLLM_TRITON_MLA_SPARSE": lambda: (
+        None
+        if os.getenv("VLLM_TRITON_MLA_SPARSE") is None
+        else bool(int(os.getenv("VLLM_TRITON_MLA_SPARSE", "0")))
+    ),
+    "VLLM_TRITON_MLA_SPARSE_TOPK_CHUNK_SIZE": lambda: int(
+        os.getenv("VLLM_TRITON_MLA_SPARSE_TOPK_CHUNK_SIZE", "512")
+    ),
+    "VLLM_TRITON_MLA_SPARSE_QUERY_CHUNK_SIZE": lambda: int(
+        os.getenv("VLLM_TRITON_MLA_SPARSE_QUERY_CHUNK_SIZE", "256")
+    ),
+    "VLLM_TRITON_MLA_SPARSE_HEAD_BLOCK_SIZE": lambda: maybe_convert_int(
+        os.getenv("VLLM_TRITON_MLA_SPARSE_HEAD_BLOCK_SIZE")
+    ),
+    "VLLM_TRITON_MLA_SPARSE_MATMUL_DECODE": lambda: (
+        None
+        if os.getenv("VLLM_TRITON_MLA_SPARSE_MATMUL_DECODE") is None
+        else bool(int(os.getenv("VLLM_TRITON_MLA_SPARSE_MATMUL_DECODE", "0")))
+    ),
+    "VLLM_TRITON_MLA_SPARSE_SPLITKV_DECODE": lambda: bool(
+        int(os.getenv("VLLM_TRITON_MLA_SPARSE_SPLITKV_DECODE", "0"))
+    ),
     # If set, the OpenAI API server will stay alive even after the underlying
     # AsyncLLMEngine errors and stops serving requests
     "VLLM_KEEP_ALIVE_ON_ENGINE_DEATH": lambda: bool(
@@ -1126,9 +1162,39 @@ environment_variables: dict[str, Callable[[], Any]] = {
         os.environ.get("VLLM_QWEN_GDN_PROFILE_WARMUP", "1").strip().lower()
         in ("1", "true", "yes", "on")
     ),
+    "VLLM_DS4_PROFILE_DEBUG": lambda: (
+        os.environ.get("VLLM_DS4_PROFILE_DEBUG", "0").strip().lower()
+        in ("1", "true", "yes", "on")
+    ),
     # Optional DS4 stage-local layer trace for diagnosing PP profile hangs.
     "VLLM_DS4_PROFILE_LAYER_TRACE": lambda: (
         os.environ.get("VLLM_DS4_PROFILE_LAYER_TRACE", "0").strip().lower()
+        in ("1", "true", "yes", "on")
+    ),
+    # DS4 PP bring-up can bound the profile dummy-run token count separately
+    # from the runtime scheduler budget. This is intentionally profile-only:
+    # max_num_batched_tokens still controls serving.
+    "VLLM_DS4_PROFILE_RUN_MAX_TOKENS": lambda: (
+        None
+        if os.environ.get("VLLM_DS4_PROFILE_RUN_MAX_TOKENS", "").strip()
+        in ("", "0", "none", "None", "NONE", "auto", "AUTO")
+        else int(os.environ["VLLM_DS4_PROFILE_RUN_MAX_TOKENS"])
+    ),
+    # Optional watchdogs for profile_run stalls. The dump watchdog emits Python
+    # stack traces; the abort watchdog fails closed instead of hanging forever.
+    "VLLM_DS4_PROFILE_WATCHDOG_SECONDS": lambda: int(
+        os.environ.get("VLLM_DS4_PROFILE_WATCHDOG_SECONDS", "0")
+    ),
+    "VLLM_DS4_PROFILE_ABORT_SECONDS": lambda: int(
+        os.environ.get("VLLM_DS4_PROFILE_ABORT_SECONDS", "0")
+    ),
+    "VLLM_DS4_PP_ONLY_GLOBAL_BACKEND": lambda: os.environ.get(
+        "VLLM_DS4_PP_ONLY_GLOBAL_BACKEND", ""
+    ),
+    "VLLM_DS4_SKIP_PYNCCL_WARMUP_ALLREDUCE": lambda: (
+        os.environ.get("VLLM_DS4_SKIP_PYNCCL_WARMUP_ALLREDUCE", "0")
+        .strip()
+        .lower()
         in ("1", "true", "yes", "on")
     ),
     # Disable pynccl (using torch.distributed instead)

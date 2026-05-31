@@ -682,8 +682,17 @@ class GroupCoordinator:
             "as the current rank."
         )
 
-        # Serialize object to tensor and get the size as well
-        object_tensor = torch.frombuffer(pickle.dumps(obj), dtype=torch.uint8)
+        if hasattr(torch.distributed, "send_object_list"):
+            torch.distributed.send_object_list(
+                [obj], dst=self.ranks[dst], group=self.cpu_group
+            )
+            return None
+
+        # Serialize object to a writable tensor and get the size as well.
+        # Gloo may send directly from this CPU buffer; tensors backed by
+        # immutable bytes can trip writev with EFAULT on GB10/aarch64.
+        object_buffer = bytearray(pickle.dumps(obj))
+        object_tensor = torch.frombuffer(object_buffer, dtype=torch.uint8)
 
         size_tensor = torch.tensor(
             [object_tensor.numel()], dtype=torch.long, device="cpu"
@@ -707,6 +716,13 @@ class GroupCoordinator:
         assert src != self.rank_in_group, (
             "Invalid source rank. Source rank is the same as the current rank."
         )
+
+        if hasattr(torch.distributed, "recv_object_list"):
+            recv: list[Any] = [None]
+            torch.distributed.recv_object_list(
+                recv, src=self.ranks[src], group=self.cpu_group
+            )
+            return recv[0]
 
         size_tensor = torch.empty(1, dtype=torch.long, device="cpu")
 

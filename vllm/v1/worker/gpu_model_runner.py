@@ -5802,9 +5802,23 @@ class GPUModelRunner(
                         )
                     )
 
+                if ds4_profile_debug_enabled():
+                    logger.info(
+                        "DS4 profile trace: dummy_run PP intermediate gather start "
+                        "pp_rank=%s tokens=%s",
+                        get_pp_group().rank_in_group,
+                        num_tokens_padded,
+                    )
                 intermediate_tensors = self.sync_and_gather_intermediate_tensors(
                     num_tokens_padded, None, False
                 )
+                if ds4_profile_debug_enabled():
+                    logger.info(
+                        "DS4 profile trace: dummy_run PP intermediate gather finished "
+                        "pp_rank=%s tokens=%s",
+                        get_pp_group().rank_in_group,
+                        num_tokens_padded,
+                    )
 
             if ubatch_slices_padded is not None:
                 # Adjust values to reflect a single ubatch.
@@ -5827,6 +5841,15 @@ class GPUModelRunner(
                     slot_mapping=slot_mappings,
                 ),
             ):
+                if ds4_profile_debug_enabled():
+                    logger.info(
+                        "DS4 profile trace: dummy_run model forward start "
+                        "pp_rank=%s tokens=%s is_profile=%s mode=%s",
+                        get_pp_group().rank_in_group,
+                        num_tokens_padded,
+                        is_profile,
+                        cudagraph_runtime_mode,
+                    )
                 outputs = self.model(
                     input_ids=input_ids,
                     positions=positions,
@@ -5834,6 +5857,15 @@ class GPUModelRunner(
                     inputs_embeds=inputs_embeds,
                     **model_kwargs,
                 )
+                if ds4_profile_debug_enabled():
+                    logger.info(
+                        "DS4 profile trace: dummy_run model forward finished "
+                        "pp_rank=%s tokens=%s is_profile=%s mode=%s",
+                        get_pp_group().rank_in_group,
+                        num_tokens_padded,
+                        is_profile,
+                        cudagraph_runtime_mode,
+                    )
 
             if self.use_aux_hidden_state_outputs:
                 hidden_states, _ = outputs
@@ -6166,14 +6198,29 @@ class GPUModelRunner(
                         for i, output in enumerate(dummy_encoder_outputs):
                             self.encoder_cache[f"tmp_{i}"] = output
 
-        # Add `is_profile` here to pre-allocate communication buffers
+        # Add `is_profile` here to pre-allocate communication buffers.
+        # DS4 PP bring-up can bound the profile dummy-run independently from
+        # the scheduler's serving token budget. This prevents a middle PP rank
+        # from blocking health on a large exploratory profile shape while still
+        # keeping the runtime max_num_batched_tokens unchanged.
+        profile_num_tokens = self.max_num_tokens
+        ds4_profile_run_max_tokens = envs.VLLM_DS4_PROFILE_RUN_MAX_TOKENS
+        if ds4_profile_run_max_tokens is not None:
+            if ds4_profile_run_max_tokens <= 0:
+                raise ValueError(
+                    "VLLM_DS4_PROFILE_RUN_MAX_TOKENS must be positive or unset"
+                )
+            profile_num_tokens = min(profile_num_tokens, ds4_profile_run_max_tokens)
         if ds4_profile_debug_enabled():
             logger.info(
-                "DS4 profile trace: profile_run dummy_run start max_num_tokens=%s",
+                "DS4 profile trace: profile_run dummy_run start "
+                "max_num_tokens=%s profile_num_tokens=%s pp_rank=%s",
                 self.max_num_tokens,
+                profile_num_tokens,
+                get_pp_group().rank_in_group,
             )
         hidden_states, last_hidden_states = self._dummy_run(
-            self.max_num_tokens, is_profile=True
+            profile_num_tokens, is_profile=True
         )
         if ds4_profile_debug_enabled():
             logger.info("DS4 profile trace: profile_run dummy_run finished")

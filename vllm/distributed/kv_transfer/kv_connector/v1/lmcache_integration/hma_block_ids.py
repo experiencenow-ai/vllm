@@ -161,3 +161,18 @@ def choose_lmcache_kv_cache_group_id(
                 return group_index
 
     return indexed_groups[0][0]
+
+
+def get_lmcache_kv_cache_group_layer_names(
+    kv_cache_config: KVCacheConfig | None,
+    group_id: int,
+) -> tuple[str, ...]:
+    if kv_cache_config is None:
+        return ()
+    groups = kv_cache_config.kv_cache_groups
+    if group_id < 0 or group_id >= len(groups):
+        raise ValueError(
+            f"LMCache KV cache group id {group_id} is outside the "
+            f"available KV cache groups [0, {len(groups) - 1}]."
+        )
+    return tuple(groups[group_id].layer_names)

@@ -82,6 +82,39 @@ from .utils import (
 
 logger = init_logger(__name__)
 
+
+def _compile_disabled(function):
+    """Return a torch-compile-disabled wrapper when available."""
+    compiler = getattr(torch, "compiler", None)
+    if compiler is not None and hasattr(compiler, "disable"):
+        return compiler.disable(function)
+    dynamo = getattr(torch, "_dynamo", None)
+    if dynamo is not None and hasattr(dynamo, "disable"):
+        return dynamo.disable(function)
+    return function
+
+
+@_compile_disabled
+def _ds4_log_qwen_pp_layer_event(
+    pp_rank: int,
+    layer_idx: int,
+    layer_type: str,
+    phase: str,
+    num_tokens: int,
+    synchronize: bool,
+) -> None:
+    if synchronize:
+        torch.accelerator.synchronize()
+    logger.info(
+        "DS4 Qwen PP rank %d %s layer %d (%s) with %d tokens",
+        pp_rank,
+        phase,
+        layer_idx,
+        layer_type,
+        num_tokens,
+    )
+
+
 KVCache = tuple[torch.Tensor, torch.Tensor]
 
 
@@ -476,10 +509,17 @@ class Qwen3NextModel(nn.Module, EagleModelMixin):
 
         self.vocab_size = config.vocab_size
 
-        self.embed_tokens = VocabParallelEmbedding(
-            self.vocab_size,
-            config.hidden_size,
-        )
+        if get_pp_group().is_first_rank or (
+            config.tie_word_embeddings and get_pp_group().is_last_rank
+        ):
+            self.embed_tokens = VocabParallelEmbedding(
+                self.vocab_size,
+                config.hidden_size,
+                quant_config=vllm_config.quant_config,
+                prefix=f"{prefix}.embed_tokens",
+            )
+        else:
+            self.embed_tokens = PPMissingLayer()
 
         def get_layer(prefix: str):
             return Qwen3NextDecoderLayer(
@@ -499,6 +539,28 @@ class Qwen3NextModel(nn.Module, EagleModelMixin):
             self.norm = Qwen3NextRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         else:
             self.norm = PPMissingLayer()
+
+        owned_layer_types = config.layer_types[self.start_layer : self.end_layer]
+        owned_moe_layers = [
+            layer_idx
+            for layer_idx in range(self.start_layer, self.end_layer)
+            if (
+                layer_idx not in getattr(config, "mlp_only_layers", [])
+                and config.num_experts > 0
+                and (layer_idx + 1) % config.decoder_sparse_step == 0
+            )
+        ]
+        logger.info(
+            "DS4 QwenNext PP rank %d owns layers %d:%d "
+            "types=%s moe_layers=%s embed=%s norm=%s",
+            get_pp_group().rank_in_group,
+            self.start_layer,
+            self.end_layer,
+            ",".join(owned_layer_types),
+            owned_moe_layers,
+            self.embed_tokens.__class__.__name__,
+            self.norm.__class__.__name__,
+        )
 
     def embed_input_ids(self, input_ids: torch.Tensor) -> torch.Tensor:
         return self.embed_tokens(input_ids)
@@ -529,12 +591,13 @@ class Qwen3NextModel(nn.Module, EagleModelMixin):
             start=self.start_layer,
         ):
             if trace_layers:
-                logger.info(
-                    "DS4 Qwen PP rank %d entering layer %d (%s) with %d tokens",
+                _ds4_log_qwen_pp_layer_event(
                     pp_rank,
                     layer_idx,
-                    getattr(layer, "layer_type", "unknown"),
-                    hidden_states.shape[0],
+                    str(getattr(layer, "layer_type", "unknown")),
+                    "entering",
+                    int(hidden_states.shape[0]),
+                    False,
                 )
             hidden_states, residual = layer(
                 positions=positions,
@@ -542,11 +605,13 @@ class Qwen3NextModel(nn.Module, EagleModelMixin):
                 residual=residual,
             )
             if trace_layers:
-                torch.accelerator.synchronize()
-                logger.info(
-                    "DS4 Qwen PP rank %d finished layer %d",
+                _ds4_log_qwen_pp_layer_event(
                     pp_rank,
                     layer_idx,
+                    str(getattr(layer, "layer_type", "unknown")),
+                    "finished",
+                    int(hidden_states.shape[0]),
+                    True,
                 )
             self._maybe_add_hidden_state(
                 aux_hidden_states, layer_idx + 1, hidden_states, residual
@@ -764,11 +829,17 @@ class Qwen3NextForCausalLM(
             vllm_config=vllm_config, prefix=maybe_prefix(prefix, "model")
         )
 
-        self.lm_head = ParallelLMHead(
-            config.vocab_size,
-            config.hidden_size,
-            prefix=maybe_prefix(prefix, "lm_head"),
-        )
+        if get_pp_group().is_last_rank:
+            if config.tie_word_embeddings:
+                self.lm_head = self.model.embed_tokens
+            else:
+                self.lm_head = ParallelLMHead(
+                    config.vocab_size,
+                    config.hidden_size,
+                    prefix=maybe_prefix(prefix, "lm_head"),
+                )
+        else:
+            self.lm_head = PPMissingLayer()
         self.logits_processor = LogitsProcessor(config.vocab_size)
         self.make_empty_intermediate_tensors = (
             self.model.make_empty_intermediate_tensors

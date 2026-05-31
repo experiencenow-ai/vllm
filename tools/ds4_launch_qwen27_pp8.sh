@@ -19,6 +19,7 @@ MODEL="${QWEN27_BF16_MODEL:-/home/$USER/models/hf/Qwen/Qwen3.6-27B}"
 RUNTIME_PYTHON="${DS4_VLLM_PYTHON:-/home/$USER/ds4-vllm-local/bin/python}"
 SOURCE_ROOT="${DS4_VLLM_SOURCE_ROOT:-/home/$USER/src/vllm}"
 DS4_NODE_ID="${DS4_NODE_ID:-spark${NODE_RANK}}"
+DS4_QWEN_PIPELINE_RAM_PROFILE="${DS4_QWEN_PIPELINE_RAM_PROFILE:-resident3}"
 DEFAULT_LMCACHE_ROOT="$HOME/ds4_lmcache/qwen27_bf16_pp${NNODES}/${DS4_NODE_ID}"
 
 if [[ -z "${QWEN27_PP_LAYER_PARTITION:-}" ]]; then
@@ -58,11 +59,16 @@ export VLLM_ALLOW_LONG_MAX_MODEL_LEN="${VLLM_ALLOW_LONG_MAX_MODEL_LEN:-1}"
 export VLLM_PP_LAYER_PARTITION="$QWEN27_PP_LAYER_PARTITION"
 export VLLM_QWEN_GDN_PROFILE_WARMUP="${VLLM_QWEN_GDN_PROFILE_WARMUP:-0}"
 export VLLM_DS4_PROFILE_LAYER_TRACE="${VLLM_DS4_PROFILE_LAYER_TRACE:-0}"
+export VLLM_DS4_PROFILE_DEBUG="${VLLM_DS4_PROFILE_DEBUG:-1}"
+export VLLM_DS4_PROFILE_WATCHDOG_SECONDS="${VLLM_DS4_PROFILE_WATCHDOG_SECONDS:-120}"
+export VLLM_DS4_PROFILE_ABORT_SECONDS="${VLLM_DS4_PROFILE_ABORT_SECONDS:-600}"
+export VLLM_DS4_PROFILE_RUN_MAX_TOKENS="${VLLM_DS4_PROFILE_RUN_MAX_TOKENS:-512}"
+export VLLM_DEEP_GEMM_WARMUP="${VLLM_DEEP_GEMM_WARMUP:-skip}"
 export DS4_200G_IFNAME="${DS4_200G_IFNAME:-enP2p1s0f0np0,enP2p1s0f1np1}"
 export DS4_CONTROL_IFNAME="${DS4_CONTROL_IFNAME:-ds4ring0}"
 export DS4_200G_ADVERTISE_LOOPBACK="${DS4_200G_ADVERTISE_LOOPBACK:-1}"
 export DS4_200G_NCCL_TRANSPORT="${DS4_200G_NCCL_TRANSPORT:-socket}"
-export VLLM_DS4_PP_ONLY_GLOBAL_BACKEND="${VLLM_DS4_PP_ONLY_GLOBAL_BACKEND:-gloo}"
+export VLLM_DS4_PP_ONLY_GLOBAL_BACKEND="${VLLM_DS4_PP_ONLY_GLOBAL_BACKEND:-nccl}"
 export VLLM_DS4_SKIP_PYNCCL_WARMUP_ALLREDUCE="${VLLM_DS4_SKIP_PYNCCL_WARMUP_ALLREDUCE:-1}"
 export DS4_NCCL_PREFLIGHT_MODE="${DS4_NCCL_PREFLIGHT_MODE:-nccl}"
 if [[ "$NODE_RANK" == "0" ]]; then
@@ -71,8 +77,57 @@ fi
 export LMCACHE_CONFIG_FILE="${LMCACHE_CONFIG_FILE:-/tmp/lmcache_qwen27_bf16_pp${NNODES}_${DS4_NODE_ID}.yaml}"
 export LMCACHE_ROOT="${LMCACHE_ROOT:-$DEFAULT_LMCACHE_ROOT}"
 mkdir -p "$LMCACHE_ROOT"
+
+case "$DS4_QWEN_PIPELINE_RAM_PROFILE" in
+  resident3|compact|COMPACT)
+    : "${QWEN27_MAX_MODEL_LEN:=262144}"
+    : "${QWEN27_KV_CACHE_MEMORY_BYTES:=4294967296}"
+    : "${LMCACHE_MAX_LOCAL_CPU_SIZE:=0.5}"
+    : "${QWEN27_MAX_NUM_SEQS:=12}"
+    : "${QWEN27_CUDAGRAPH_CAPTURE_SIZES:=1,2,4,8,12}"
+    : "${QWEN27_MAX_CUDAGRAPH_CAPTURE_SIZE:=12}"
+    ;;
+  balanced|BALANCED)
+    : "${QWEN27_KV_CACHE_MEMORY_BYTES:=8589934592}"
+    : "${LMCACHE_MAX_LOCAL_CPU_SIZE:=2.0}"
+    ;;
+  *)
+    echo "Unsupported DS4_QWEN_PIPELINE_RAM_PROFILE=$DS4_QWEN_PIPELINE_RAM_PROFILE; expected resident3, compact, or balanced" >&2
+    exit 1
+    ;;
+esac
+
+export MALLOC_ARENA_MAX="${MALLOC_ARENA_MAX:-2}"
+export TORCHINDUCTOR_COMPILE_THREADS="${TORCHINDUCTOR_COMPILE_THREADS:-1}"
+export TRITON_CACHE_MAX_SIZE="${TRITON_CACHE_MAX_SIZE:-2147483648}"
+
 QWEN27_KV_CACHE_DTYPE="${QWEN27_KV_CACHE_DTYPE:-fp8}"
-QWEN27_KV_CACHE_MEMORY_BYTES="${QWEN27_KV_CACHE_MEMORY_BYTES:-8589934592}"
+QWEN27_ATTENTION_BACKEND="${QWEN27_ATTENTION_BACKEND:-TRITON_ATTN}"
+case "$QWEN27_ATTENTION_BACKEND" in
+  TRITON_ATTN)
+    ;;
+  FLASH_ATTN)
+    case "$QWEN27_KV_CACHE_DTYPE" in
+      fp8*)
+        echo "Qwen BF16 PP cannot use FLASH_ATTN with QWEN27_KV_CACHE_DTYPE=$QWEN27_KV_CACHE_DTYPE." >&2
+        echo "Reason: FlashAttention rejects fp8 KV cache in this vLLM path; use TRITON_ATTN or switch KV to auto/bfloat16." >&2
+        exit 2
+        ;;
+    esac
+    ;;
+  FLASHINFER)
+    echo "Qwen BF16 PP does not default to FLASHINFER attention on GB10." >&2
+    echo "Reason: FlashInfer XQA failed dummy-run capture with a query/output dtype mismatch." >&2
+    echo "Use QWEN27_ALLOW_FLASHINFER_ATTENTION_EXPERIMENTAL=1 only for a targeted bring-up run." >&2
+    if [[ ! "${QWEN27_ALLOW_FLASHINFER_ATTENTION_EXPERIMENTAL:-0}" =~ ^(1|true|TRUE|yes|YES|on|ON)$ ]]; then
+      exit 2
+    fi
+    ;;
+  *)
+    echo "Unsupported QWEN27_ATTENTION_BACKEND=$QWEN27_ATTENTION_BACKEND; expected FLASH_ATTN, TRITON_ATTN, or guarded FLASHINFER" >&2
+    exit 2
+    ;;
+esac
 
 ds4_prepare_triton_jit_environment "qwen27-bf16-pp${NNODES}"
 ds4_prepare_flashinfer_jit_environment
@@ -85,12 +140,22 @@ fi
 cat > "$LMCACHE_CONFIG_FILE" <<YAML
 chunk_size: ${LMCACHE_CHUNK_SIZE:-784}
 local_cpu: true
-max_local_cpu_size: ${LMCACHE_MAX_LOCAL_CPU_SIZE:-2.0}
+max_local_cpu_size: ${LMCACHE_MAX_LOCAL_CPU_SIZE}
 local_disk: file://$LMCACHE_ROOT
 max_local_disk_size: ${LMCACHE_MAX_LOCAL_DISK_SIZE:-2048.0}
+use_gpu_connector_v3: ${LMCACHE_USE_GPU_CONNECTOR_V3:-true}
+pre_caching_hash_algorithm: ${LMCACHE_PRE_CACHING_HASH_ALGORITHM:-sha256_cbor}
+lookup_server_worker_ids: [0]
 YAML
 
 KV_TRANSFER_CONFIG='{"kv_connector":"LMCacheConnectorV1","kv_role":"kv_both","kv_connector_extra_config":{"use_native":true,"lmcache_kv_cache_group_id":"auto","discard_partial_chunks":false}}'
+KV_TRANSFER_ARGS=(--kv-transfer-config "$KV_TRANSFER_CONFIG")
+case "${QWEN27_ENABLE_LMCACHE:-1}" in
+  0|false|False|no|NO|off|OFF)
+    echo "Qwen BF16 PP LMCache/HMA disabled for this run (QWEN27_ENABLE_LMCACHE=0)." >&2
+    KV_TRANSFER_ARGS=()
+    ;;
+esac
 KV_CACHE_MEMORY_ARGS=()
 case "$QWEN27_KV_CACHE_MEMORY_BYTES" in
   ""|0|auto|AUTO|none|NONE)
@@ -103,13 +168,35 @@ EAGER_ARGS=()
 if [[ "${QWEN27_ENFORCE_EAGER:-0}" =~ ^(1|true|TRUE|yes|YES|on|ON)$ ]]; then
   EAGER_ARGS=(--enforce-eager)
 fi
+COMPILATION_ARGS=()
+if [[ -n "${QWEN27_COMPILATION_CONFIG:-}" ]]; then
+  case "$QWEN27_COMPILATION_CONFIG" in
+    none|NONE|auto|AUTO)
+      ;;
+    *)
+      COMPILATION_ARGS=(--compilation-config "$QWEN27_COMPILATION_CONFIG")
+      ;;
+  esac
+elif [[ -n "${QWEN27_CUDAGRAPH_CAPTURE_SIZES:-}" ]]; then
+  COMPILATION_ARGS=(--compilation-config "{\"cudagraph_capture_sizes\":[$QWEN27_CUDAGRAPH_CAPTURE_SIZES],\"max_cudagraph_capture_size\":${QWEN27_MAX_CUDAGRAPH_CAPTURE_SIZE:-8}}")
+fi
 
-ASYNC_SCHEDULING_ARGS=(--async-scheduling)
-case "${QWEN27_ASYNC_SCHEDULING:-1}" in
-  0|false|False|no|NO|off|OFF)
-    ASYNC_SCHEDULING_ARGS=(--no-async-scheduling)
+ASYNC_SCHEDULING_ARGS=(--no-async-scheduling)
+if [[ "${QWEN27_ENABLE_ASYNC_SCHEDULING_EXPERIMENTAL:-0}" =~ ^(1|true|TRUE|yes|YES|on|ON)$ ]]; then
+  ASYNC_SCHEDULING_ARGS=(--async-scheduling)
+fi
+
+HYBRID_KV_CACHE_MANAGER_ARGS=(--no-disable-hybrid-kv-cache-manager)
+case "${QWEN27_DISABLE_HYBRID_KV_CACHE_MANAGER:-0}" in
+  1|true|TRUE|yes|YES|on|ON)
+    HYBRID_KV_CACHE_MANAGER_ARGS=(--disable-hybrid-kv-cache-manager)
     ;;
 esac
+
+REASONING_PARSER_ARGS=()
+if [[ "${QWEN27_REASONING_PARSER:-none}" != "none" ]]; then
+  REASONING_PARSER_ARGS=(--reasoning-parser "$QWEN27_REASONING_PARSER")
+fi
 
 COMMON_ARGS=(
   -m vllm.entrypoints.cli.main serve "$MODEL"
@@ -128,17 +215,19 @@ COMMON_ARGS=(
   --gpu-memory-utilization "${QWEN27_GPU_MEMORY_UTILIZATION:-0.24}"
   "${KV_CACHE_MEMORY_ARGS[@]}"
   "${EAGER_ARGS[@]}"
+  "${COMPILATION_ARGS[@]}"
   --dtype bfloat16
   --kv-cache-dtype "$QWEN27_KV_CACHE_DTYPE"
+  --attention-backend "$QWEN27_ATTENTION_BACKEND"
   --gdn-prefill-backend "${QWEN27_GDN_PREFILL_BACKEND:-triton}"
   --language-model-only
   --enable-chunked-prefill
   --enable-prefix-caching
   "${ASYNC_SCHEDULING_ARGS[@]}"
-  --reasoning-parser qwen3
-  --no-disable-hybrid-kv-cache-manager
+  "${REASONING_PARSER_ARGS[@]}"
+  "${HYBRID_KV_CACHE_MANAGER_ARGS[@]}"
   --mamba-cache-mode align
-  --kv-transfer-config "$KV_TRANSFER_CONFIG"
+  "${KV_TRANSFER_ARGS[@]}"
   "${FLASHINFER_AUTOTUNE_ARGS[@]}"
 )
 
