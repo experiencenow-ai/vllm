@@ -16,8 +16,12 @@ preparation.
 
 import torch
 
+from vllm import envs
+from vllm.logger import init_logger
 from vllm.triton_utils import tl, triton
 from vllm.utils.import_utils import has_cutedsl
+
+logger = init_logger(__name__)
 
 
 @triton.jit
@@ -350,6 +354,53 @@ def dequantize_and_gather_k_cache_triton(
     )
 
 
+def _validate_dequantize_and_gather_k_cache_inputs(
+    out: torch.Tensor,
+    seq_lens: torch.Tensor,
+    gather_lens: torch.Tensor | None,
+    block_table: torch.Tensor,
+) -> None:
+    num_reqs = out.shape[0]
+    if out.dim() != 3:
+        raise ValueError(
+            "dequantize_and_gather_k_cache expected out to be 3D "
+            f"[num_reqs, max_num_tokens, head_size], got shape={tuple(out.shape)}"
+        )
+    if seq_lens.numel() != num_reqs:
+        raise ValueError(
+            "dequantize_and_gather_k_cache expected seq_lens to contain one "
+            f"entry per request ({num_reqs}), got shape={tuple(seq_lens.shape)}"
+        )
+    if gather_lens is not None and gather_lens.numel() != num_reqs:
+        raise ValueError(
+            "dequantize_and_gather_k_cache expected gather_lens to contain one "
+            f"entry per request ({num_reqs}), got shape={tuple(gather_lens.shape)}"
+        )
+    if block_table.dim() != 2 or block_table.shape[0] != num_reqs:
+        raise ValueError(
+            "dequantize_and_gather_k_cache expected block_table to be "
+            f"[num_reqs, max_blocks_per_seq] with num_reqs={num_reqs}, got "
+            f"shape={tuple(block_table.shape)}")
+
+
+def _should_use_cutedsl_dequantize_and_gather_k_cache(out: torch.Tensor) -> bool:
+    if not envs.VLLM_DS4_DEQUANT_GATHER_K_CUTEDSL:
+        logger.warning_once(
+            "DS4 K-cache dequant/gather CuteDSL path disabled by "
+            "VLLM_DS4_DEQUANT_GATHER_K_CUTEDSL=0; using bounded Triton path")
+        return False
+    max_rows = envs.VLLM_DS4_DEQUANT_GATHER_K_CUTEDSL_MAX_ROWS
+    num_rows = int(out.shape[0])
+    if max_rows >= 0 and num_rows > max_rows:
+        logger.warning_once(
+            "DS4 K-cache dequant/gather CuteDSL path disabled for "
+            "num_rows=%s > VLLM_DS4_DEQUANT_GATHER_K_CUTEDSL_MAX_ROWS=%s; "
+            "using bounded Triton path",
+            num_rows, max_rows)
+        return False
+    return True
+
+
 def dequantize_and_gather_k_cache(
     # [num_reqs, max_num_tokens, head_size]
     out: torch.Tensor,
@@ -364,7 +415,9 @@ def dequantize_and_gather_k_cache(
     block_size: int,
     offset: int,
 ) -> None:
-    if has_cutedsl():
+    _validate_dequantize_and_gather_k_cache_inputs(
+        out, seq_lens, gather_lens, block_table)
+    if has_cutedsl() and _should_use_cutedsl_dequantize_and_gather_k_cache(out):
         # lazily import, otherwise some tests fail due to CUDA driver init failure.
         from vllm.models.deepseek_v4.nvidia.ops.dequant_gather_k_cutedsl import (
             dequantize_and_gather_k_cache_cutedsl,

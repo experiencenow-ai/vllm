@@ -129,6 +129,12 @@ if TYPE_CHECKING:
     VLLM_DS4_PP_ONLY_GLOBAL_BACKEND: str = ""
     VLLM_DS4_PP_DISABLE_DEVICE_COMMUNICATOR: bool = False
     VLLM_DS4_SKIP_PYNCCL_WARMUP_ALLREDUCE: bool = False
+    VLLM_DS4_SM12X_MQA_ROWWISE: bool = True
+    VLLM_DS4_SM12X_MQA_ROWWISE_MAX_ROWS: int = 4
+    VLLM_DS4_SM12X_MQA_ROWWISE_MIN_TOKENS: int = 0
+    VLLM_DS4_SM12X_PAGED_MQA_TOPK_CHUNK_SIZE: int = 8192
+    VLLM_DS4_DEQUANT_GATHER_K_CUTEDSL: bool = True
+    VLLM_DS4_DEQUANT_GATHER_K_CUTEDSL_MAX_ROWS: int = 32
     VLLM_DISABLE_PYNCCL: bool = False
     VLLM_USE_OINK_OPS: bool = False
     VLLM_ROCM_USE_AITER: bool = False
@@ -1203,6 +1209,29 @@ environment_variables: dict[str, Callable[[], Any]] = {
         .strip()
         .lower()
         in ("1", "true", "yes", "on")
+    ),
+    "VLLM_DS4_SM12X_MQA_ROWWISE": lambda: (
+        os.environ.get("VLLM_DS4_SM12X_MQA_ROWWISE", "1").strip().lower()
+        in ("1", "true", "yes", "on")
+    ),
+    "VLLM_DS4_SM12X_MQA_ROWWISE_MAX_ROWS": lambda: int(
+        os.environ.get("VLLM_DS4_SM12X_MQA_ROWWISE_MAX_ROWS", "4")
+    ),
+    "VLLM_DS4_SM12X_MQA_ROWWISE_MIN_TOKENS": lambda: int(
+        os.environ.get("VLLM_DS4_SM12X_MQA_ROWWISE_MIN_TOKENS", "0")
+    ),
+    "VLLM_DS4_SM12X_PAGED_MQA_TOPK_CHUNK_SIZE": lambda: int(
+        os.environ.get("VLLM_DS4_SM12X_PAGED_MQA_TOPK_CHUNK_SIZE", "8192")
+    ),
+    # DS4 / GB10: the CuteDSL K-cache dequant/gather prefill kernel has shown
+    # a CUDA illegal-address failure at high PP batch row counts. Keep it enabled
+    # only for bounded row counts until the CuteDSL kernel is fixed and measured.
+    "VLLM_DS4_DEQUANT_GATHER_K_CUTEDSL": lambda: (
+        os.environ.get("VLLM_DS4_DEQUANT_GATHER_K_CUTEDSL", "1").strip().lower()
+        in ("1", "true", "yes", "on")
+    ),
+    "VLLM_DS4_DEQUANT_GATHER_K_CUTEDSL_MAX_ROWS": lambda: int(
+        os.environ.get("VLLM_DS4_DEQUANT_GATHER_K_CUTEDSL_MAX_ROWS", "32")
     ),
     # Disable pynccl (using torch.distributed instead)
     "VLLM_DISABLE_PYNCCL": lambda: (
