@@ -79,6 +79,11 @@ CHECKS = [
         "QWEN27_ENABLE_LMCACHE:-1",
     ),
     (
+        "BF16 Qwen PP can disable hybrid KV manager for LMCache layout A/B tests",
+        ROOT / "tools/ds4_launch_qwen27_pp8.sh",
+        "QWEN27_DISABLE_HYBRID_KV_CACHE_MANAGER:-0",
+    ),
+    (
         "BF16 Qwen PP forces bounded GDN backend",
         ROOT / "tools/ds4_launch_qwen27_pp8.sh",
         "--gdn-prefill-backend",
@@ -112,6 +117,11 @@ CHECKS = [
         "NVFP4 Qwen PP can disable LMCache for compute benchmarks",
         ROOT / "tools/ds4_launch_qwen27_nvfp4_pp8.sh",
         "QWEN27_ENABLE_LMCACHE:-1",
+    ),
+    (
+        "NVFP4 Qwen PP can disable hybrid KV manager for LMCache layout A/B tests",
+        ROOT / "tools/ds4_launch_qwen27_nvfp4_pp8.sh",
+        "QWEN27_DISABLE_HYBRID_KV_CACHE_MANAGER:-0",
     ),
     (
         "NVFP4 Qwen PP disables torch compile by default",

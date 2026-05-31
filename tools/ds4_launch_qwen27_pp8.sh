@@ -132,6 +132,13 @@ case "${QWEN27_ASYNC_SCHEDULING:-0}" in
     ;;
 esac
 
+HYBRID_KV_CACHE_MANAGER_ARGS=(--no-disable-hybrid-kv-cache-manager)
+case "${QWEN27_DISABLE_HYBRID_KV_CACHE_MANAGER:-0}" in
+  1|true|TRUE|yes|YES|on|ON)
+    HYBRID_KV_CACHE_MANAGER_ARGS=(--disable-hybrid-kv-cache-manager)
+    ;;
+esac
+
 COMMON_ARGS=(
   -m vllm.entrypoints.cli.main serve "$MODEL"
   --served-model-name "${QWEN27_SERVED_MODEL_NAME:-qwen27-bf16-pp${NNODES}}"
@@ -158,7 +165,7 @@ COMMON_ARGS=(
   --enable-prefix-caching
   "${ASYNC_SCHEDULING_ARGS[@]}"
   --reasoning-parser qwen3
-  --no-disable-hybrid-kv-cache-manager
+  "${HYBRID_KV_CACHE_MANAGER_ARGS[@]}"
   --mamba-cache-mode align
   "${KV_TRANSFER_ARGS[@]}"
   "${FLASHINFER_AUTOTUNE_ARGS[@]}"
