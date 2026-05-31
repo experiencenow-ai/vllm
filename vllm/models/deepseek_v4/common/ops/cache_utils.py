@@ -413,31 +413,64 @@ def _validate_dequantize_and_gather_k_cache_inputs(
             f"shape={tuple(block_table.shape)}")
 
 
-def _should_use_cutedsl_dequantize_and_gather_k_cache(out: torch.Tensor) -> bool:
-    if not envs.VLLM_DS4_DEQUANT_GATHER_K_CUTEDSL:
-        logger.warning_once(
-            "DS4 K-cache dequant/gather CuteDSL path disabled by "
-            "VLLM_DS4_DEQUANT_GATHER_K_CUTEDSL=0; using bounded Triton "
-            "debug path")
-        return False
+def _resolve_dequantize_and_gather_k_backend() -> str:
+    backend = envs.VLLM_DS4_DSV4_K_GATHER_BACKEND
+    if backend in ("", "auto"):
+        if envs.VLLM_DS4_STRICT_NATIVE_FP4:
+            return "cutedsl"
+        return "cutedsl" if has_cutedsl() else "triton"
+    if backend in ("cutedsl", "triton", "triton-debug"):
+        return backend
+    raise RuntimeError(
+        "unsupported VLLM_DS4_DSV4_K_GATHER_BACKEND="
+        f"{backend!r}; expected auto, cutedsl, or triton-debug"
+    )
+
+
+def _dequantize_and_gather_k_cache_cutedsl_required(
+    out: torch.Tensor,
+    k_cache: torch.Tensor,
+    seq_lens: torch.Tensor,
+    gather_lens: torch.Tensor | None,
+    block_table: torch.Tensor,
+    block_size: int,
+    offset: int,
+) -> None:
     if not has_cutedsl():
         raise RuntimeError(
-            "DS4 K-cache dequant/gather requires the native CuteDSL path. "
-            "CuteDSL is not importable in this runtime, and Triton fallback "
-            "is intentionally forbidden for DSV4 production. Install the "
-            "known-good SM12x CuteDSL/Quack/CUTLASS stack or explicitly set "
-            "VLLM_DS4_DEQUANT_GATHER_K_CUTEDSL=0 for a debug-only Triton run."
+            "DSV4 K-cache gather/dequant requires CuteDSL in DS4 strict native "
+            "mode. The Triton gather kernel is a debug-only path on SM12x "
+            "because it has produced illegal-address failures during prefill. "
+            "Install the known-good CuteDSL stack or explicitly set "
+            "VLLM_DS4_DSV4_K_GATHER_BACKEND=triton-debug and "
+            "VLLM_DS4_DSV4_ALLOW_TRITON_GATHER_DEBUG=1 for a diagnostic run."
         )
+    try:
+        # Lazily import, otherwise some tests fail due to CUDA driver init failure.
+        from vllm.models.deepseek_v4.nvidia.ops.dequant_gather_k_cutedsl import (
+            dequantize_and_gather_k_cache_cutedsl,
+        )
+    except BaseException as exc:
+        raise RuntimeError(
+            "DSV4 K-cache gather/dequant selected CuteDSL, but the CuteDSL "
+            "implementation could not be imported. Refusing to fall through to "
+            "the SM12x Triton debug gather path."
+        ) from exc
+
     max_rows = envs.VLLM_DS4_DEQUANT_GATHER_K_CUTEDSL_MAX_ROWS
     num_rows = int(out.shape[0])
     if max_rows >= 0 and num_rows > max_rows:
         raise RuntimeError(
-            "DS4 K-cache dequant/gather CuteDSL row cap exceeded: "
+            "DSV4 K-cache gather/dequant CuteDSL row cap exceeded: "
             "num_rows=%s > VLLM_DS4_DEQUANT_GATHER_K_CUTEDSL_MAX_ROWS=%s; "
             "refusing Triton fallback. Increase the cap or set "
-            "VLLM_DS4_DEQUANT_GATHER_K_CUTEDSL=0 for a debug-only Triton run."
+            "VLLM_DS4_DSV4_K_GATHER_BACKEND=triton-debug with "
+            "VLLM_DS4_DSV4_ALLOW_TRITON_GATHER_DEBUG=1 for diagnostics."
             % (num_rows, max_rows))
-    return True
+
+    dequantize_and_gather_k_cache_cutedsl(
+        out, k_cache, seq_lens, gather_lens, block_table, block_size, offset
+    )
 
 
 def dequantize_and_gather_k_cache(
@@ -456,20 +489,40 @@ def dequantize_and_gather_k_cache(
 ) -> None:
     _validate_dequantize_and_gather_k_cache_inputs(
         out, seq_lens, gather_lens, block_table)
-    if _should_use_cutedsl_dequantize_and_gather_k_cache(out):
-        # lazily import, otherwise some tests fail due to CUDA driver init failure.
-        from vllm.models.deepseek_v4.nvidia.ops.dequant_gather_k_cutedsl import (
-            dequantize_and_gather_k_cache_cutedsl,
-        )
+    backend = _resolve_dequantize_and_gather_k_backend()
 
-        dequantize_and_gather_k_cache_cutedsl(
+    if backend == "cutedsl":
+        _dequantize_and_gather_k_cache_cutedsl_required(
             out, k_cache, seq_lens, gather_lens, block_table, block_size, offset
         )
         return
 
-    dequantize_and_gather_k_cache_triton(
-        out, k_cache, seq_lens, gather_lens, block_table, block_size, offset
-    )
+    if backend == "triton" and envs.VLLM_DS4_STRICT_NATIVE_FP4:
+        raise RuntimeError(
+            "DS4 strict native mode refuses DSV4 Triton K-cache gather/dequant "
+            "fallback. Use VLLM_DS4_DSV4_K_GATHER_BACKEND=cutedsl, or use "
+            "VLLM_DS4_DSV4_K_GATHER_BACKEND=triton-debug with "
+            "VLLM_DS4_DSV4_ALLOW_TRITON_GATHER_DEBUG=1 only for diagnostics."
+        )
+
+    if backend == "triton-debug" and not envs.VLLM_DS4_DSV4_ALLOW_TRITON_GATHER_DEBUG:
+        raise RuntimeError(
+            "VLLM_DS4_DSV4_K_GATHER_BACKEND=triton-debug requires "
+            "VLLM_DS4_DSV4_ALLOW_TRITON_GATHER_DEBUG=1. The Triton gather "
+            "kernel is not a DS4 production path on SM12x."
+        )
+
+    if backend in ("triton", "triton-debug"):
+        logger.warning_once(
+            "DSV4 using Triton K-cache gather/dequant debug path. This is not "
+            "the DS4 production path on SM12x."
+        )
+        dequantize_and_gather_k_cache_triton(
+            out, k_cache, seq_lens, gather_lens, block_table, block_size, offset
+        )
+        return
+
+    raise AssertionError(f"unhandled DSV4 K-cache gather backend: {backend}")
 
 
 @triton.jit

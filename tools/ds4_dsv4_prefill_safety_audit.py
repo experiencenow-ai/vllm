@@ -23,15 +23,16 @@ checks = [
     ),
     (
         "cutedsl_failclosed_gate",
-        "def _should_use_cutedsl_dequantize_and_gather_k_cache" in cache_utils
-        and "VLLM_DS4_DEQUANT_GATHER_K_CUTEDSL_MAX_ROWS" in cache_utils
-        and "CuteDSL is not importable" in cache_utils
-        and "refusing Triton fallback" in cache_utils,
+        "def _resolve_dequantize_and_gather_k_backend" in cache_utils
+        and "def _dequantize_and_gather_k_cache_cutedsl_required" in cache_utils
+        and "VLLM_DS4_DSV4_K_GATHER_BACKEND" in cache_utils
+        and "DSV4 K-cache gather/dequant requires CuteDSL" in cache_utils
+        and "Refusing to fall through" in cache_utils,
     ),
     (
         "cutedsl_gate_precedes_import",
-        "if _should_use_cutedsl_dequantize_and_gather_k_cache(out):"
-        in cache_utils,
+        'if backend == "cutedsl":' in cache_utils
+        and "_dequantize_and_gather_k_cache_cutedsl_required(" in cache_utils,
     ),
     (
         "cutedsl_gather_uses_known_good_load_cache_enum",
@@ -60,9 +61,10 @@ checks = [
     ),
     (
         "envs_register_dequant_gate",
-        "VLLM_DS4_DEQUANT_GATHER_K_CUTEDSL" in envs
+        "VLLM_DS4_DSV4_K_GATHER_BACKEND" in envs
+        and "VLLM_DS4_DSV4_ALLOW_TRITON_GATHER_DEBUG" in envs
         and "VLLM_DS4_DEQUANT_GATHER_K_CUTEDSL_MAX_ROWS" in envs
-        and 'os.environ.get("VLLM_DS4_DEQUANT_GATHER_K_CUTEDSL", "1")' in envs
+        and '"VLLM_DS4_DSV4_K_GATHER_BACKEND", "auto"' in envs
         and 'os.environ.get("VLLM_DS4_DEQUANT_GATHER_K_CUTEDSL_MAX_ROWS", "-1")'
         in envs,
     ),
@@ -83,7 +85,10 @@ for script in (PP8, TP2):
     script_text = script.read_text()
     checks.append((
         f"{script.name}_exports_dequant_gate",
-        'VLLM_DS4_DEQUANT_GATHER_K_CUTEDSL:-1' in script_text
+        'VLLM_DS4_DSV4_K_GATHER_BACKEND="${VLLM_DS4_DSV4_K_GATHER_BACKEND:-cutedsl}"'
+        in script_text
+        and 'VLLM_DS4_DSV4_ALLOW_TRITON_GATHER_DEBUG="${VLLM_DS4_DSV4_ALLOW_TRITON_GATHER_DEBUG:-0}"'
+        in script_text
         and 'VLLM_DS4_DEQUANT_GATHER_K_CUTEDSL_MAX_ROWS:--1' in script_text,
     ))
 
