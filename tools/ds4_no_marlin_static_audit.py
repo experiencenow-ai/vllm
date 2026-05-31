@@ -230,6 +230,13 @@ checks = [
         ),
     ),
     (
+        "DS4 200G guard never binds NCCL sockets to dummy control iface",
+        "socket_ifname=\"${DS4_200G_SOCKET_IFNAME:-$ifnames_csv}\"" in guard
+        and "socket_ifname=\"${DS4_200G_SOCKET_IFNAME:-$control_ifname}\""
+        not in guard
+        and "DS4 200G route guard: NCCL is using routed loopback" not in guard,
+    ),
+    (
         "Qwen NVFP4 cache-primary launcher uses ModelOpt FP4 without MTP by default",
         "--quantization modelopt" in qwen_nvfp4_pp8
         and "--linear-backend \"${QWEN27_LINEAR_BACKEND:-flashinfer-cutlass}\"" in qwen_nvfp4_pp8
