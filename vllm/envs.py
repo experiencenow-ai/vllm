@@ -133,6 +133,7 @@ if TYPE_CHECKING:
     VLLM_DS4_SM12X_MQA_ROWWISE_MAX_ROWS: int = 4
     VLLM_DS4_SM12X_MQA_ROWWISE_MIN_TOKENS: int = 0
     VLLM_DS4_SM12X_PAGED_MQA_TOPK_CHUNK_SIZE: int = 8192
+    VLLM_DS4_SM12X_MQA_TOPK_TRITON: bool = False
     VLLM_DS4_DEQUANT_GATHER_K_CUTEDSL: bool = False
     VLLM_DS4_DEQUANT_GATHER_K_CUTEDSL_MAX_ROWS: int = 32
     VLLM_DISABLE_PYNCCL: bool = False
@@ -1222,6 +1223,12 @@ environment_variables: dict[str, Callable[[], Any]] = {
     ),
     "VLLM_DS4_SM12X_PAGED_MQA_TOPK_CHUNK_SIZE": lambda: int(
         os.environ.get("VLLM_DS4_SM12X_PAGED_MQA_TOPK_CHUNK_SIZE", "8192")
+    ),
+    # DS4 / GB10: direct SM12x dense-MQA top-k Triton has shown an illegal
+    # address during DSV4 PP8 API traffic. Keep it opt-in until fixed/measured.
+    "VLLM_DS4_SM12X_MQA_TOPK_TRITON": lambda: (
+        os.environ.get("VLLM_DS4_SM12X_MQA_TOPK_TRITON", "0").strip().lower()
+        in ("1", "true", "yes", "on")
     ),
     # DS4 / GB10: the CuteDSL K-cache dequant/gather prefill kernel has shown
     # CUDA illegal-address failures in DSV4 PP serving. Keep it out of the
