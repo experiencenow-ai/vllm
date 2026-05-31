@@ -231,6 +231,8 @@ def _fp8_mqa_logits_topk_triton(
     k_values, _ = kv
     if not (q_scale is None and q_values.dim() == 3 and k_values.dim() == 2):
         return False
+    if q_values.shape[0] != 1:
+        return False
 
     logits_bytes = q_values.shape[0] * k_values.shape[0] * torch.float32.itemsize
     if logits_bytes > _SM120_MQA_TRITON_TOPK_MAX_LOGITS_BYTES:
@@ -317,7 +319,13 @@ def _fp8_mqa_logits_sm12x(
     clean_logits: bool,
 ) -> torch.Tensor:
     q_values, q_scale = q
-    if clean_logits and q_scale is None and q_values.dim() == 3 and kv[0].dim() == 2:
+    if (
+        clean_logits
+        and q_scale is None
+        and q_values.dim() == 3
+        and q_values.shape[0] == 1
+        and kv[0].dim() == 2
+    ):
         from vllm.models.deepseek_v4.nvidia.ops.sm12x_mqa import (
             fp8_mqa_logits_triton,
         )
