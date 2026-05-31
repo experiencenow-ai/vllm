@@ -332,8 +332,11 @@ class OpenAIServingCompletion(OpenAIServing):
         collectors: list[Any] = []
         paused = False
         try:
-            await self.engine_client.pause_generation(mode="keep", clear_cache=False)
-            paused = True
+            if envs.VLLM_DS4_COHORT_PAUSE_DURING_ADMISSION:
+                await self.engine_client.pause_generation(
+                    mode="keep", clear_cache=False
+                )
+                paused = True
             for request_id_item, engine_input, sampling_params, trace_headers in items:
                 collector = await add_request(
                     request_id_item,
@@ -351,17 +354,36 @@ class OpenAIServingCompletion(OpenAIServing):
             raise
         finally:
             if paused:
-                await self.engine_client.resume_generation()
+                await self._ds4_wake_completion_cohort()
+
+        if not paused:
+            await self._ds4_wake_completion_cohort()
 
         logger.info(
-            "DS4 admitted completion cohort: prompts=%d priority=%s",
+            "DS4 admitted completion cohort: prompts=%d priority=%s pause=%s",
             len(collectors),
             priority,
+            paused,
         )
         return [
             self._ds4_completion_collector_generator(collector)
             for collector in collectors
         ]
+
+    async def _ds4_wake_completion_cohort(self) -> None:
+        wake_up = getattr(self.engine_client, "wake_up", None)
+        if not callable(wake_up):
+            raise RuntimeError(
+                "engine client does not expose wake_up; refusing to admit a "
+                "DS4 file-driven cohort without an explicit scheduler wake"
+            )
+        await wake_up(tags=["scheduling"])
+
+        is_paused = getattr(self.engine_client, "is_paused", None)
+        if callable(is_paused) and await is_paused():
+            raise RuntimeError(
+                "DS4 cohort admission left the scheduler paused after wake_up"
+            )
 
     async def _ds4_abort_collectors(self, collectors: list[Any]) -> None:
         request_ids = [
