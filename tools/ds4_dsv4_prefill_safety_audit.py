@@ -38,7 +38,8 @@ checks = [
     (
         "envs_register_dequant_gate",
         "VLLM_DS4_DEQUANT_GATHER_K_CUTEDSL" in envs
-        and "VLLM_DS4_DEQUANT_GATHER_K_CUTEDSL_MAX_ROWS" in envs,
+        and "VLLM_DS4_DEQUANT_GATHER_K_CUTEDSL_MAX_ROWS" in envs
+        and 'os.environ.get("VLLM_DS4_DEQUANT_GATHER_K_CUTEDSL", "0")' in envs,
     ),
     (
         "envs_register_sm12x_mqa_vars",
@@ -51,7 +52,7 @@ for script in (PP8, TP2):
     script_text = script.read_text()
     checks.append((
         f"{script.name}_exports_dequant_gate",
-        "VLLM_DS4_DEQUANT_GATHER_K_CUTEDSL" in script_text
+        'VLLM_DS4_DEQUANT_GATHER_K_CUTEDSL:-0' in script_text
         and "VLLM_DS4_DEQUANT_GATHER_K_CUTEDSL_MAX_ROWS" in script_text,
     ))
 
