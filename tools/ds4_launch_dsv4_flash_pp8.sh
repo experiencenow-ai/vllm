@@ -123,11 +123,23 @@ ds4_run_dsv4_native_preflight
 ds4_run_native_blackwell_preflight
 ds4_run_triton_jit_preflight
 
-export VLLM_USE_SIMPLE_KV_OFFLOAD="${VLLM_USE_SIMPLE_KV_OFFLOAD:-1}"
-export VLLM_SIMPLE_KV_OFFLOAD_PERSIST_ROOT="${VLLM_SIMPLE_KV_OFFLOAD_PERSIST_ROOT:-$HOME/ds4_hma_store/dsv4_flash_pp8/simple_cpu_offload}"
-export VLLM_SIMPLE_KV_OFFLOAD_PERSIST_STRICT="${VLLM_SIMPLE_KV_OFFLOAD_PERSIST_STRICT:-1}"
-export VLLM_SIMPLE_KV_OFFLOAD_PERSIST_RANK="${VLLM_SIMPLE_KV_OFFLOAD_PERSIST_RANK:-$(hostname)-dsv4-pp8-r${NODE_RANK}}"
-mkdir -p "$VLLM_SIMPLE_KV_OFFLOAD_PERSIST_ROOT"
+KV_OFFLOAD_ARGS=()
+case "$DSV4_KV_OFFLOADING_SIZE" in
+  ""|0|0.0|off|OFF|none|NONE|false|FALSE)
+    export VLLM_USE_SIMPLE_KV_OFFLOAD=0
+    unset VLLM_SIMPLE_KV_OFFLOAD_PERSIST_ROOT
+    unset VLLM_SIMPLE_KV_OFFLOAD_PERSIST_STRICT
+    unset VLLM_SIMPLE_KV_OFFLOAD_PERSIST_RANK
+    ;;
+  *)
+    export VLLM_USE_SIMPLE_KV_OFFLOAD="${VLLM_USE_SIMPLE_KV_OFFLOAD:-1}"
+    export VLLM_SIMPLE_KV_OFFLOAD_PERSIST_ROOT="${VLLM_SIMPLE_KV_OFFLOAD_PERSIST_ROOT:-$HOME/ds4_hma_store/dsv4_flash_pp8/simple_cpu_offload}"
+    export VLLM_SIMPLE_KV_OFFLOAD_PERSIST_STRICT="${VLLM_SIMPLE_KV_OFFLOAD_PERSIST_STRICT:-1}"
+    export VLLM_SIMPLE_KV_OFFLOAD_PERSIST_RANK="${VLLM_SIMPLE_KV_OFFLOAD_PERSIST_RANK:-$(hostname)-dsv4-pp8-r${NODE_RANK}}"
+    mkdir -p "$VLLM_SIMPLE_KV_OFFLOAD_PERSIST_ROOT"
+    KV_OFFLOAD_ARGS=(--kv-offloading-size "$DSV4_KV_OFFLOADING_SIZE" --kv-offloading-backend native)
+    ;;
+esac
 
 if [[ -n "${DSV4_FLASH_PP_LAYER_PARTITION:-}" ]]; then
   "$RUNTIME_PYTHON" - "$NNODES" "$DSV4_FLASH_PP_LAYER_PARTITION" <<'PY'
@@ -178,8 +190,7 @@ COMMON_ARGS=(
   --kv-cache-dtype fp8
   --enable-prefix-caching
   "${ASYNC_SCHEDULING_ARGS[@]}"
-  --kv-offloading-size "$DSV4_KV_OFFLOADING_SIZE"
-  --kv-offloading-backend native
+  "${KV_OFFLOAD_ARGS[@]}"
   --kv-cache-metrics
   --enable-logging-iteration-details
   "${SPECULATIVE_ARGS[@]}"
