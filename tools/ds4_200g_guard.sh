@@ -205,19 +205,11 @@ ds4_require_200g_fabric()
   case "$nccl_transport" in
     socket)
       export DS4_200G_NCCL_TRANSPORT="socket"
-      if [[ "${DS4_200G_ADVERTISE_LOOPBACK:-0}" =~ ^(1|true|TRUE|yes|YES|on|ON)$ ]]; then
-        socket_ifname="${DS4_200G_SOCKET_IFNAME:-$control_ifname}"
-      else
-        socket_ifname="${DS4_200G_SOCKET_IFNAME:-$ifnames_csv}"
-      fi
+      socket_ifname="${DS4_200G_SOCKET_IFNAME:-$ifnames_csv}"
       IFS=',' read -r -a socket_ifnames <<< "$socket_ifname"
       for ifname in "${socket_ifnames[@]}"; do
         [[ -n "$ifname" ]] || ds4_200g_die "DS4_200G_SOCKET_IFNAME contains an empty interface"
-        if [[ "${DS4_200G_ADVERTISE_LOOPBACK:-0}" =~ ^(1|true|TRUE|yes|YES|on|ON)$ ]] && ds4_200g_csv_contains "$control_ifname" "$ifname"; then
-          [[ -d "/sys/class/net/$ifname" ]] || ds4_200g_die "routed-loopback socket interface '$ifname' does not exist"
-        else
-          ds4_200g_require_link_200g "$ifname" "NCCL socket"
-        fi
+        ds4_200g_require_link_200g "$ifname" "NCCL socket"
       done
       ds4_200g_check_or_export NCCL_SOCKET_IFNAME "$socket_ifname"
       ds4_200g_check_or_export TP_SOCKET_IFNAME "$socket_ifname"
@@ -279,11 +271,7 @@ ds4_run_preflight_checked()
   set -e
   printf "%s\n" "$output" >&2
   if [[ "$output" == *"Could not get speed from"* || "$output" == *"Defaulting to 10 Gbps"* ]]; then
-    if [[ "${DS4_200G_ADVERTISE_LOOPBACK:-0}" =~ ^(1|true|TRUE|yes|YES|on|ON)$ && "${NCCL_SOCKET_IFNAME:-}" == "${DS4_CONTROL_IFNAME:-}" && "$output" == *"/sys/class/net/${DS4_CONTROL_IFNAME:-}/speed"* ]]; then
-      echo "DS4 200G route guard: NCCL is using routed loopback '$NCCL_SOCKET_IFNAME'; peer routes were validated over physical 200G links before preflight." >&2
-    else
-      ds4_200g_die "NCCL reported a link-speed fallback during preflight; refusing to launch on an ambiguous or slow fabric"
-    fi
+    ds4_200g_die "NCCL reported a link-speed fallback during preflight; refusing to launch on an ambiguous or slow fabric"
   fi
   if [[ "$status" != "0" ]]; then
     ds4_200g_die "preflight command failed with status $status"
