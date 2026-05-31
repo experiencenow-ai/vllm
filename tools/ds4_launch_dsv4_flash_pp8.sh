@@ -112,7 +112,7 @@ COMMON_ARGS=(
   --max-model-len "${DSV4_MAX_MODEL_LEN:-65536}"
   --max-num-seqs "${DSV4_MAX_NUM_SEQS:-8}"
   --max-num-batched-tokens "${DSV4_MAX_NUM_BATCHED_TOKENS:-8192}"
-  --gpu-memory-utilization "${DSV4_GPU_MEMORY_UTILIZATION:-0.45}"
+  --gpu-memory-utilization "${DSV4_GPU_MEMORY_UTILIZATION:-0.30}"
   "${KV_CACHE_MEMORY_ARGS[@]}"
   "${FLASHINFER_AUTOTUNE_ARGS[@]}"
   --block-size 256
