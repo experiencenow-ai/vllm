@@ -34,12 +34,14 @@ try:
     from lmcache.v1.gpu_connector import (
         VLLMBufferLayerwiseGPUConnector,
         VLLMPagedMemGPUConnectorV2,
+        VLLMPagedMemGPUConnectorV3,
         VLLMPagedMemLayerwiseGPUConnector,
     )
 except ImportError:
     from lmcache.v1.gpu_connector.gpu_connectors import (
         VLLMBufferLayerwiseGPUConnector,
         VLLMPagedMemGPUConnectorV2,
+        VLLMPagedMemGPUConnectorV3,
         VLLMPagedMemLayerwiseGPUConnector,
     )
 
@@ -590,6 +592,7 @@ def _init_lmcache_engine(
     vllm_gpu_connector: (
         VLLMBufferLayerwiseGPUConnector
         | VLLMPagedMemGPUConnectorV2
+        | VLLMPagedMemGPUConnectorV3
         | VLLMPagedMemLayerwiseGPUConnector
     )
 
@@ -618,6 +621,12 @@ def _init_lmcache_engine(
                 dtype=kv_dtype,
                 device=device,
             )
+    elif getattr(lmcache_config, "use_gpu_connector_v3", False):
+        vllm_gpu_connector = VLLMPagedMemGPUConnectorV3.from_metadata(
+            metadata,
+            use_gpu=use_gpu,
+            device=device,
+        )
     else:
         vllm_gpu_connector = VLLMPagedMemGPUConnectorV2(
             hidden_dim_size,

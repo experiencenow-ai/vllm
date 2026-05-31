@@ -84,6 +84,11 @@ CHECKS = [
         "QWEN27_DISABLE_HYBRID_KV_CACHE_MANAGER:-0",
     ),
     (
+        "BF16 Qwen PP uses LMCache V3 connector for grouped hybrid KV",
+        ROOT / "tools/ds4_launch_qwen27_pp8.sh",
+        "LMCACHE_USE_GPU_CONNECTOR_V3:-true",
+    ),
+    (
         "BF16 Qwen PP forces bounded GDN backend",
         ROOT / "tools/ds4_launch_qwen27_pp8.sh",
         "--gdn-prefill-backend",
@@ -122,6 +127,11 @@ CHECKS = [
         "NVFP4 Qwen PP can disable hybrid KV manager for LMCache layout A/B tests",
         ROOT / "tools/ds4_launch_qwen27_nvfp4_pp8.sh",
         "QWEN27_DISABLE_HYBRID_KV_CACHE_MANAGER:-0",
+    ),
+    (
+        "NVFP4 Qwen PP uses LMCache V3 connector for grouped hybrid KV",
+        ROOT / "tools/ds4_launch_qwen27_nvfp4_pp8.sh",
+        "LMCACHE_USE_GPU_CONNECTOR_V3:-true",
     ),
     (
         "NVFP4 Qwen PP disables torch compile by default",

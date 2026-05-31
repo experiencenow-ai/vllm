@@ -93,6 +93,7 @@ local_cpu: true
 max_local_cpu_size: ${LMCACHE_MAX_LOCAL_CPU_SIZE:-2.0}
 local_disk: file://$LMCACHE_ROOT
 max_local_disk_size: ${LMCACHE_MAX_LOCAL_DISK_SIZE:-2048.0}
+use_gpu_connector_v3: ${LMCACHE_USE_GPU_CONNECTOR_V3:-true}
 YAML
 
 KV_TRANSFER_CONFIG='{"kv_connector":"LMCacheConnectorV1","kv_role":"kv_both","kv_connector_extra_config":{"use_native":true,"lmcache_kv_cache_group_id":"auto","discard_partial_chunks":false}}'
