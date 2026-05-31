@@ -36,6 +36,21 @@ checks = [
         and "dequantize_and_gather_k_cache_triton(" in cache_utils,
     ),
     (
+        "triton_gather_masks_block_table_and_kv_blocks",
+        "num_kv_blocks: tl.constexpr" in cache_utils
+        and "valid_table_entry = (block_in_seq >= 0)" in cache_utils
+        and "& (physical_block_idx < num_kv_blocks)" in cache_utils
+        and "physical_block_idx = tl.where(valid_block, physical_block_idx, 0)"
+        in cache_utils,
+    ),
+    (
+        "triton_gather_masks_output_bounds",
+        "out_max_tokens: tl.constexpr" in cache_utils
+        and "valid_output = (out_token_idx >= 0) & (out_token_idx < out_max_tokens)"
+        in cache_utils
+        and "valid_token = valid_block & valid_output" in cache_utils,
+    ),
+    (
         "envs_register_dequant_gate",
         "VLLM_DS4_DEQUANT_GATHER_K_CUTEDSL" in envs
         and "VLLM_DS4_DEQUANT_GATHER_K_CUTEDSL_MAX_ROWS" in envs
