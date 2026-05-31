@@ -102,6 +102,32 @@ export TORCHINDUCTOR_COMPILE_THREADS="${TORCHINDUCTOR_COMPILE_THREADS:-1}"
 export TRITON_CACHE_MAX_SIZE="${TRITON_CACHE_MAX_SIZE:-2147483648}"
 
 QWEN27_KV_CACHE_DTYPE="${QWEN27_KV_CACHE_DTYPE:-fp8}"
+QWEN27_ATTENTION_BACKEND="${QWEN27_ATTENTION_BACKEND:-TRITON_ATTN}"
+case "$QWEN27_ATTENTION_BACKEND" in
+  TRITON_ATTN)
+    ;;
+  FLASH_ATTN)
+    case "$QWEN27_KV_CACHE_DTYPE" in
+      fp8*)
+        echo "Qwen BF16 PP cannot use FLASH_ATTN with QWEN27_KV_CACHE_DTYPE=$QWEN27_KV_CACHE_DTYPE." >&2
+        echo "Reason: FlashAttention rejects fp8 KV cache in this vLLM path; use TRITON_ATTN or switch KV to auto/bfloat16." >&2
+        exit 2
+        ;;
+    esac
+    ;;
+  FLASHINFER)
+    echo "Qwen BF16 PP does not default to FLASHINFER attention on GB10." >&2
+    echo "Reason: FlashInfer XQA failed dummy-run capture with a query/output dtype mismatch." >&2
+    echo "Use QWEN27_ALLOW_FLASHINFER_ATTENTION_EXPERIMENTAL=1 only for a targeted bring-up run." >&2
+    if [[ ! "${QWEN27_ALLOW_FLASHINFER_ATTENTION_EXPERIMENTAL:-0}" =~ ^(1|true|TRUE|yes|YES|on|ON)$ ]]; then
+      exit 2
+    fi
+    ;;
+  *)
+    echo "Unsupported QWEN27_ATTENTION_BACKEND=$QWEN27_ATTENTION_BACKEND; expected FLASH_ATTN, TRITON_ATTN, or guarded FLASHINFER" >&2
+    exit 2
+    ;;
+esac
 
 ds4_prepare_triton_jit_environment "qwen27-bf16-pp${NNODES}"
 ds4_prepare_flashinfer_jit_environment
@@ -192,6 +218,7 @@ COMMON_ARGS=(
   "${COMPILATION_ARGS[@]}"
   --dtype bfloat16
   --kv-cache-dtype "$QWEN27_KV_CACHE_DTYPE"
+  --attention-backend "$QWEN27_ATTENTION_BACKEND"
   --gdn-prefill-backend "${QWEN27_GDN_PREFILL_BACKEND:-triton}"
   --language-model-only
   --enable-chunked-prefill
