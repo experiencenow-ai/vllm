@@ -74,6 +74,11 @@ CHECKS = [
         "VLLM_DEEP_GEMM_WARMUP:-skip",
     ),
     (
+        "BF16 Qwen PP can disable LMCache for compute benchmarks",
+        ROOT / "tools/ds4_launch_qwen27_pp8.sh",
+        "QWEN27_ENABLE_LMCACHE:-1",
+    ),
+    (
         "BF16 Qwen PP forces bounded GDN backend",
         ROOT / "tools/ds4_launch_qwen27_pp8.sh",
         "--gdn-prefill-backend",
@@ -102,6 +107,11 @@ CHECKS = [
         "NVFP4 Qwen PP skips DeepGEMM warmup by default",
         ROOT / "tools/ds4_launch_qwen27_nvfp4_pp8.sh",
         "VLLM_DEEP_GEMM_WARMUP:-skip",
+    ),
+    (
+        "NVFP4 Qwen PP can disable LMCache for compute benchmarks",
+        ROOT / "tools/ds4_launch_qwen27_nvfp4_pp8.sh",
+        "QWEN27_ENABLE_LMCACHE:-1",
     ),
     (
         "NVFP4 Qwen PP disables torch compile by default",

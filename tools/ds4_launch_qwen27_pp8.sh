@@ -96,6 +96,13 @@ max_local_disk_size: ${LMCACHE_MAX_LOCAL_DISK_SIZE:-2048.0}
 YAML
 
 KV_TRANSFER_CONFIG='{"kv_connector":"LMCacheConnectorV1","kv_role":"kv_both","kv_connector_extra_config":{"use_native":true,"lmcache_kv_cache_group_id":"auto","discard_partial_chunks":false}}'
+KV_TRANSFER_ARGS=(--kv-transfer-config "$KV_TRANSFER_CONFIG")
+case "${QWEN27_ENABLE_LMCACHE:-1}" in
+  0|false|False|no|NO|off|OFF)
+    echo "Qwen BF16 PP LMCache/HMA disabled for this run (QWEN27_ENABLE_LMCACHE=0)." >&2
+    KV_TRANSFER_ARGS=()
+    ;;
+esac
 KV_CACHE_MEMORY_ARGS=()
 case "$QWEN27_KV_CACHE_MEMORY_BYTES" in
   ""|0|auto|AUTO|none|NONE)
@@ -153,7 +160,7 @@ COMMON_ARGS=(
   --reasoning-parser qwen3
   --no-disable-hybrid-kv-cache-manager
   --mamba-cache-mode align
-  --kv-transfer-config "$KV_TRANSFER_CONFIG"
+  "${KV_TRANSFER_ARGS[@]}"
   "${FLASHINFER_AUTOTUNE_ARGS[@]}"
 )
 
