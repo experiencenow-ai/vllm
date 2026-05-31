@@ -58,15 +58,6 @@ if any(part <= 0 for part in parts):
     raise SystemExit(f"QWEN27_PP_LAYER_PARTITION stages must all be positive: {raw}")
 PY
 
-if [[ "${QWEN27_NVFP4_ENABLE_MTP:-0}" =~ ^(1|true|TRUE|yes|YES|on|ON)$ ]]; then
-  echo "Qwen NVFP4 PP is cache-primary and currently forbids MTP by default." >&2
-  echo "Reason: Qwen3.6 MTP draft/cache semantics under PP need a separate correctness pass." >&2
-  echo "Use QWEN27_NVFP4_ENABLE_MTP_EXPERIMENTAL=1 only for a targeted bring-up run." >&2
-  if [[ ! "${QWEN27_NVFP4_ENABLE_MTP_EXPERIMENTAL:-0}" =~ ^(1|true|TRUE|yes|YES|on|ON)$ ]]; then
-    exit 2
-  fi
-fi
-
 export PYTHONPATH="$SOURCE_ROOT${PYTHONPATH:+:$PYTHONPATH}"
 export PATH="$(dirname "$RUNTIME_PYTHON"):$PATH"
 export PYTHONHASHSEED="${PYTHONHASHSEED:-0}"
@@ -115,6 +106,34 @@ case "$DS4_QWEN_PIPELINE_RAM_PROFILE" in
     exit 1
     ;;
 esac
+
+QWEN27_NVFP4_MTP_MODE="${QWEN27_NVFP4_MTP_MODE:-off}"
+QWEN27_NVFP4_MTP_REQUESTED=0
+if [[ "$QWEN27_NVFP4_MTP_MODE" != "off" && "$QWEN27_NVFP4_MTP_MODE" != "OFF" && "$QWEN27_NVFP4_MTP_MODE" != "none" && "$QWEN27_NVFP4_MTP_MODE" != "NONE" ]]; then
+  QWEN27_NVFP4_MTP_REQUESTED=1
+fi
+if [[ "${QWEN27_NVFP4_ENABLE_MTP:-0}" =~ ^(1|true|TRUE|yes|YES|on|ON)$ ]]; then
+  QWEN27_NVFP4_MTP_REQUESTED=1
+fi
+if [[ "${QWEN27_NVFP4_ENABLE_MTP_EXPERIMENTAL:-0}" =~ ^(1|true|TRUE|yes|YES|on|ON)$ ]]; then
+  QWEN27_NVFP4_MTP_REQUESTED=1
+fi
+if [[ "$QWEN27_NVFP4_MTP_REQUESTED" == "1" ]]; then
+  case "$QWEN27_NVFP4_MTP_MODE" in
+    chat_single|single_chat|latency_chat)
+      ;;
+    *)
+      echo "Qwen NVFP4 MTP is reserved for single-request chat latency mode." >&2
+      echo "Set QWEN27_NVFP4_MTP_MODE=chat_single and QWEN27_MAX_NUM_SEQS=1 to enable it." >&2
+      exit 2
+      ;;
+  esac
+  if [[ "${QWEN27_MAX_NUM_SEQS:-8}" != "1" ]]; then
+    echo "Qwen NVFP4 MTP requires QWEN27_MAX_NUM_SEQS=1; got ${QWEN27_MAX_NUM_SEQS:-8}." >&2
+    echo "Batch/cache-primary PP profiles must keep MTP off." >&2
+    exit 2
+  fi
+fi
 
 export MALLOC_ARENA_MAX="${MALLOC_ARENA_MAX:-2}"
 export TORCHINDUCTOR_COMPILE_THREADS="${TORCHINDUCTOR_COMPILE_THREADS:-1}"
@@ -177,7 +196,7 @@ case "${QWEN27_ENABLE_LMCACHE:-1}" in
 esac
 
 SPEC_ARGS=()
-if [[ "${QWEN27_NVFP4_ENABLE_MTP_EXPERIMENTAL:-0}" =~ ^(1|true|TRUE|yes|YES|on|ON)$ ]]; then
+if [[ "$QWEN27_NVFP4_MTP_REQUESTED" == "1" ]]; then
   SPEC_ARGS=(--speculative-config "${QWEN27_SPECULATIVE_CONFIG:-{\"method\":\"qwen3_5_mtp\",\"num_speculative_tokens\":3}}")
 fi
 

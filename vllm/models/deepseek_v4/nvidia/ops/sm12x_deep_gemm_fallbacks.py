@@ -2,12 +2,25 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 """SM12x fallback implementations for DeepGEMM-only interfaces."""
 
+import os
+
 import torch
 
 from vllm.logger import init_logger
 from vllm.platforms import current_platform
 
 logger = init_logger(__name__)
+
+def _env_int(name: str, default: int) -> int:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except ValueError:
+        logger.warning_once("Ignoring invalid integer %s=%r", name, value)
+        return default
+
 
 _SM120_MQA_LOGITS_MAX_SCORE_BYTES = 64 * 1024 * 1024
 _SM120_MQA_TRITON_TOPK_MAX_LOGITS_BYTES = 512 * 1024 * 1024
@@ -231,8 +244,6 @@ def _fp8_mqa_logits_topk_triton(
     k_values, _ = kv
     if not (q_scale is None and q_values.dim() == 3 and k_values.dim() == 2):
         return False
-    if q_values.shape[0] != 1:
-        return False
 
     logits_bytes = q_values.shape[0] * k_values.shape[0] * torch.float32.itemsize
     if logits_bytes > _SM120_MQA_TRITON_TOPK_MAX_LOGITS_BYTES:
@@ -319,13 +330,7 @@ def _fp8_mqa_logits_sm12x(
     clean_logits: bool,
 ) -> torch.Tensor:
     q_values, q_scale = q
-    if (
-        clean_logits
-        and q_scale is None
-        and q_values.dim() == 3
-        and q_values.shape[0] == 1
-        and kv[0].dim() == 2
-    ):
+    if clean_logits and q_scale is None and q_values.dim() == 3 and kv[0].dim() == 2:
         from vllm.models.deepseek_v4.nvidia.ops.sm12x_mqa import (
             fp8_mqa_logits_triton,
         )
@@ -478,7 +483,10 @@ def fp8_fp4_paged_mqa_topk_indices(
         device=q_values.device,
         dtype=torch.float32,
     )
-    chunk_size = max(1, _SM120_PAGED_MQA_TOPK_CHUNK_SIZE)
+    chunk_size = max(1, _env_int(
+        "VLLM_DS4_SM12X_PAGED_MQA_TOPK_CHUNK_SIZE",
+        _SM120_PAGED_MQA_TOPK_CHUNK_SIZE,
+    ))
     max_chunk_topk = min(topk_tokens, chunk_size)
     chunk_values_buf = torch.empty(
         (num_rows, max_chunk_topk),

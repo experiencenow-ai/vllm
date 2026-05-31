@@ -15,6 +15,7 @@ DS4_DSV4_PIPELINE_RAM_PROFILE="${DS4_DSV4_PIPELINE_RAM_PROFILE:-resident3}"
 DEFAULT_SPECULATIVE_CONFIG="{\"model\":\"$MODEL\",\"num_speculative_tokens\":2,\"method\":\"deepseek_mtp\"}"
 DSV4_LINEAR_BACKEND="${DSV4_LINEAR_BACKEND:-auto}"
 DSV4_MOE_BACKEND="${DSV4_MOE_BACKEND:-auto}"
+DSV4_MTP_MODE="${DSV4_MTP_MODE:-off}"
 case "$DS4_DSV4_PIPELINE_RAM_PROFILE" in
   resident3|compact|COMPACT)
     : "${DSV4_MAX_MODEL_LEN:=65536}"
@@ -64,11 +65,32 @@ if [[ "${DSV4_ENABLE_ASYNC_SCHEDULING_EXPERIMENTAL:-0}" =~ ^(1|true|TRUE|yes|YES
   ASYNC_SCHEDULING_ARGS=(--async-scheduling)
 fi
 SPECULATIVE_ARGS=()
+DSV4_MTP_REQUESTED=0
+if [[ "$DSV4_MTP_MODE" != "off" && "$DSV4_MTP_MODE" != "OFF" && "$DSV4_MTP_MODE" != "none" && "$DSV4_MTP_MODE" != "NONE" ]]; then
+  DSV4_MTP_REQUESTED=1
+fi
 if [[ "${DSV4_ENABLE_MTP:-0}" =~ ^(1|true|TRUE|yes|YES|on|ON)$ ]]; then
-  SPECULATIVE_ARGS=(--speculative-config "${DSV4_SPECULATIVE_CONFIG:-$DEFAULT_SPECULATIVE_CONFIG}")
+  DSV4_MTP_REQUESTED=1
 fi
 if [[ "${DSV4_DISABLE_MTP:-0}" =~ ^(1|true|TRUE|yes|YES|on|ON)$ ]]; then
-  SPECULATIVE_ARGS=()
+  DSV4_MTP_REQUESTED=0
+fi
+if [[ "$DSV4_MTP_REQUESTED" == "1" ]]; then
+  case "$DSV4_MTP_MODE" in
+    chat_single|single_chat|latency_chat)
+      ;;
+    *)
+      echo "DSV4 MTP is reserved for single-request chat latency mode." >&2
+      echo "Set DSV4_MTP_MODE=chat_single and DSV4_MAX_NUM_SEQS=1 to enable it." >&2
+      exit 2
+      ;;
+  esac
+  if [[ "$DSV4_MAX_NUM_SEQS" != "1" ]]; then
+    echo "DSV4 MTP requires DSV4_MAX_NUM_SEQS=1; got $DSV4_MAX_NUM_SEQS." >&2
+    echo "Batch/throughput PP profiles must keep MTP off." >&2
+    exit 2
+  fi
+  SPECULATIVE_ARGS=(--speculative-config "${DSV4_SPECULATIVE_CONFIG:-$DEFAULT_SPECULATIVE_CONFIG}")
 fi
 ds4_set_flashinfer_autotune_args DS4_ENABLE_FLASHINFER_AUTOTUNE
 
@@ -81,6 +103,10 @@ export VLLM_DS4_PROFILE_ABORT_SECONDS="${VLLM_DS4_PROFILE_ABORT_SECONDS:-600}"
 export VLLM_DS4_PROFILE_RUN_MAX_TOKENS="${VLLM_DS4_PROFILE_RUN_MAX_TOKENS:-512}"
 export TORCH_CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST:-12.1a}"
 export VLLM_TRITON_MLA_SPARSE="${VLLM_TRITON_MLA_SPARSE:-1}"
+export VLLM_DS4_SM12X_MQA_ROWWISE="${VLLM_DS4_SM12X_MQA_ROWWISE:-1}"
+export VLLM_DS4_SM12X_MQA_ROWWISE_MAX_ROWS="${VLLM_DS4_SM12X_MQA_ROWWISE_MAX_ROWS:-4}"
+export VLLM_DS4_SM12X_MQA_ROWWISE_MIN_TOKENS="${VLLM_DS4_SM12X_MQA_ROWWISE_MIN_TOKENS:-0}"
+export VLLM_DS4_SM12X_PAGED_MQA_TOPK_CHUNK_SIZE="${VLLM_DS4_SM12X_PAGED_MQA_TOPK_CHUNK_SIZE:-8192}"
 export VLLM_USE_DEEP_GEMM="${VLLM_USE_DEEP_GEMM:-1}"
 export VLLM_USE_DEEP_GEMM_E8M0="${VLLM_USE_DEEP_GEMM_E8M0:-1}"
 export VLLM_DEEP_GEMM_WARMUP="${VLLM_DEEP_GEMM_WARMUP:-skip}"

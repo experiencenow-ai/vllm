@@ -328,10 +328,11 @@ checks = [
     ),
     (
         "DSV4 PP8 launcher keeps bounded coexistence KV defaults",
-        "DSV4_KV_CACHE_MEMORY_BYTES=\"${DSV4_KV_CACHE_MEMORY_BYTES:-12884901888}\"" in dsv4_pp8
-        and "--kv-cache-memory-bytes \"$DSV4_KV_CACHE_MEMORY_BYTES\"" in dsv4_pp8
-        and '--max-num-batched-tokens "${DSV4_MAX_NUM_BATCHED_TOKENS:-8192}"' in dsv4_pp8
-        and '--gpu-memory-utilization "${DSV4_GPU_MEMORY_UTILIZATION:-0.30}"' in dsv4_pp8
+        ': "${DSV4_KV_CACHE_MEMORY_BYTES:=4294967296}"' in dsv4_pp8
+        and ': "${DSV4_KV_CACHE_MEMORY_BYTES:=12884901888}"' in dsv4_pp8
+        and 'KV_CACHE_MEMORY_ARGS=(--kv-cache-memory-bytes "$DSV4_KV_CACHE_MEMORY_BYTES")' in dsv4_pp8
+        and '--max-num-batched-tokens "$DSV4_MAX_NUM_BATCHED_TOKENS"' in dsv4_pp8
+        and '--gpu-memory-utilization "$DSV4_GPU_MEMORY_UTILIZATION"' in dsv4_pp8
         and "DSV4_ENABLE_MTP:-0" in dsv4_pp8
         and "ASYNC_SCHEDULING_ARGS=(--no-async-scheduling)" in dsv4_pp8
         and "DSV4_ENABLE_ASYNC_SCHEDULING_EXPERIMENTAL" in dsv4_pp8
@@ -377,7 +378,7 @@ checks = [
     (
         "DSV4 launchers keep compilation config override as valid JSON",
         all(
-            "DEFAULT_COMPILATION_CONFIG='" in script
+            "DEFAULT_COMPILATION_CONFIG=" in script
             and 'DSV4_COMPILATION_CONFIG="${DSV4_COMPILATION_CONFIG:-$DEFAULT_COMPILATION_CONFIG}"' in script
             and '--compilation-config "$DSV4_COMPILATION_CONFIG"' in script
             and 'DSV4_COMPILATION_CONFIG:-{\\"cudagraph_mode\\"' not in script

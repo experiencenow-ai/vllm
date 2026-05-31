@@ -2,9 +2,84 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 """Triton fallback kernels used by the local DeepSeek V4 path."""
 
+import os
+
 import torch
 
+from vllm.logger import init_logger
 from vllm.triton_utils import tl, triton
+
+logger = init_logger(__name__)
+
+
+def _env_flag(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() not in {"", "0", "false", "no", "off"}
+
+
+def _env_int(name: str, default: int) -> int:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    try:
+        parsed = int(value)
+    except ValueError:
+        logger.warning_once("Ignoring invalid integer %s=%r", name, value)
+        return default
+    return parsed
+
+
+def _normalize_context_lens_for_next_n(
+    context_lens: torch.Tensor,
+    batch_size: int,
+    next_n: int,
+) -> torch.Tensor:
+    """Return a contiguous [batch_size, next_n] context-length tensor.
+
+    The SM12x paged-MQA kernels index context lengths by logical row
+    ``batch * next_n + q_pos``.  Some call paths provide one context length per
+    sequence and rely on broadcasting over ``next_n``; other paths provide the
+    already-expanded matrix.  Reject any other shape before launching Triton so
+    a malformed high-throughput request fails in Python rather than via an
+    asynchronous CUDA illegal-address fault.
+    """
+    expected_rows = batch_size * next_n
+    if context_lens.numel() == expected_rows:
+        return context_lens.reshape(batch_size, next_n).contiguous()
+    if context_lens.numel() == batch_size:
+        return context_lens.reshape(batch_size, 1).expand(
+            batch_size, next_n).contiguous()
+    raise ValueError(
+        "SM12x paged-MQA expected context_lens to contain either "
+        f"batch_size ({batch_size}) or batch_size * next_n ({expected_rows}) "
+        f"entries, got shape={tuple(context_lens.shape)} "
+        f"numel={context_lens.numel()}")
+
+
+def _should_use_rowwise_paged_mqa(
+    num_rows: int,
+    token_count: int,
+    num_heads: int,
+    head_dim: int,
+) -> bool:
+    if not _env_flag("VLLM_DS4_SM12X_MQA_ROWWISE", True):
+        return False
+    if head_dim % 64 != 0 or num_heads % 4 != 0:
+        return False
+    max_rows = _env_int("VLLM_DS4_SM12X_MQA_ROWWISE_MAX_ROWS", 4)
+    if max_rows >= 0 and num_rows > max_rows:
+        logger.warning_once(
+            "DS4 SM12x paged-MQA rowwise Triton path disabled for "
+            "num_rows=%s > VLLM_DS4_SM12X_MQA_ROWWISE_MAX_ROWS=%s; "
+            "using bounded 2D Triton path",
+            num_rows, max_rows)
+        return False
+    min_tokens = _env_int("VLLM_DS4_SM12X_MQA_ROWWISE_MIN_TOKENS", 0)
+    if token_count < min_tokens:
+        return False
+    return True
 
 
 def _view_packed_fp8_paged_mqa_kv_cache(
@@ -200,6 +275,8 @@ def _fp8_paged_mqa_logits_kernel(
     num_heads: tl.constexpr,
     head_dim: tl.constexpr,
     block_size: tl.constexpr,
+    num_kv_blocks: tl.constexpr,
+    max_blocks_per_seq: tl.constexpr,
     stride_qb: tl.constexpr,
     stride_qn: tl.constexpr,
     stride_qh: tl.constexpr,
@@ -241,18 +318,25 @@ def _fp8_paged_mqa_logits_kernel(
 
     block_rank = offs_n // block_size
     block_offset = offs_n - block_rank * block_size
+    valid_block_rank = block_rank < max_blocks_per_seq
     block_idx = tl.load(
         block_tables_ptr
         + batch[:, None] * stride_btb
         + block_rank[None, :] * stride_btk,
-        mask=valid_m[:, None] & valid_n[None, :],
-        other=0,
+        mask=valid_m[:, None] & context_mask & valid_block_rank[None, :],
+        other=-1,
+    )
+    valid_block = (
+        context_mask
+        & valid_block_rank[None, :]
+        & (block_idx >= 0)
+        & (block_idx < num_kv_blocks)
     )
 
     logits = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
     scale = tl.load(
         scale_ptr + block_idx * stride_sb + block_offset[None, :] * stride_ss,
-        mask=context_mask,
+        mask=valid_block,
         other=0.0,
     )
     for h in tl.range(0, num_heads):
@@ -273,7 +357,7 @@ def _fp8_paged_mqa_logits_kernel(
                 + block_idx[:, :, None] * stride_kvb
                 + block_offset[None, :, None] * stride_kvs
                 + d[None, None, :] * stride_kvd,
-                mask=context_mask[:, :, None] & (d[None, None, :] < head_dim),
+                mask=valid_block[:, :, None] & (d[None, None, :] < head_dim),
                 other=0.0,
             ).to(tl.float32)
             scores += tl.sum(q[:, None, :] * k, axis=2)
@@ -286,7 +370,7 @@ def _fp8_paged_mqa_logits_kernel(
         logits += weighted * weight[:, None]
 
     store_mask = valid_m[:, None] & valid_n[None, :]
-    logits = tl.where(context_mask & store_mask, logits, float("-inf"))
+    logits = tl.where(valid_block & store_mask, logits, float("-inf"))
     tl.store(
         logits_ptr + offs_m[:, None] * stride_lm + offs_local_n[None, :] * stride_ln,
         logits,
@@ -310,6 +394,8 @@ def _fp8_paged_mqa_logits_rowwise_kernel(
     num_heads: tl.constexpr,
     head_dim: tl.constexpr,
     block_size: tl.constexpr,
+    num_kv_blocks: tl.constexpr,
+    max_blocks_per_seq: tl.constexpr,
     stride_qb: tl.constexpr,
     stride_qn: tl.constexpr,
     stride_qh: tl.constexpr,
@@ -368,15 +454,22 @@ def _fp8_paged_mqa_logits_rowwise_kernel(
 
     block_rank = offs_n // block_size
     block_offset = offs_n - block_rank * block_size
+    valid_block_rank = block_rank < max_blocks_per_seq
     block_idx = tl.load(
         block_tables_ptr + batch * stride_btb + block_rank * stride_btk,
-        mask=valid_row & context_mask,
-        other=0,
+        mask=valid_row & context_mask & valid_block_rank,
+        other=-1,
+    )
+    valid_block = (
+        context_mask
+        & valid_block_rank
+        & (block_idx >= 0)
+        & (block_idx < num_kv_blocks)
     )
 
     scale = tl.load(
         scale_ptr + block_idx * stride_sb + block_offset * stride_ss,
-        mask=context_mask,
+        mask=valid_block,
         other=0.0,
     )
     logits = tl.zeros((BLOCK_N,), dtype=tl.float32)
@@ -401,7 +494,7 @@ def _fp8_paged_mqa_logits_rowwise_kernel(
                 + block_idx[None, :] * stride_kvb
                 + block_offset[None, :] * stride_kvs
                 + d[:, None] * stride_kvd,
-                mask=context_mask[None, :] & (d[:, None] < head_dim),
+                mask=valid_block[None, :] & (d[:, None] < head_dim),
                 other=0.0,
             ).to(tl.float32)
             scores += tl.dot(q, k, input_precision="tf32")
@@ -414,7 +507,7 @@ def _fp8_paged_mqa_logits_rowwise_kernel(
         )
         logits += tl.sum(weighted * weight[:, None], axis=0)
 
-    logits = tl.where(context_mask & valid_row, logits, float("-inf"))
+    logits = tl.where(valid_block & valid_row, logits, float("-inf"))
     tl.store(
         logits_ptr + row * stride_lm + offs_local_n * stride_ln,
         logits,
@@ -443,7 +536,8 @@ def fp8_paged_mqa_logits_rowwise_triton(
     """
     batch_size, next_n, num_heads, head_dim = q.size()
     kv_values, kv_scale = _view_packed_fp8_paged_mqa_kv_cache(kv_cache, head_dim)
-    _, block_size, _, _ = kv_values.size()
+    num_kv_blocks, block_size, _, _ = kv_values.size()
+    max_blocks_per_seq = block_tables.shape[1]
     num_rows = batch_size * next_n
     if token_count is None:
         token_count = max_model_len - token_start
@@ -458,9 +552,8 @@ def fp8_paged_mqa_logits_rowwise_triton(
     if num_rows == 0 or token_count == 0:
         return logits
 
-    context_lens_2d = context_lens.reshape(batch_size, -1)
-    if context_lens_2d.shape[1] == 1 and next_n != 1:
-        context_lens_2d = context_lens_2d.expand(batch_size, next_n).contiguous()
+    context_lens_2d = _normalize_context_lens_for_next_n(
+        context_lens, batch_size, next_n)
     block_n = 128
     grid = (num_rows, triton.cdiv(token_count, block_n))
     _fp8_paged_mqa_logits_rowwise_kernel[grid](
@@ -478,6 +571,8 @@ def fp8_paged_mqa_logits_rowwise_triton(
         num_heads,
         head_dim,
         block_size,
+        num_kv_blocks,
+        max_blocks_per_seq,
         q.stride(0),
         q.stride(1),
         q.stride(2),
@@ -514,13 +609,18 @@ def fp8_paged_mqa_logits_triton(
     token_count: int | None = None,
 ) -> torch.Tensor:
     batch_size, next_n, num_heads, head_dim = q.size()
+    num_rows = batch_size * next_n
+    effective_token_count = (
+        token_count if token_count is not None else max_model_len - token_start
+    )
     # Aligned head shapes (DSv4-Flash and any future MQA model with
-    # ``head_dim % 64 == 0`` and ``num_heads % 4 == 0``) get the rowwise
-    # kernel, which keeps long-context decode (>100K tokens) on a per-row
-    # grid that re-uses Q across the full token window. The generic 2D
-    # kernel below still handles misaligned shapes and remains the canonical
-    # reference for the rowwise variant.
-    if head_dim % 64 == 0 and num_heads % 4 == 0:
+    # ``head_dim % 64 == 0`` and ``num_heads % 4 == 0``) can use the rowwise
+    # kernel for small-row long-context decode. High-row throughput shapes use
+    # the bounded 2D Triton path by default until the rowwise kernel is proven
+    # safe for those grids on SM12x.
+    if _should_use_rowwise_paged_mqa(
+        num_rows, effective_token_count, num_heads, head_dim
+    ):
         return fp8_paged_mqa_logits_rowwise_triton(
             q,
             kv_cache,
@@ -533,7 +633,8 @@ def fp8_paged_mqa_logits_triton(
         )
 
     kv_values, kv_scale = _view_packed_fp8_paged_mqa_kv_cache(kv_cache, head_dim)
-    _, block_size, _, _ = kv_values.size()
+    num_kv_blocks, block_size, _, _ = kv_values.size()
+    max_blocks_per_seq = block_tables.shape[1]
     num_rows = batch_size * next_n
     if token_count is None:
         token_count = max_model_len - token_start
@@ -548,9 +649,8 @@ def fp8_paged_mqa_logits_triton(
     if num_rows == 0 or token_count == 0:
         return logits
 
-    context_lens_2d = context_lens.reshape(batch_size, -1)
-    if context_lens_2d.shape[1] == 1 and next_n != 1:
-        context_lens_2d = context_lens_2d.expand(batch_size, next_n).contiguous()
+    context_lens_2d = _normalize_context_lens_for_next_n(
+        context_lens, batch_size, next_n)
     # Adaptive BLOCK_M: the kernel masks off positions >= num_rows, so a fixed
     # BLOCK_M=4 wastes ~75% of M-axis work in the common single-stream decode
     # case (num_rows=1). Pick the smallest power-of-2 tile that still covers
@@ -580,6 +680,8 @@ def fp8_paged_mqa_logits_triton(
         num_heads,
         head_dim,
         block_size,
+        num_kv_blocks,
+        max_blocks_per_seq,
         q.stride(0),
         q.stride(1),
         q.stride(2),
