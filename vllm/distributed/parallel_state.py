@@ -685,7 +685,8 @@ class GroupCoordinator:
         # Serialize object to a writable tensor and get the size as well.
         # Gloo may send directly from this CPU buffer; tensors backed by
         # immutable bytes can trip writev with EFAULT on GB10/aarch64.
-        object_tensor = torch.frombuffer(pickle.dumps(obj), dtype=torch.uint8).clone()
+        object_buffer = bytearray(pickle.dumps(obj))
+        object_tensor = torch.frombuffer(object_buffer, dtype=torch.uint8)
 
         size_tensor = torch.tensor(
             [object_tensor.numel()], dtype=torch.long, device="cpu"
