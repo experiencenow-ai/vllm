@@ -71,6 +71,19 @@ ds4_200g_hca_for_if()
   ibdev2netdev 2>/dev/null | awk -v ifname="$1" 'found == 0 && $0 ~ "==> " ifname " " { print $1; found=1 }'
 }
 
+ds4_200g_require_link_200g()
+{
+  local ifname="$1"
+  local role="$2"
+  local speed carrier
+  [[ -d "/sys/class/net/$ifname" ]] || ds4_200g_die "$role interface '$ifname' does not exist"
+  [[ -r "/sys/class/net/$ifname/speed" ]] || ds4_200g_die "$role interface '$ifname' does not expose link speed"
+  speed="$(cat "/sys/class/net/$ifname/speed" 2>/dev/null || true)"
+  [[ "$speed" == "200000" ]] || ds4_200g_die "$role interface '$ifname' speed is ${speed:-unknown}Mb/s, expected 200000Mb/s"
+  carrier="$(cat "/sys/class/net/$ifname/carrier" 2>/dev/null || true)"
+  [[ "$carrier" == "1" ]] || ds4_200g_die "$role interface '$ifname' carrier is ${carrier:-unknown}, expected 1"
+}
+
 ds4_200g_check_or_export()
 {
   local name="$1"
@@ -121,12 +134,7 @@ ds4_require_200g_fabric()
   IFS=',' read -r -a ifnames <<< "$ifnames_csv"
   for ifname in "${ifnames[@]}"; do
     [[ -n "$ifname" ]] || ds4_200g_die "DS4_200G_IFNAME contains an empty interface"
-    [[ -d "/sys/class/net/$ifname" ]] || ds4_200g_die "interface '$ifname' does not exist"
-    [[ -r "/sys/class/net/$ifname/speed" ]] || ds4_200g_die "interface '$ifname' does not expose link speed"
-    speed="$(cat "/sys/class/net/$ifname/speed" 2>/dev/null || true)"
-    [[ "$speed" == "200000" ]] || ds4_200g_die "interface '$ifname' speed is ${speed:-unknown}Mb/s, expected 200000Mb/s"
-    carrier="$(cat "/sys/class/net/$ifname/carrier" 2>/dev/null || true)"
-    [[ "$carrier" == "1" ]] || ds4_200g_die "interface '$ifname' carrier is ${carrier:-unknown}, expected 1"
+    ds4_200g_require_link_200g "$ifname" "200G fabric"
     if [[ -z "$local_ip" ]]; then
       local_ip="$(ds4_200g_if_ip "$ifname")"
     fi
@@ -157,11 +165,11 @@ ds4_require_200g_fabric()
   case "$nccl_transport" in
     socket)
       export DS4_200G_NCCL_TRANSPORT="socket"
-      socket_ifname="${DS4_200G_SOCKET_IFNAME:-$control_ifname}"
+      socket_ifname="${DS4_200G_SOCKET_IFNAME:-$ifnames_csv}"
       IFS=',' read -r -a socket_ifnames <<< "$socket_ifname"
       for ifname in "${socket_ifnames[@]}"; do
         [[ -n "$ifname" ]] || ds4_200g_die "DS4_200G_SOCKET_IFNAME contains an empty interface"
-        [[ -d "/sys/class/net/$ifname" ]] || ds4_200g_die "socket interface '$ifname' does not exist"
+        ds4_200g_require_link_200g "$ifname" "NCCL socket"
       done
       ds4_200g_check_or_export NCCL_SOCKET_IFNAME "$socket_ifname"
       ds4_200g_check_or_export TP_SOCKET_IFNAME "$socket_ifname"
@@ -213,6 +221,22 @@ ds4_require_200g_fabric()
   ds4_200g_check_or_export VLLM_HOST_IP "$local_ip"
 }
 
+ds4_run_preflight_checked()
+{
+  local output status
+  set +e
+  output="$("$@" 2>&1)"
+  status=$?
+  set -e
+  printf "%s\n" "$output" >&2
+  if [[ "$output" == *"Could not get speed from"* || "$output" == *"Defaulting to 10 Gbps"* ]]; then
+    ds4_200g_die "NCCL reported a link-speed fallback during preflight; refusing to launch on an ambiguous or slow fabric"
+  fi
+  if [[ "$status" != "0" ]]; then
+    ds4_200g_die "preflight command failed with status $status"
+  fi
+}
+
 ds4_run_nccl_preflight()
 {
   local world_size="$1"
@@ -223,16 +247,16 @@ ds4_run_nccl_preflight()
   case "$mode" in
     gloo)
       if command -v timeout >/dev/null 2>&1; then
-        RANK="$NODE_RANK" WORLD_SIZE="$world_size" MASTER_ADDR="$HEAD_ADDR" MASTER_PORT="$preflight_port" DS4_NCCL_PREFLIGHT_BACKEND=gloo timeout --kill-after=5s "$((timeout_s + 15))s" "$RUNTIME_PYTHON" "$SCRIPT_DIR/ds4_nccl_preflight.py"
+        ds4_run_preflight_checked env RANK="$NODE_RANK" WORLD_SIZE="$world_size" MASTER_ADDR="$HEAD_ADDR" MASTER_PORT="$preflight_port" DS4_NCCL_PREFLIGHT_BACKEND=gloo timeout --kill-after=5s "$((timeout_s + 15))s" "$RUNTIME_PYTHON" "$SCRIPT_DIR/ds4_nccl_preflight.py"
       else
-        RANK="$NODE_RANK" WORLD_SIZE="$world_size" MASTER_ADDR="$HEAD_ADDR" MASTER_PORT="$preflight_port" DS4_NCCL_PREFLIGHT_BACKEND=gloo "$RUNTIME_PYTHON" "$SCRIPT_DIR/ds4_nccl_preflight.py"
+        ds4_run_preflight_checked env RANK="$NODE_RANK" WORLD_SIZE="$world_size" MASTER_ADDR="$HEAD_ADDR" MASTER_PORT="$preflight_port" DS4_NCCL_PREFLIGHT_BACKEND=gloo "$RUNTIME_PYTHON" "$SCRIPT_DIR/ds4_nccl_preflight.py"
       fi
       ;;
     nccl)
       if command -v timeout >/dev/null 2>&1; then
-        RANK="$NODE_RANK" WORLD_SIZE="$world_size" MASTER_ADDR="$HEAD_ADDR" MASTER_PORT="$preflight_port" timeout --kill-after=5s "$((timeout_s + 15))s" "$RUNTIME_PYTHON" "$SCRIPT_DIR/ds4_nccl_preflight.py"
+        ds4_run_preflight_checked env RANK="$NODE_RANK" WORLD_SIZE="$world_size" MASTER_ADDR="$HEAD_ADDR" MASTER_PORT="$preflight_port" timeout --kill-after=5s "$((timeout_s + 15))s" "$RUNTIME_PYTHON" "$SCRIPT_DIR/ds4_nccl_preflight.py"
       else
-        RANK="$NODE_RANK" WORLD_SIZE="$world_size" MASTER_ADDR="$HEAD_ADDR" MASTER_PORT="$preflight_port" "$RUNTIME_PYTHON" "$SCRIPT_DIR/ds4_nccl_preflight.py"
+        ds4_run_preflight_checked env RANK="$NODE_RANK" WORLD_SIZE="$world_size" MASTER_ADDR="$HEAD_ADDR" MASTER_PORT="$preflight_port" "$RUNTIME_PYTHON" "$SCRIPT_DIR/ds4_nccl_preflight.py"
       fi
       ;;
     store)
