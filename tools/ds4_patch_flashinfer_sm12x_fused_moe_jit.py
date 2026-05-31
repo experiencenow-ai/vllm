@@ -25,6 +25,14 @@ NEW = '''            # Add only generated kernels for the active SM120 module.
             *(
                 output_dir / kernel
                 for kernel in output_dir.rglob("*.generated.cu")
+                if device_arch != "120" or "_sm120_" in kernel.name
+            ),
+'''
+
+BAD_NEW = '''            # Add only generated kernels for the active SM120 module.
+            *(
+                output_dir / kernel
+                for kernel in output_dir.rglob("*.generated.cu")
                 if device_arch != "120" or kernel.name.startswith("120_")
             ),
 '''
@@ -40,13 +48,17 @@ def main() -> int:
     if NEW in text:
         print(f"ds4_flashinfer_sm12x_patch: already patched {path}")
         return 0
-    if OLD not in text:
+    if OLD in text:
+        old = OLD
+    elif BAD_NEW in text:
+        old = BAD_NEW
+    else:
         print(f"ds4_flashinfer_sm12x_patch: expected source block not found in {path}", file=sys.stderr)
         return 3
     backup = path.with_suffix(path.suffix + ".ds4-sm12x-backup")
     if not backup.exists():
         shutil.copy2(path, backup)
-    path.write_text(text.replace(OLD, NEW, 1))
+    path.write_text(text.replace(old, NEW, 1))
     py_compile.compile(str(path), doraise=True)
     print(f"ds4_flashinfer_sm12x_patch: patched {path}")
     return 0
