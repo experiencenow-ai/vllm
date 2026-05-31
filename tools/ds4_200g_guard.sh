@@ -10,6 +10,7 @@ ds4_200g_print_diag()
     echo "DS4_CONTROL_IFNAME: ${DS4_CONTROL_IFNAME:-<unset>}"
     echo "DS4_200G_ADVERTISE_LOOPBACK: ${DS4_200G_ADVERTISE_LOOPBACK:-<unset>}"
     echo "DS4_NODE_LOOPBACK: ${DS4_NODE_LOOPBACK:-<unset>}"
+    echo "DS4_200G_PEER_LOOPBACKS: ${DS4_200G_PEER_LOOPBACKS:-<unset>}"
     echo "DS4_200G_NCCL_TRANSPORT: ${DS4_200G_NCCL_TRANSPORT:-<unset>}"
     echo "NCCL_SOCKET_IFNAME: ${NCCL_SOCKET_IFNAME:-<unset>}"
     echo "GLOO_SOCKET_IFNAME: ${GLOO_SOCKET_IFNAME:-<unset>}"
@@ -120,6 +121,45 @@ ds4_200g_rank_loopback()
   return 1
 }
 
+ds4_200g_peer_loopbacks()
+{
+  if [[ -n "${DS4_200G_PEER_LOOPBACKS:-}" ]]; then
+    echo "$DS4_200G_PEER_LOOPBACKS"
+    return 0
+  fi
+  if [[ "${NNODES:-}" =~ ^[1-9][0-9]*$ ]]; then
+    local i out
+    out=""
+    for ((i=0; i<NNODES; i++)); do
+      if [[ -n "$out" ]]; then
+        out="$out,10.10.100.$((10 + i))"
+      else
+        out="10.10.100.$((10 + i))"
+      fi
+    done
+    echo "$out"
+    return 0
+  fi
+  return 1
+}
+
+ds4_require_routed_loopback_over_200g()
+{
+  local ifnames_csv="$1"
+  local self_ip="$2"
+  local peers_csv peer route_dev
+  peers_csv="$(ds4_200g_peer_loopbacks)" || ds4_200g_die "DS4_200G_ADVERTISE_LOOPBACK=1 requires NNODES or DS4_200G_PEER_LOOPBACKS for all-peer route validation"
+  IFS=',' read -r -a peers <<< "$peers_csv"
+  for peer in "${peers[@]}"; do
+    [[ -n "$peer" ]] || ds4_200g_die "DS4_200G_PEER_LOOPBACKS contains an empty peer"
+    if [[ "$peer" == "$self_ip" ]]; then
+      continue
+    fi
+    route_dev="$(ds4_200g_route_dev "$peer")"
+    ds4_200g_csv_contains "$ifnames_csv" "$route_dev" || ds4_200g_die "route to peer loopback '$peer' uses '${route_dev:-no route}', not 200G interface list '$ifnames_csv'"
+  done
+}
+
 ds4_require_200g_fabric()
 {
   local ifname ifnames_csv control_ifname socket_ifname speed carrier local_ip bound_dev route_dev hca hcas_csv advertise_ip advertise_bound nccl_transport
@@ -165,11 +205,19 @@ ds4_require_200g_fabric()
   case "$nccl_transport" in
     socket)
       export DS4_200G_NCCL_TRANSPORT="socket"
-      socket_ifname="${DS4_200G_SOCKET_IFNAME:-$ifnames_csv}"
+      if [[ "${DS4_200G_ADVERTISE_LOOPBACK:-0}" =~ ^(1|true|TRUE|yes|YES|on|ON)$ ]]; then
+        socket_ifname="${DS4_200G_SOCKET_IFNAME:-$control_ifname}"
+      else
+        socket_ifname="${DS4_200G_SOCKET_IFNAME:-$ifnames_csv}"
+      fi
       IFS=',' read -r -a socket_ifnames <<< "$socket_ifname"
       for ifname in "${socket_ifnames[@]}"; do
         [[ -n "$ifname" ]] || ds4_200g_die "DS4_200G_SOCKET_IFNAME contains an empty interface"
-        ds4_200g_require_link_200g "$ifname" "NCCL socket"
+        if [[ "${DS4_200G_ADVERTISE_LOOPBACK:-0}" =~ ^(1|true|TRUE|yes|YES|on|ON)$ ]] && ds4_200g_csv_contains "$control_ifname" "$ifname"; then
+          [[ -d "/sys/class/net/$ifname" ]] || ds4_200g_die "routed-loopback socket interface '$ifname' does not exist"
+        else
+          ds4_200g_require_link_200g "$ifname" "NCCL socket"
+        fi
       done
       ds4_200g_check_or_export NCCL_SOCKET_IFNAME "$socket_ifname"
       ds4_200g_check_or_export TP_SOCKET_IFNAME "$socket_ifname"
@@ -215,6 +263,7 @@ ds4_require_200g_fabric()
     if [[ "$advertise_bound" != "lo" ]] && ! ds4_200g_csv_contains "$control_ifname" "$advertise_bound"; then
       ds4_200g_die "advertised loopback '$advertise_ip' is bound to '${advertise_bound:-no local device}', expected lo or control interface '$control_ifname'"
     fi
+    ds4_require_routed_loopback_over_200g "$ifnames_csv" "$advertise_ip"
     ds4_200g_check_or_export VLLM_HOST_IP "$advertise_ip"
     return
   fi
@@ -230,7 +279,11 @@ ds4_run_preflight_checked()
   set -e
   printf "%s\n" "$output" >&2
   if [[ "$output" == *"Could not get speed from"* || "$output" == *"Defaulting to 10 Gbps"* ]]; then
-    ds4_200g_die "NCCL reported a link-speed fallback during preflight; refusing to launch on an ambiguous or slow fabric"
+    if [[ "${DS4_200G_ADVERTISE_LOOPBACK:-0}" =~ ^(1|true|TRUE|yes|YES|on|ON)$ && "${NCCL_SOCKET_IFNAME:-}" == "${DS4_CONTROL_IFNAME:-}" && "$output" == *"/sys/class/net/${DS4_CONTROL_IFNAME:-}/speed"* ]]; then
+      echo "DS4 200G route guard: NCCL is using routed loopback '$NCCL_SOCKET_IFNAME'; peer routes were validated over physical 200G links before preflight." >&2
+    else
+      ds4_200g_die "NCCL reported a link-speed fallback during preflight; refusing to launch on an ambiguous or slow fabric"
+    fi
   fi
   if [[ "$status" != "0" ]]; then
     ds4_200g_die "preflight command failed with status $status"
