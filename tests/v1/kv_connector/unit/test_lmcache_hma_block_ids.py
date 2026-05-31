@@ -8,6 +8,7 @@ from vllm.distributed.kv_transfer.kv_connector.v1.lmcache_integration.hma_block_
     build_slot_mappings_for_block_id_groups,
     choose_lmcache_kv_cache_group_id,
     extend_block_id_groups,
+    get_lmcache_kv_cache_group_layer_names,
     normalize_block_id_groups,
 )
 from vllm.v1.kv_cache_interface import (
@@ -73,3 +74,6 @@ def test_choose_lmcache_group_prefers_attention_over_mamba() -> None:
 
     assert choose_lmcache_kv_cache_group_id(kv_cache_config, "auto") == 1
     assert choose_lmcache_kv_cache_group_id(kv_cache_config, 0) == 0
+    assert get_lmcache_kv_cache_group_layer_names(kv_cache_config, 1) == (
+        "layers.1",
+    )
