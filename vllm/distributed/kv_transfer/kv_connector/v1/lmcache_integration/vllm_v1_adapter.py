@@ -651,6 +651,7 @@ def _init_lmcache_engine(
     else:
         kv_shape = group_shape[0]
         num_mtp_layers = 0
+        num_layer, _, _, num_kv_head, head_size = kv_shape
     logger.info(
         "use mla: %s, kv shape: %s, num_mtp_layers: %s",
         use_mla,
