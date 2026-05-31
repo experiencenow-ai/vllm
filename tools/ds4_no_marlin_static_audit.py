@@ -303,6 +303,9 @@ checks = [
         and '--max-num-batched-tokens "${DSV4_MAX_NUM_BATCHED_TOKENS:-8192}"' in dsv4_pp8
         and '--gpu-memory-utilization "${DSV4_GPU_MEMORY_UTILIZATION:-0.50}"' in dsv4_pp8
         and "DSV4_ENABLE_MTP:-0" in dsv4_pp8
+        and "ASYNC_SCHEDULING_ARGS=(--no-async-scheduling)" in dsv4_pp8
+        and "DSV4_ENABLE_ASYNC_SCHEDULING_EXPERIMENTAL" in dsv4_pp8
+        and '"${ASYNC_SCHEDULING_ARGS[@]}"' in dsv4_pp8
         and "DSV4_KV_CACHE_MEMORY_BYTES=12884901888" in dual_pipeline_doc,
     ),
     (

@@ -17,6 +17,10 @@ DSV4_LINEAR_BACKEND="${DSV4_LINEAR_BACKEND:-auto}"
 DSV4_MOE_BACKEND="${DSV4_MOE_BACKEND:-auto}"
 DSV4_COMPILATION_CONFIG="${DSV4_COMPILATION_CONFIG:-$DEFAULT_COMPILATION_CONFIG}"
 DSV4_KV_CACHE_MEMORY_BYTES="${DSV4_KV_CACHE_MEMORY_BYTES:-12884901888}"
+ASYNC_SCHEDULING_ARGS=(--no-async-scheduling)
+if [[ "${DSV4_ENABLE_ASYNC_SCHEDULING_EXPERIMENTAL:-0}" =~ ^(1|true|TRUE|yes|YES|on|ON)$ ]]; then
+  ASYNC_SCHEDULING_ARGS=(--async-scheduling)
+fi
 SPECULATIVE_ARGS=()
 if [[ "${DSV4_ENABLE_MTP:-0}" =~ ^(1|true|TRUE|yes|YES|on|ON)$ ]]; then
   SPECULATIVE_ARGS=(--speculative-config "${DSV4_SPECULATIVE_CONFIG:-$DEFAULT_SPECULATIVE_CONFIG}")
@@ -110,6 +114,7 @@ COMMON_ARGS=(
   --block-size 256
   --kv-cache-dtype fp8
   --enable-prefix-caching
+  "${ASYNC_SCHEDULING_ARGS[@]}"
   --kv-offloading-size "${DSV4_KV_OFFLOADING_SIZE:-8}"
   --kv-offloading-backend native
   --kv-cache-metrics
