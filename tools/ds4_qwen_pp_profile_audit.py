@@ -79,6 +79,11 @@ CHECKS = [
         "--gdn-prefill-backend",
     ),
     (
+        "BF16 Qwen PP disables async scheduling by default",
+        ROOT / "tools/ds4_launch_qwen27_pp8.sh",
+        "QWEN27_ASYNC_SCHEDULING:-0",
+    ),
+    (
         "NVFP4 Qwen PP launcher exists",
         ROOT / "tools/ds4_launch_qwen27_nvfp4_pp8.sh",
         "--quantization modelopt",
@@ -102,6 +107,11 @@ CHECKS = [
         "NVFP4 Qwen PP disables torch compile by default",
         ROOT / "tools/ds4_launch_qwen27_nvfp4_pp8.sh",
         'QWEN27_COMPILATION_CONFIG:-\'{"mode":0,"cudagraph_mode":"NONE"}\'',
+    ),
+    (
+        "NVFP4 Qwen PP disables async scheduling by default",
+        ROOT / "tools/ds4_launch_qwen27_nvfp4_pp8.sh",
+        "QWEN27_ASYNC_SCHEDULING:-0",
     ),
 ]
 

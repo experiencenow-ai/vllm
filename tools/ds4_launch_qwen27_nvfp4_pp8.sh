@@ -171,6 +171,13 @@ case "$QWEN27_COMPILATION_CONFIG" in
     ;;
 esac
 
+ASYNC_SCHEDULING_ARGS=(--no-async-scheduling)
+case "${QWEN27_ASYNC_SCHEDULING:-0}" in
+  1|true|TRUE|yes|YES|on|ON)
+    ASYNC_SCHEDULING_ARGS=(--async-scheduling)
+    ;;
+esac
+
 COMMON_ARGS=(
   -m vllm.entrypoints.cli.main serve "$MODEL"
   --served-model-name "${QWEN27_SERVED_MODEL_NAME:-qwen27-nvfp4-pp${PP_SIZE}}"
@@ -197,7 +204,7 @@ COMMON_ARGS=(
   --language-model-only
   --enable-chunked-prefill
   --enable-prefix-caching
-  --async-scheduling
+  "${ASYNC_SCHEDULING_ARGS[@]}"
   --reasoning-parser qwen3
   --no-disable-hybrid-kv-cache-manager
   --mamba-cache-mode align

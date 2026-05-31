@@ -118,10 +118,10 @@ case "$QWEN27_COMPILATION_CONFIG" in
     ;;
 esac
 
-ASYNC_SCHEDULING_ARGS=(--async-scheduling)
-case "${QWEN27_ASYNC_SCHEDULING:-1}" in
-  0|false|False|no|NO|off|OFF)
-    ASYNC_SCHEDULING_ARGS=(--no-async-scheduling)
+ASYNC_SCHEDULING_ARGS=(--no-async-scheduling)
+case "${QWEN27_ASYNC_SCHEDULING:-0}" in
+  1|true|TRUE|yes|YES|on|ON)
+    ASYNC_SCHEDULING_ARGS=(--async-scheduling)
     ;;
 esac
 
