@@ -131,6 +131,7 @@ esac
 
 ds4_prepare_triton_jit_environment "qwen27-bf16-pp${NNODES}"
 ds4_prepare_flashinfer_jit_environment
+export VLLM_MQ_MAX_CHUNKS="${VLLM_MQ_MAX_CHUNKS:-64}"
 ds4_require_200g_fabric
 ds4_run_nccl_preflight "$NNODES"
 if [[ "${DS4_QWEN_TRITON_JIT_PREFLIGHT:-1}" == "1" ]]; then
