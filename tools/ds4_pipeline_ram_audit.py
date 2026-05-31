@@ -50,6 +50,16 @@ CHECKS = [
         'QWEN27_PP_LAYER_PARTITION="9,9,9,8,8,8,8,5"',
     ),
     (
+        "Qwen NVFP4 resident3 exposes 256K context",
+        "tools/ds4_launch_qwen27_nvfp4_pp8.sh",
+        "QWEN27_MAX_MODEL_LEN:=262144",
+    ),
+    (
+        "Qwen BF16 resident3 exposes 256K context",
+        "tools/ds4_launch_qwen27_pp8.sh",
+        "QWEN27_MAX_MODEL_LEN:=262144",
+    ),
+    (
         "Qwen NVFP4 resident3 KV cap is compact",
         "tools/ds4_launch_qwen27_nvfp4_pp8.sh",
         "QWEN27_KV_CACHE_MEMORY_BYTES:=4294967296",
@@ -85,9 +95,19 @@ CHECKS = [
         "QWEN27_CUDAGRAPH_CAPTURE_SIZES:=1,2,4,8,12",
     ),
     (
+        "Qwen NVFP4 launcher keeps graph max consistent with 12-way capture",
+        "tools/ds4_launch_qwen27_nvfp4_pp8.sh",
+        "QWEN27_MAX_CUDAGRAPH_CAPTURE_SIZE:=12",
+    ),
+    (
         "Qwen BF16 launcher constrains graph capture sizes",
         "tools/ds4_launch_qwen27_pp8.sh",
         "QWEN27_CUDAGRAPH_CAPTURE_SIZES:=1,2,4,8,12",
+    ),
+    (
+        "Qwen BF16 launcher keeps graph max consistent with 12-way capture",
+        "tools/ds4_launch_qwen27_pp8.sh",
+        "QWEN27_MAX_CUDAGRAPH_CAPTURE_SIZE:=12",
     ),
     (
         "Qwen NVFP4 preserves rank-zero LMCache lookup",
