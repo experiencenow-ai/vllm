@@ -20,6 +20,7 @@ MODEL="${QWEN27_NVFP4_MODEL:-/home/$USER/models/hf/sakamakismile/Qwen3.6-27B-Tex
 RUNTIME_PYTHON="${DS4_VLLM_PYTHON:-/home/$USER/ds4-vllm-local/bin/python}"
 SOURCE_ROOT="${DS4_VLLM_SOURCE_ROOT:-/home/$USER/src/vllm}"
 DS4_NODE_ID="${DS4_NODE_ID:-spark${NODE_RANK}}"
+DS4_QWEN_PIPELINE_RAM_PROFILE="${DS4_QWEN_PIPELINE_RAM_PROFILE:-resident3}"
 DEFAULT_LMCACHE_ROOT="$HOME/ds4_lmcache/qwen27_nvfp4_pp${PP_SIZE}/${DS4_NODE_ID}"
 
 if [[ "$PP_SIZE" != "$NNODES" ]]; then
@@ -29,7 +30,7 @@ fi
 
 if [[ -z "${QWEN27_PP_LAYER_PARTITION:-}" ]]; then
   if [[ "$PP_SIZE" == "8" ]]; then
-    QWEN27_PP_LAYER_PARTITION="9,9,9,8,9,7,8,5"
+    QWEN27_PP_LAYER_PARTITION="9,9,9,8,8,8,8,5"
   else
     QWEN27_PP_LAYER_PARTITION="$($RUNTIME_PYTHON - "$PP_SIZE" <<'PY'
 import sys
@@ -96,8 +97,27 @@ export LMCACHE_ROOT="${LMCACHE_ROOT:-$DEFAULT_LMCACHE_ROOT}"
 export LMCACHE_CONFIG_FILE="${LMCACHE_CONFIG_FILE:-/tmp/lmcache_qwen27_nvfp4_pp${PP_SIZE}_${DS4_NODE_ID}.yaml}"
 mkdir -p "$LMCACHE_ROOT"
 
+case "$DS4_QWEN_PIPELINE_RAM_PROFILE" in
+  resident3|compact|COMPACT)
+    : "${QWEN27_KV_CACHE_MEMORY_BYTES:=4294967296}"
+    : "${LMCACHE_MAX_LOCAL_CPU_SIZE:=0.5}"
+    : "${QWEN27_CUDAGRAPH_CAPTURE_SIZES:=1,2,4,8}"
+    ;;
+  balanced|BALANCED)
+    : "${QWEN27_KV_CACHE_MEMORY_BYTES:=8589934592}"
+    : "${LMCACHE_MAX_LOCAL_CPU_SIZE:=2.0}"
+    ;;
+  *)
+    echo "Unsupported DS4_QWEN_PIPELINE_RAM_PROFILE=$DS4_QWEN_PIPELINE_RAM_PROFILE; expected resident3, compact, or balanced" >&2
+    exit 1
+    ;;
+esac
+
+export MALLOC_ARENA_MAX="${MALLOC_ARENA_MAX:-2}"
+export TORCHINDUCTOR_COMPILE_THREADS="${TORCHINDUCTOR_COMPILE_THREADS:-1}"
+export TRITON_CACHE_MAX_SIZE="${TRITON_CACHE_MAX_SIZE:-2147483648}"
+
 QWEN27_KV_CACHE_DTYPE="${QWEN27_KV_CACHE_DTYPE:-fp8}"
-QWEN27_KV_CACHE_MEMORY_BYTES="${QWEN27_KV_CACHE_MEMORY_BYTES:-8589934592}"
 QWEN27_ATTENTION_BACKEND="${QWEN27_ATTENTION_BACKEND:-TRITON_ATTN}"
 case "$QWEN27_ATTENTION_BACKEND" in
   TRITON_ATTN)
@@ -136,7 +156,7 @@ fi
 cat > "$LMCACHE_CONFIG_FILE" <<YAML
 chunk_size: ${LMCACHE_CHUNK_SIZE:-784}
 local_cpu: true
-max_local_cpu_size: ${LMCACHE_MAX_LOCAL_CPU_SIZE:-2.0}
+max_local_cpu_size: ${LMCACHE_MAX_LOCAL_CPU_SIZE}
 local_disk: file://$LMCACHE_ROOT
 max_local_disk_size: ${LMCACHE_MAX_LOCAL_DISK_SIZE:-2048.0}
 use_gpu_connector_v3: ${LMCACHE_USE_GPU_CONNECTOR_V3:-true}
@@ -171,22 +191,23 @@ EAGER_ARGS=()
 if [[ "${QWEN27_ENFORCE_EAGER:-0}" =~ ^(1|true|TRUE|yes|YES|on|ON)$ ]]; then
   EAGER_ARGS=(--enforce-eager)
 fi
-QWEN27_COMPILATION_CONFIG=${QWEN27_COMPILATION_CONFIG:-'{"mode":0,"cudagraph_mode":"NONE"}'}
 COMPILATION_ARGS=()
-case "$QWEN27_COMPILATION_CONFIG" in
-  ""|none|NONE|auto|AUTO)
-    ;;
-  *)
-    COMPILATION_ARGS=(--compilation-config "$QWEN27_COMPILATION_CONFIG")
-    ;;
-esac
+if [[ -n "${QWEN27_COMPILATION_CONFIG:-}" ]]; then
+  case "$QWEN27_COMPILATION_CONFIG" in
+    none|NONE|auto|AUTO)
+      ;;
+    *)
+      COMPILATION_ARGS=(--compilation-config "$QWEN27_COMPILATION_CONFIG")
+      ;;
+  esac
+elif [[ -n "${QWEN27_CUDAGRAPH_CAPTURE_SIZES:-}" ]]; then
+  COMPILATION_ARGS=(--compilation-config "{\"cudagraph_capture_sizes\":[$QWEN27_CUDAGRAPH_CAPTURE_SIZES],\"max_cudagraph_capture_size\":${QWEN27_MAX_CUDAGRAPH_CAPTURE_SIZE:-8}}")
+fi
 
 ASYNC_SCHEDULING_ARGS=(--no-async-scheduling)
-case "${QWEN27_ASYNC_SCHEDULING:-0}" in
-  1|true|TRUE|yes|YES|on|ON)
-    ASYNC_SCHEDULING_ARGS=(--async-scheduling)
-    ;;
-esac
+if [[ "${QWEN27_ENABLE_ASYNC_SCHEDULING_EXPERIMENTAL:-0}" =~ ^(1|true|TRUE|yes|YES|on|ON)$ ]]; then
+  ASYNC_SCHEDULING_ARGS=(--async-scheduling)
+fi
 
 HYBRID_KV_CACHE_MANAGER_ARGS=(--no-disable-hybrid-kv-cache-manager)
 case "${QWEN27_DISABLE_HYBRID_KV_CACHE_MANAGER:-0}" in
@@ -194,6 +215,11 @@ case "${QWEN27_DISABLE_HYBRID_KV_CACHE_MANAGER:-0}" in
     HYBRID_KV_CACHE_MANAGER_ARGS=(--disable-hybrid-kv-cache-manager)
     ;;
 esac
+
+REASONING_PARSER_ARGS=()
+if [[ "${QWEN27_REASONING_PARSER:-none}" != "none" ]]; then
+  REASONING_PARSER_ARGS=(--reasoning-parser "$QWEN27_REASONING_PARSER")
+fi
 
 COMMON_ARGS=(
   -m vllm.entrypoints.cli.main serve "$MODEL"
@@ -222,7 +248,7 @@ COMMON_ARGS=(
   --enable-chunked-prefill
   --enable-prefix-caching
   "${ASYNC_SCHEDULING_ARGS[@]}"
-  --reasoning-parser qwen3
+  "${REASONING_PARSER_ARGS[@]}"
   "${HYBRID_KV_CACHE_MANAGER_ARGS[@]}"
   --mamba-cache-mode align
   "${KV_TRANSFER_ARGS[@]}"

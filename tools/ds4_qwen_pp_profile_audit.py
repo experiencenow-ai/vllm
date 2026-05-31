@@ -104,9 +104,9 @@ CHECKS = [
         "--gdn-prefill-backend",
     ),
     (
-        "BF16 Qwen PP disables async scheduling by default",
+        "BF16 Qwen PP makes async scheduling experimental",
         ROOT / "tools/ds4_launch_qwen27_pp8.sh",
-        "QWEN27_ASYNC_SCHEDULING:-0",
+        "QWEN27_ENABLE_ASYNC_SCHEDULING_EXPERIMENTAL",
     ),
     (
         "NVFP4 Qwen PP launcher exists",
@@ -154,14 +154,14 @@ CHECKS = [
         "lookup_server_worker_ids: [0]",
     ),
     (
-        "NVFP4 Qwen PP disables torch compile by default",
+        "NVFP4 Qwen PP bounds CUDA graph capture sizes by default",
         ROOT / "tools/ds4_launch_qwen27_nvfp4_pp8.sh",
-        'QWEN27_COMPILATION_CONFIG:-\'{"mode":0,"cudagraph_mode":"NONE"}\'',
+        "QWEN27_CUDAGRAPH_CAPTURE_SIZES:=1,2,4,8",
     ),
     (
-        "NVFP4 Qwen PP disables async scheduling by default",
+        "NVFP4 Qwen PP makes async scheduling experimental",
         ROOT / "tools/ds4_launch_qwen27_nvfp4_pp8.sh",
-        "QWEN27_ASYNC_SCHEDULING:-0",
+        "QWEN27_ENABLE_ASYNC_SCHEDULING_EXPERIMENTAL",
     ),
 ]
 

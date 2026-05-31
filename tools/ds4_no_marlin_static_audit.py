@@ -221,10 +221,18 @@ checks = [
     ),
     (
         "Qwen launchers keep bounded coexistence KV defaults",
-        "max_local_cpu_size: ${LMCACHE_MAX_LOCAL_CPU_SIZE:-2.0}" in qwen_pp8
-        and "max_local_cpu_size: ${LMCACHE_MAX_LOCAL_CPU_SIZE:-2.0}" in qwen_nvfp4_pp8
-        and "QWEN27_KV_CACHE_MEMORY_BYTES=\"${QWEN27_KV_CACHE_MEMORY_BYTES:-8589934592}\"" in qwen_pp8
-        and "QWEN27_KV_CACHE_MEMORY_BYTES=\"${QWEN27_KV_CACHE_MEMORY_BYTES:-8589934592}\"" in qwen_nvfp4_pp8
+        "DS4_QWEN_PIPELINE_RAM_PROFILE=\"${DS4_QWEN_PIPELINE_RAM_PROFILE:-resident3}\"" in qwen_pp8
+        and "DS4_QWEN_PIPELINE_RAM_PROFILE=\"${DS4_QWEN_PIPELINE_RAM_PROFILE:-resident3}\"" in qwen_nvfp4_pp8
+        and "QWEN27_KV_CACHE_MEMORY_BYTES:=4294967296" in qwen_pp8
+        and "QWEN27_KV_CACHE_MEMORY_BYTES:=4294967296" in qwen_nvfp4_pp8
+        and "LMCACHE_MAX_LOCAL_CPU_SIZE:=0.5" in qwen_pp8
+        and "LMCACHE_MAX_LOCAL_CPU_SIZE:=0.5" in qwen_nvfp4_pp8
+        and "QWEN27_CUDAGRAPH_CAPTURE_SIZES:=1,2,4,8" in qwen_pp8
+        and "QWEN27_CUDAGRAPH_CAPTURE_SIZES:=1,2,4,8" in qwen_nvfp4_pp8
+        and "QWEN27_ENABLE_ASYNC_SCHEDULING_EXPERIMENTAL" in qwen_pp8
+        and "QWEN27_ENABLE_ASYNC_SCHEDULING_EXPERIMENTAL" in qwen_nvfp4_pp8
+        and "QWEN27_REASONING_PARSER:-none" in qwen_pp8
+        and "QWEN27_REASONING_PARSER:-none" in qwen_nvfp4_pp8
         and "--kv-cache-memory-bytes \"$QWEN27_KV_CACHE_MEMORY_BYTES\"" in qwen_pp8
         and "--kv-cache-memory-bytes \"$QWEN27_KV_CACHE_MEMORY_BYTES\"" in qwen_nvfp4_pp8
         and "QWEN27_ENFORCE_EAGER" in qwen_pp8
@@ -238,8 +246,6 @@ checks = [
         and '--gpu-memory-utilization "${QWEN27_GPU_MEMORY_UTILIZATION:-0.24}"' in qwen_nvfp4_pp8
         and "ds4_set_flashinfer_autotune_args DS4_ENABLE_FLASHINFER_AUTOTUNE" in qwen_pp8
         and "ds4_set_flashinfer_autotune_args DS4_ENABLE_FLASHINFER_AUTOTUNE" in qwen_nvfp4_pp8
-        and "LMCACHE_MAX_LOCAL_CPU_SIZE=2.0" in dual_pipeline_doc
-        and "QWEN27_KV_CACHE_MEMORY_BYTES=8589934592" in dual_pipeline_doc
         and "DS4_ENABLE_FLASHINFER_AUTOTUNE=0" in dual_pipeline_doc,
     ),
     (
