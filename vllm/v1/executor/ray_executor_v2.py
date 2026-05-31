@@ -174,6 +174,7 @@ class RayWorkerProc(WorkerProc):
         self.worker_response_mq = MessageQueue(
             n_reader=1,
             n_local_reader=n_local,
+            max_chunks=envs.VLLM_MQ_MAX_CHUNKS,
             connect_ip=ray.util.get_node_ip_address(),
         )
         self.peer_response_handles: list[dict] = []
@@ -305,6 +306,7 @@ class RayExecutorV2(MultiprocExecutor):
             self.world_size,
             n_local,
             max_chunk_bytes=max_chunk_bytes,
+            max_chunks=envs.VLLM_MQ_MAX_CHUNKS,
             connect_ip=ray.util.get_node_ip_address(),
         )
         scheduler_output_handle = self.rpc_broadcast_mq.export_handle()

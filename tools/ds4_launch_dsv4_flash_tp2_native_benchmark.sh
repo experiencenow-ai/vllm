@@ -87,6 +87,7 @@ export NCCL_IGNORE_CPU_AFFINITY="${NCCL_IGNORE_CPU_AFFINITY:-1}"
 export NCCL_DEBUG="${NCCL_DEBUG:-INFO}"
 export NCCL_DEBUG_SUBSYS="${NCCL_DEBUG_SUBSYS:-INIT,NET}"
 export VLLM_ALLOW_LONG_MAX_MODEL_LEN="${VLLM_ALLOW_LONG_MAX_MODEL_LEN:-1}"
+export VLLM_MQ_MAX_CHUNKS="${VLLM_MQ_MAX_CHUNKS:-64}"
 export DS4_NATIVE_PREFLIGHT_ACTIVE="${DS4_NATIVE_PREFLIGHT_ACTIVE:-1}"
 ds4_prepare_triton_jit_environment "dsv4-flash-tp2-native"
 ds4_prepare_flashinfer_jit_environment

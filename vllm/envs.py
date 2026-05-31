@@ -19,6 +19,7 @@ if TYPE_CHECKING:
     VLLM_USE_MODELSCOPE: bool = False
     VLLM_USE_FASTOKENS: bool = False
     VLLM_RINGBUFFER_WARNING_INTERVAL: int = 60
+    VLLM_MQ_MAX_CHUNKS: int = 10
     VLLM_NCCL_SO_PATH: str | None = None
     LD_LIBRARY_PATH: str | None = None
     VLLM_ROCM_SLEEP_MEM_CHUNK_SIZE: int = 256
@@ -234,6 +235,7 @@ if TYPE_CHECKING:
     VLLM_MAX_TOKENS_PER_EXPERT_FP4_MOE: int = 163840
     VLLM_TOOL_PARSE_REGEX_TIMEOUT_SECONDS: int = 1
     VLLM_MQ_MAX_CHUNK_BYTES_MB: int = 16
+    VLLM_MQ_MAX_CHUNKS: int = 10
     VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS: int = 300
     VLLM_KV_CACHE_LAYOUT: Literal["NHD", "HND"] | None = None
     VLLM_SSM_CONV_STATE_LAYOUT: Literal["SD", "DS"] | None = None
@@ -1791,6 +1793,11 @@ environment_variables: dict[str, Callable[[], Any]] = {
     "VLLM_MQ_MAX_CHUNK_BYTES_MB": lambda: int(
         os.getenv("VLLM_MQ_MAX_CHUNK_BYTES_MB", "16")
     ),
+    # Number of entries in the multiprocessing message queue ring buffers.
+    # PP deployments need this to be at least the number of concurrently
+    # scheduled pipeline batches; otherwise workers can block while returning
+    # outputs before the engine drains older futures.
+    "VLLM_MQ_MAX_CHUNKS": lambda: int(os.getenv("VLLM_MQ_MAX_CHUNKS", "10")),
     # Timeout in seconds for execute_model RPC calls in multiprocessing
     # executor (only applies when TP > 1).
     "VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS": lambda: int(

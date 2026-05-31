@@ -151,6 +151,7 @@ class MultiprocExecutor(Executor):
                 self.world_size,
                 self.local_world_size,
                 max_chunk_bytes=max_chunk_bytes,
+                max_chunks=envs.VLLM_MQ_MAX_CHUNKS,
                 connect_ip=mq_connect_ip,
             )
             scheduler_output_handle = self.rpc_broadcast_mq.export_handle()
@@ -553,7 +554,9 @@ class WorkerProc:
             )
 
             # Initializes a message queue for sending the model output
-            self.worker_response_mq = MessageQueue(1, 1)
+            self.worker_response_mq = MessageQueue(
+                1, 1, max_chunks=envs.VLLM_MQ_MAX_CHUNKS
+            )
             self.peer_response_handles = []
         else:
             # Initialize remote MessageQueue for receiving SchedulerOutput across nodes
