@@ -682,8 +682,10 @@ class GroupCoordinator:
             "as the current rank."
         )
 
-        # Serialize object to tensor and get the size as well
-        object_tensor = torch.frombuffer(pickle.dumps(obj), dtype=torch.uint8)
+        # Serialize object to a writable tensor and get the size as well.
+        # Gloo may send directly from this CPU buffer; tensors backed by
+        # immutable bytes can trip writev with EFAULT on GB10/aarch64.
+        object_tensor = torch.frombuffer(pickle.dumps(obj), dtype=torch.uint8).clone()
 
         size_tensor = torch.tensor(
             [object_tensor.numel()], dtype=torch.long, device="cpu"

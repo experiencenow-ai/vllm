@@ -23,7 +23,7 @@ DEFAULT_LMCACHE_ROOT="$HOME/ds4_lmcache/qwen27_bf16_pp${NNODES}/${DS4_NODE_ID}"
 
 if [[ -z "${QWEN27_PP_LAYER_PARTITION:-}" ]]; then
   if [[ "$NNODES" == "8" ]]; then
-    QWEN27_PP_LAYER_PARTITION="9,9,9,8,8,8,8,5"
+    QWEN27_PP_LAYER_PARTITION="9,9,9,8,9,7,8,5"
   else
     QWEN27_PP_LAYER_PARTITION="$($RUNTIME_PYTHON - "$NNODES" <<'PY'
 import sys

@@ -60,7 +60,7 @@ The launcher sets:
 --language-model-only
 --no-disable-hybrid-kv-cache-manager
 --mamba-cache-mode align
-VLLM_PP_LAYER_PARTITION=9,9,9,8,8,8,8,5
+VLLM_PP_LAYER_PARTITION=9,9,9,8,9,7,8,5
 LMCache chunk_size=784
 LMCache local_disk=file://$LMCACHE_ROOT
 LMCacheConnectorV1 native adapter with lmcache_kv_cache_group_id=auto
@@ -85,7 +85,7 @@ rank layers  count
 Override only if benchmark traces show a different slowest stage:
 
 ```bash
-export QWEN27_PP_LAYER_PARTITION=9,9,9,8,8,8,8,5
+export QWEN27_PP_LAYER_PARTITION=9,9,9,8,9,7,8,5
 ```
 
 The default queue-facing caps are intentionally conservative for the first
@@ -211,7 +211,7 @@ curl -fsS http://127.0.0.1:8101/v1/models
 Expected Qwen log lines:
 
 ```text
-VLLM_PP_LAYER_PARTITION=9,9,9,8,8,8,8,5
+VLLM_PP_LAYER_PARTITION=9,9,9,8,9,7,8,5
 LMCache HMA slot mapping will use KV cache group <FullAttentionSpec group>
 No LMCacheConnectorV1 does not support HMA error
 No failed to convert the KV cache specs to one unified type error
