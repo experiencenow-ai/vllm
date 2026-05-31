@@ -20,14 +20,15 @@ checks = [
         and "block_table to be" in cache_utils,
     ),
     (
-        "cutedsl_high_row_gate",
+        "cutedsl_failclosed_gate",
         "def _should_use_cutedsl_dequantize_and_gather_k_cache" in cache_utils
         and "VLLM_DS4_DEQUANT_GATHER_K_CUTEDSL_MAX_ROWS" in cache_utils
-        and "using bounded Triton path" in cache_utils,
+        and "CuteDSL is not importable" in cache_utils
+        and "refusing Triton fallback" in cache_utils,
     ),
     (
         "cutedsl_gate_precedes_import",
-        "has_cutedsl() and _should_use_cutedsl_dequantize_and_gather_k_cache(out)"
+        "if _should_use_cutedsl_dequantize_and_gather_k_cache(out):"
         in cache_utils,
     ),
     (
@@ -54,7 +55,9 @@ checks = [
         "envs_register_dequant_gate",
         "VLLM_DS4_DEQUANT_GATHER_K_CUTEDSL" in envs
         and "VLLM_DS4_DEQUANT_GATHER_K_CUTEDSL_MAX_ROWS" in envs
-        and 'os.environ.get("VLLM_DS4_DEQUANT_GATHER_K_CUTEDSL", "0")' in envs,
+        and 'os.environ.get("VLLM_DS4_DEQUANT_GATHER_K_CUTEDSL", "1")' in envs
+        and 'os.environ.get("VLLM_DS4_DEQUANT_GATHER_K_CUTEDSL_MAX_ROWS", "-1")'
+        in envs,
     ),
     (
         "envs_register_sm12x_mqa_vars",
@@ -67,8 +70,8 @@ for script in (PP8, TP2):
     script_text = script.read_text()
     checks.append((
         f"{script.name}_exports_dequant_gate",
-        'VLLM_DS4_DEQUANT_GATHER_K_CUTEDSL:-0' in script_text
-        and "VLLM_DS4_DEQUANT_GATHER_K_CUTEDSL_MAX_ROWS" in script_text,
+        'VLLM_DS4_DEQUANT_GATHER_K_CUTEDSL:-1' in script_text
+        and 'VLLM_DS4_DEQUANT_GATHER_K_CUTEDSL_MAX_ROWS:--1' in script_text,
     ))
 
 failed = False

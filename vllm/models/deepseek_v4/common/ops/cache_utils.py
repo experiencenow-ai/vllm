@@ -417,17 +417,26 @@ def _should_use_cutedsl_dequantize_and_gather_k_cache(out: torch.Tensor) -> bool
     if not envs.VLLM_DS4_DEQUANT_GATHER_K_CUTEDSL:
         logger.warning_once(
             "DS4 K-cache dequant/gather CuteDSL path disabled by "
-            "VLLM_DS4_DEQUANT_GATHER_K_CUTEDSL=0; using bounded Triton path")
+            "VLLM_DS4_DEQUANT_GATHER_K_CUTEDSL=0; using bounded Triton "
+            "debug path")
         return False
+    if not has_cutedsl():
+        raise RuntimeError(
+            "DS4 K-cache dequant/gather requires the native CuteDSL path. "
+            "CuteDSL is not importable in this runtime, and Triton fallback "
+            "is intentionally forbidden for DSV4 production. Install the "
+            "known-good SM12x CuteDSL/Quack/CUTLASS stack or explicitly set "
+            "VLLM_DS4_DEQUANT_GATHER_K_CUTEDSL=0 for a debug-only Triton run."
+        )
     max_rows = envs.VLLM_DS4_DEQUANT_GATHER_K_CUTEDSL_MAX_ROWS
     num_rows = int(out.shape[0])
     if max_rows >= 0 and num_rows > max_rows:
-        logger.warning_once(
-            "DS4 K-cache dequant/gather CuteDSL path disabled for "
+        raise RuntimeError(
+            "DS4 K-cache dequant/gather CuteDSL row cap exceeded: "
             "num_rows=%s > VLLM_DS4_DEQUANT_GATHER_K_CUTEDSL_MAX_ROWS=%s; "
-            "using bounded Triton path",
-            num_rows, max_rows)
-        return False
+            "refusing Triton fallback. Increase the cap or set "
+            "VLLM_DS4_DEQUANT_GATHER_K_CUTEDSL=0 for a debug-only Triton run."
+            % (num_rows, max_rows))
     return True
 
 
@@ -447,7 +456,7 @@ def dequantize_and_gather_k_cache(
 ) -> None:
     _validate_dequantize_and_gather_k_cache_inputs(
         out, seq_lens, gather_lens, block_table)
-    if has_cutedsl() and _should_use_cutedsl_dequantize_and_gather_k_cache(out):
+    if _should_use_cutedsl_dequantize_and_gather_k_cache(out):
         # lazily import, otherwise some tests fail due to CUDA driver init failure.
         from vllm.models.deepseek_v4.nvidia.ops.dequant_gather_k_cutedsl import (
             dequantize_and_gather_k_cache_cutedsl,
