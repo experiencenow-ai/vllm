@@ -6,12 +6,13 @@ import io
 import time
 from collections.abc import AsyncGenerator, AsyncIterator
 from collections.abc import Sequence as GenericSequence
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 import pybase64 as base64
 from fastapi import Request
 
+from vllm import envs
 from vllm.engine.protocol import EngineClient
 from vllm.entrypoints.logger import RequestLogger
 from vllm.entrypoints.openai.completion.protocol import (
@@ -39,7 +40,7 @@ from vllm.exceptions import VLLMValidationError
 from vllm.inputs import EngineInput
 from vllm.logger import init_logger
 from vllm.logprobs import Logprob
-from vllm.outputs import RequestOutput
+from vllm.outputs import STREAM_FINISHED, RequestOutput
 from vllm.sampling_params import BeamSearchParams, SamplingParams
 from vllm.tokenizers import TokenizerLike
 from vllm.utils.async_utils import merge_async_iterators
@@ -49,6 +50,14 @@ if TYPE_CHECKING:
     from vllm.entrypoints.serve.render.serving import OpenAIServingRender
 
 logger = init_logger(__name__)
+
+
+DS4CohortItem = tuple[
+    str,
+    EngineInput,
+    SamplingParams,
+    dict[str, str] | None,
+]
 
 
 class OpenAIServingCompletion(OpenAIServing):
@@ -156,6 +165,13 @@ class OpenAIServingCompletion(OpenAIServing):
         # Schedule the request and get the result generator.
         max_model_len = self.model_config.max_model_len
         generators: list[AsyncGenerator[RequestOutput, None]] = []
+        ds4_cohort_items: list[DS4CohortItem] = []
+        use_ds4_cohort_admission = (
+            envs.VLLM_DS4_COHORT_ADMISSION
+            and not request.stream
+            and not request.use_beam_search
+            and len(engine_inputs) >= envs.VLLM_DS4_COHORT_ADMISSION_MIN_PROMPTS
+        )
         for i, engine_input in enumerate(engine_inputs):
             max_tokens = get_max_tokens(
                 max_model_len,
@@ -200,6 +216,10 @@ class OpenAIServingCompletion(OpenAIServing):
                     lora_request=lora_request,
                     trace_headers=trace_headers,
                 )
+            elif use_ds4_cohort_admission:
+                ds4_cohort_items.append(
+                    (request_id_item, engine_input, sampling_params, trace_headers)
+                )
             else:
                 generator = self.engine_client.generate(
                     engine_input,
@@ -211,7 +231,25 @@ class OpenAIServingCompletion(OpenAIServing):
                     data_parallel_rank=data_parallel_rank,
                 )
 
-            generators.append(generator)
+            if not use_ds4_cohort_admission or isinstance(
+                sampling_params, BeamSearchParams
+            ):
+                generators.append(generator)
+
+        if use_ds4_cohort_admission:
+            try:
+                generators = await self._ds4_admit_completion_cohort(
+                    ds4_cohort_items,
+                    lora_request=lora_request,
+                    priority=request.priority,
+                    data_parallel_rank=data_parallel_rank,
+                )
+            except Exception as e:
+                logger.exception("DS4 completion cohort admission failed.")
+                return self.create_error_response(
+                    "DS4 cohort admission failed before generation: "
+                    f"{e.__class__.__name__}: {e}"
+                )
 
         result_generator = merge_async_iterators(*generators)
 
@@ -275,6 +313,88 @@ class OpenAIServingCompletion(OpenAIServing):
             return fake_stream_generator()
 
         return response
+
+    async def _ds4_admit_completion_cohort(
+        self,
+        items: list[DS4CohortItem],
+        *,
+        lora_request: Any,
+        priority: int,
+        data_parallel_rank: int | None,
+    ) -> list[AsyncGenerator[RequestOutput, None]]:
+        add_request = getattr(self.engine_client, "add_request", None)
+        if not callable(add_request):
+            raise RuntimeError(
+                "engine client does not expose add_request; refusing to split "
+                "a DS4 file-driven cohort into independent generate streams"
+            )
+
+        collectors: list[Any] = []
+        paused = False
+        try:
+            await self.engine_client.pause_generation(mode="keep", clear_cache=False)
+            paused = True
+            for request_id_item, engine_input, sampling_params, trace_headers in items:
+                collector = await add_request(
+                    request_id_item,
+                    engine_input,
+                    sampling_params,
+                    lora_request=lora_request,
+                    trace_headers=trace_headers,
+                    priority=priority,
+                    data_parallel_rank=data_parallel_rank,
+                )
+                collectors.append(collector)
+        except Exception:
+            if collectors:
+                await self._ds4_abort_collectors(collectors)
+            raise
+        finally:
+            if paused:
+                await self.engine_client.resume_generation()
+
+        logger.info(
+            "DS4 admitted completion cohort: prompts=%d priority=%s",
+            len(collectors),
+            priority,
+        )
+        return [
+            self._ds4_completion_collector_generator(collector)
+            for collector in collectors
+        ]
+
+    async def _ds4_abort_collectors(self, collectors: list[Any]) -> None:
+        request_ids = [
+            getattr(collector, "request_id", None)
+            for collector in collectors
+            if getattr(collector, "request_id", None)
+        ]
+        if not request_ids:
+            return
+        try:
+            await self.engine_client.abort(request_ids, internal=True)  # type: ignore[call-arg]
+        except TypeError:
+            await self.engine_client.abort(request_ids)
+
+    async def _ds4_completion_collector_generator(
+        self,
+        collector: Any,
+    ) -> AsyncGenerator[RequestOutput, None]:
+        try:
+            finished = False
+            while not finished:
+                out = collector.get_nowait() or await collector.get()
+                assert isinstance(out, RequestOutput)
+                finished = out.finished
+                if out is not STREAM_FINISHED:
+                    yield out
+        except (asyncio.CancelledError, GeneratorExit):
+            await self._ds4_abort_collectors([collector])
+            raise
+        finally:
+            close = getattr(collector, "close", None)
+            if callable(close):
+                close()
 
     async def completion_stream_generator(
         self,
