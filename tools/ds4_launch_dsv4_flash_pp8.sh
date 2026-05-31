@@ -53,8 +53,18 @@ case "$DS4_DSV4_PIPELINE_RAM_PROFILE" in
     : "${DSV4_CUDAGRAPH_CAPTURE_SIZES:=1,2,4,8}"
     : "${DSV4_MAX_CUDAGRAPH_CAPTURE_SIZE:=8}"
     ;;
+  throughput|THROUGHPUT|api-throughput|API-THROUGHPUT)
+    : "${DSV4_MAX_MODEL_LEN:=65536}"
+    : "${DSV4_MAX_NUM_SEQS:=32}"
+    : "${DSV4_MAX_NUM_BATCHED_TOKENS:=16384}"
+    : "${DSV4_KV_CACHE_MEMORY_BYTES:=25769803776}"
+    : "${DSV4_KV_OFFLOADING_SIZE:=8}"
+    : "${DSV4_GPU_MEMORY_UTILIZATION:=0.55}"
+    : "${DSV4_CUDAGRAPH_CAPTURE_SIZES:=1,2,4,8,16,32}"
+    : "${DSV4_MAX_CUDAGRAPH_CAPTURE_SIZE:=32}"
+    ;;
   *)
-    echo "Unsupported DS4_DSV4_PIPELINE_RAM_PROFILE=$DS4_DSV4_PIPELINE_RAM_PROFILE; expected resident3, tight, balanced, or perf" >&2
+    echo "Unsupported DS4_DSV4_PIPELINE_RAM_PROFILE=$DS4_DSV4_PIPELINE_RAM_PROFILE; expected resident3, tight, balanced, perf, or throughput" >&2
     exit 1
     ;;
 esac
