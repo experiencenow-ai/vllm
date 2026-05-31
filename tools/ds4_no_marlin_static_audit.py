@@ -29,6 +29,13 @@ sparse_indexer = (
     root / "vllm/model_executor/layers/sparse_attn_indexer.py"
 ).read_text()
 mla_indexer = (root / "vllm/v1/attention/backends/mla/indexer.py").read_text()
+dsv4_flashmla = (root / "vllm/models/deepseek_v4/nvidia/flashmla.py").read_text()
+sparse_mla_env = (
+    root / "vllm/v1/attention/backends/mla/sparse_mla_env.py"
+).read_text()
+sparse_mla_kernels = (
+    root / "vllm/v1/attention/backends/mla/sparse_mla_kernels.py"
+).read_text()
 dsv4_tp2 = (root / "tools/ds4_launch_dsv4_flash_tp2_native_benchmark.sh").read_text()
 dsv4_tp2_autotune = (
     root / "tools/ds4_launch_dsv4_flash_tp2_flashinfer_autotune.sh"
@@ -169,6 +176,23 @@ checks = [
         "def sparse_indexer_max_logits_bytes(" in mla_indexer
         and "def _uses_deep_gemm_scheduler_metadata(" in mla_indexer
         and "and not current_platform.is_device_capability_family(120)" in mla_indexer,
+    ),
+    (
+        "DSV4 SM12x sparse MLA routes before FlashMLA C++ sparse decode",
+        "is_triton_sparse_mla_enabled(q.device)" in dsv4_flashmla
+        and "_forward_sparse_mla_swa_decode_triton(" in dsv4_flashmla
+        and "_forward_sparse_mla_compressed_decode_triton(" in dsv4_flashmla
+        and "flash_mla_with_kvcache(" in dsv4_flashmla
+        and dsv4_flashmla.index("is_triton_sparse_mla_enabled(q.device)")
+        < dsv4_flashmla.index("flash_mla_with_kvcache("),
+    ),
+    (
+        "SM12x sparse MLA Triton helpers are present",
+        "def is_triton_sparse_mla_enabled(" in sparse_mla_env
+        and "current_platform.is_device_capability_family(120)" in sparse_mla_env
+        and "def fp8ds_paged_sparse_mla_attention_with_sink_multihead(" in sparse_mla_kernels
+        and "def fp8ds_global_paged_sparse_mla_attention_with_sink_multihead(" in sparse_mla_kernels
+        and "def splitkv_sparse_mla_attention_with_sink(" in sparse_mla_kernels,
     ),
 
     (

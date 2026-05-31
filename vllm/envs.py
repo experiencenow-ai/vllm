@@ -59,6 +59,12 @@ if TYPE_CHECKING:
     VLLM_XLA_CACHE_PATH: str = os.path.join(VLLM_CACHE_ROOT, "xla_cache")
     VLLM_XLA_CHECK_RECOMPILATION: bool = False
     VLLM_SPARSE_INDEXER_MAX_LOGITS_MB: int = 512
+    VLLM_TRITON_MLA_SPARSE: bool | None = None
+    VLLM_TRITON_MLA_SPARSE_TOPK_CHUNK_SIZE: int = 512
+    VLLM_TRITON_MLA_SPARSE_QUERY_CHUNK_SIZE: int = 256
+    VLLM_TRITON_MLA_SPARSE_HEAD_BLOCK_SIZE: int | None = None
+    VLLM_TRITON_MLA_SPARSE_MATMUL_DECODE: bool | None = None
+    VLLM_TRITON_MLA_SPARSE_SPLITKV_DECODE: bool = False
     VLLM_USE_RAY_COMPILED_DAG_CHANNEL_TYPE: Literal["auto", "nccl", "shm"] = "auto"
     VLLM_USE_RAY_COMPILED_DAG_OVERLAP_COMM: bool = False
     VLLM_USE_RAY_WRAPPED_PP_COMM: bool = True
@@ -1007,6 +1013,30 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # Default: 512 MB
     "VLLM_SPARSE_INDEXER_MAX_LOGITS_MB": lambda: int(
         os.getenv("VLLM_SPARSE_INDEXER_MAX_LOGITS_MB", "512")
+    ),
+    # ``VLLM_TRITON_MLA_SPARSE`` unset means auto-select where FlashMLA sparse
+    # decode is not available. DS4 launchers set it explicitly on GB10/SM12x.
+    "VLLM_TRITON_MLA_SPARSE": lambda: (
+        None
+        if os.getenv("VLLM_TRITON_MLA_SPARSE") is None
+        else bool(int(os.getenv("VLLM_TRITON_MLA_SPARSE", "0")))
+    ),
+    "VLLM_TRITON_MLA_SPARSE_TOPK_CHUNK_SIZE": lambda: int(
+        os.getenv("VLLM_TRITON_MLA_SPARSE_TOPK_CHUNK_SIZE", "512")
+    ),
+    "VLLM_TRITON_MLA_SPARSE_QUERY_CHUNK_SIZE": lambda: int(
+        os.getenv("VLLM_TRITON_MLA_SPARSE_QUERY_CHUNK_SIZE", "256")
+    ),
+    "VLLM_TRITON_MLA_SPARSE_HEAD_BLOCK_SIZE": lambda: maybe_convert_int(
+        os.getenv("VLLM_TRITON_MLA_SPARSE_HEAD_BLOCK_SIZE")
+    ),
+    "VLLM_TRITON_MLA_SPARSE_MATMUL_DECODE": lambda: (
+        None
+        if os.getenv("VLLM_TRITON_MLA_SPARSE_MATMUL_DECODE") is None
+        else bool(int(os.getenv("VLLM_TRITON_MLA_SPARSE_MATMUL_DECODE", "0")))
+    ),
+    "VLLM_TRITON_MLA_SPARSE_SPLITKV_DECODE": lambda: bool(
+        int(os.getenv("VLLM_TRITON_MLA_SPARSE_SPLITKV_DECODE", "0"))
     ),
     # If set, the OpenAI API server will stay alive even after the underlying
     # AsyncLLMEngine errors and stops serving requests
