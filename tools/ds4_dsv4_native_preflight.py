@@ -296,6 +296,51 @@ def active_probe_mhc() -> bool:
         return False
 
 
+def check_cutedsl_gather_path() -> bool:
+    try:
+        from vllm import envs
+        from vllm.utils.import_utils import has_cutedsl
+    except BaseException as exc:
+        emit("cutedsl_gather_env_import", f"no: {exc}")
+        return False
+
+    backend = envs.VLLM_DS4_DSV4_K_GATHER_BACKEND
+    emit("dsv4_k_gather_backend", backend)
+    emit("cutedsl_available", "yes" if has_cutedsl() else "no")
+
+    if backend in ("", "auto") and not envs.VLLM_DS4_STRICT_NATIVE_FP4:
+        emit("cutedsl_gather_required", "no:auto_non_strict")
+        return True
+
+    if backend in ("", "auto", "cutedsl") or envs.VLLM_DS4_STRICT_NATIVE_FP4:
+        if not has_cutedsl():
+            emit("cutedsl_gather", "no: cutlass/CuteDSL package unavailable")
+            return False
+        try:
+            from vllm.models.deepseek_v4.nvidia.ops.dequant_gather_k_cutedsl import (
+                DequantGatherKCacheKernel,
+                dequantize_and_gather_k_cache_cutedsl,
+            )
+        except BaseException as exc:
+            emit("cutedsl_gather_import", f"no: {exc}")
+            return False
+        emit("cutedsl_gather_import", "yes")
+        emit("cutedsl_gather_kernel", DequantGatherKCacheKernel.__name__)
+        emit(
+            "cutedsl_gather_callable",
+            "yes" if callable(dequantize_and_gather_k_cache_cutedsl) else "no",
+        )
+        return callable(dequantize_and_gather_k_cache_cutedsl)
+
+    if backend == "triton-debug":
+        ok = envs.VLLM_DS4_DSV4_ALLOW_TRITON_GATHER_DEBUG
+        emit("cutedsl_gather_required", f"no:triton-debug allow={ok}")
+        return ok
+
+    emit("cutedsl_gather", f"no: unsupported backend {backend!r}")
+    return False
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -314,6 +359,7 @@ def main() -> int:
     ok = check_torch_cuda() and ok
     ok = check_vllm_platform() and ok
     ok = check_deep_gemm_package() and ok
+    ok = check_cutedsl_gather_path() and ok
     if not args.skip_active_layout_probe:
         ok = active_probe_sf_layout() and ok
     if args.active_kernel_probe:

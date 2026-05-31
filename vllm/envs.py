@@ -116,6 +116,8 @@ if TYPE_CHECKING:
     VLLM_SKIP_P2P_CHECK: bool = False
     VLLM_DISABLED_KERNELS: list[str] = []
     VLLM_DS4_STRICT_NATIVE_FP4: bool = False
+    VLLM_DS4_DSV4_K_GATHER_BACKEND: str = "auto"
+    VLLM_DS4_DSV4_ALLOW_TRITON_GATHER_DEBUG: bool = False
     VLLM_DS4_ALLOW_DEEPGEMM_MXFP4_SM12X: bool = False
     VLLM_DS4_ALLOW_FLASHINFER_TRTLLM_MXFP4_SM12X: bool = False
     VLLM_DS4_ALLOW_DEEPGEMM_FP8_LINEAR_SM12X: bool = False
@@ -137,7 +139,6 @@ if TYPE_CHECKING:
     VLLM_DS4_SM12X_MQA_TOPK_CHUNK_SIZE: int = 8192
     VLLM_DS4_SM12X_MQA_TOPK_MAX_LOGITS_BYTES: int = 536870912
     VLLM_DS4_ALLOW_SM12X_MQA_TOPK_TORCH_FALLBACK: bool = False
-    VLLM_DS4_DEQUANT_GATHER_K_CUTEDSL: bool = True
     VLLM_DS4_DEQUANT_GATHER_K_CUTEDSL_MAX_ROWS: int = -1
     VLLM_DISABLE_PYNCCL: bool = False
     VLLM_USE_OINK_OPS: bool = False
@@ -1134,6 +1135,18 @@ environment_variables: dict[str, Callable[[], Any]] = {
         os.environ.get("VLLM_DS4_STRICT_NATIVE_FP4", "0").strip().lower()
         in ("1", "true")
     ),
+    # DS4 / DSV4 sparse prefill K-cache gather/dequant policy.
+    # In strict native mode, auto is resolved to CuteDSL so a missing or
+    # broken fast path fails closed instead of falling through to Triton.
+    "VLLM_DS4_DSV4_K_GATHER_BACKEND": lambda: os.environ.get(
+        "VLLM_DS4_DSV4_K_GATHER_BACKEND", "auto"
+    ).strip().lower(),
+    "VLLM_DS4_DSV4_ALLOW_TRITON_GATHER_DEBUG": lambda: (
+        os.environ.get("VLLM_DS4_DSV4_ALLOW_TRITON_GATHER_DEBUG", "0")
+        .strip()
+        .lower()
+        in ("1", "true", "yes", "on")
+    ),
     # DS4 / GB10: DeepGEMM_MXFP4 still has an SM12x FP8xFP4 GEMM
     # coverage gap on the known jasl/DeepGEMM stack. Keep it out of
     # Blackwell-family-120 production selection unless explicitly opted in.
@@ -1227,10 +1240,10 @@ environment_variables: dict[str, Callable[[], Any]] = {
     "VLLM_DS4_SM12X_PAGED_MQA_TOPK_CHUNK_SIZE": lambda: int(
         os.environ.get("VLLM_DS4_SM12X_PAGED_MQA_TOPK_CHUNK_SIZE", "8192")
     ),
-    # DS4 / GB10: direct SM12x dense-MQA top-k Triton has shown an illegal
-    # address during DSV4 PP8 API traffic. Keep it opt-in until fixed/measured.
+    # DS4 / GB10: direct SM12x dense-MQA top-k Triton is the production path.
+    # A Torch fallback is diagnostic-only and must be explicitly opted into.
     "VLLM_DS4_SM12X_MQA_TOPK_TRITON": lambda: (
-        os.environ.get("VLLM_DS4_SM12X_MQA_TOPK_TRITON", "0").strip().lower()
+        os.environ.get("VLLM_DS4_SM12X_MQA_TOPK_TRITON", "1").strip().lower()
         in ("1", "true", "yes", "on")
     ),
     "VLLM_DS4_SM12X_MQA_TOPK_CHUNK_SIZE": lambda: int(
@@ -1245,14 +1258,8 @@ environment_variables: dict[str, Callable[[], Any]] = {
         .lower()
         in ("1", "true", "yes", "on")
     ),
-    # DS4 / GB10: production DSV4 uses the native CuteDSL K-cache
-    # dequant/gather prefill path. If it is missing or row-capped, fail closed
-    # instead of silently falling back to the slower/crash-prone Triton debug
-    # path.
-    "VLLM_DS4_DEQUANT_GATHER_K_CUTEDSL": lambda: (
-        os.environ.get("VLLM_DS4_DEQUANT_GATHER_K_CUTEDSL", "1").strip().lower()
-        in ("1", "true", "yes", "on")
-    ),
+    # Optional row cap for targeted CuteDSL diagnostics. The default is uncapped
+    # and any cap failure is fail-closed, not a Triton fallback.
     "VLLM_DS4_DEQUANT_GATHER_K_CUTEDSL_MAX_ROWS": lambda: int(
         os.environ.get("VLLM_DS4_DEQUANT_GATHER_K_CUTEDSL_MAX_ROWS", "-1")
     ),
