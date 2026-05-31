@@ -72,6 +72,9 @@ export NCCL_DEBUG_SUBSYS="${NCCL_DEBUG_SUBSYS:-INIT,NET}"
 export DS4_NATIVE_PREFLIGHT_ACTIVE="${DS4_NATIVE_PREFLIGHT_ACTIVE:-1}"
 ds4_prepare_triton_jit_environment "dsv4-flash-pp${NNODES}"
 ds4_prepare_flashinfer_jit_environment
+if [[ "${DS4_PATCH_FLASHINFER_SM12X_FUSED_MOE_JIT:-1}" =~ ^(1|true|TRUE|yes|YES|on|ON)$ ]]; then
+  "$RUNTIME_PYTHON" "$SCRIPT_DIR/ds4_patch_flashinfer_sm12x_fused_moe_jit.py"
+fi
 ds4_require_200g_fabric
 ds4_run_nccl_preflight "$NNODES"
 ds4_run_dsv4_native_preflight
