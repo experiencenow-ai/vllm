@@ -134,8 +134,8 @@ if TYPE_CHECKING:
     VLLM_DS4_SM12X_MQA_ROWWISE_MIN_TOKENS: int = 0
     VLLM_DS4_SM12X_PAGED_MQA_TOPK_CHUNK_SIZE: int = 8192
     VLLM_DS4_SM12X_MQA_TOPK_TRITON: bool = False
-    VLLM_DS4_DEQUANT_GATHER_K_CUTEDSL: bool = False
-    VLLM_DS4_DEQUANT_GATHER_K_CUTEDSL_MAX_ROWS: int = 32
+    VLLM_DS4_DEQUANT_GATHER_K_CUTEDSL: bool = True
+    VLLM_DS4_DEQUANT_GATHER_K_CUTEDSL_MAX_ROWS: int = -1
     VLLM_DISABLE_PYNCCL: bool = False
     VLLM_USE_OINK_OPS: bool = False
     VLLM_ROCM_USE_AITER: bool = False
@@ -1230,15 +1230,16 @@ environment_variables: dict[str, Callable[[], Any]] = {
         os.environ.get("VLLM_DS4_SM12X_MQA_TOPK_TRITON", "0").strip().lower()
         in ("1", "true", "yes", "on")
     ),
-    # DS4 / GB10: the CuteDSL K-cache dequant/gather prefill kernel has shown
-    # CUDA illegal-address failures in DSV4 PP serving. Keep it out of the
-    # production path until the CuteDSL kernel is fixed and measured.
+    # DS4 / GB10: production DSV4 uses the native CuteDSL K-cache
+    # dequant/gather prefill path. If it is missing or row-capped, fail closed
+    # instead of silently falling back to the slower/crash-prone Triton debug
+    # path.
     "VLLM_DS4_DEQUANT_GATHER_K_CUTEDSL": lambda: (
-        os.environ.get("VLLM_DS4_DEQUANT_GATHER_K_CUTEDSL", "0").strip().lower()
+        os.environ.get("VLLM_DS4_DEQUANT_GATHER_K_CUTEDSL", "1").strip().lower()
         in ("1", "true", "yes", "on")
     ),
     "VLLM_DS4_DEQUANT_GATHER_K_CUTEDSL_MAX_ROWS": lambda: int(
-        os.environ.get("VLLM_DS4_DEQUANT_GATHER_K_CUTEDSL_MAX_ROWS", "32")
+        os.environ.get("VLLM_DS4_DEQUANT_GATHER_K_CUTEDSL_MAX_ROWS", "-1")
     ),
     # Disable pynccl (using torch.distributed instead)
     "VLLM_DISABLE_PYNCCL": lambda: (
