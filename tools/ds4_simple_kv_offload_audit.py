@@ -44,6 +44,15 @@ def main() -> None:
         ],
     )
     _require(
+        "worker grows CPU tensors when scheduler metadata exceeds local stage estimate",
+        "vllm/v1/simple_kv_offload/worker.py",
+        [
+            "_ensure_cpu_block_capacity",
+            "_required_cpu_blocks",
+            "growing CPU KV offload block id space",
+        ],
+    )
+    _require(
         "persistent offload cache key includes deployment namespace",
         "vllm/v1/simple_kv_offload/persistent_disk.py",
         ["VLLM_SIMPLE_KV_OFFLOAD_PERSIST_NAMESPACE", "__{namespace}"],

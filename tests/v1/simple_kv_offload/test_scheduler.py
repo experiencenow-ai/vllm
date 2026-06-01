@@ -41,11 +41,15 @@ from vllm.v1.outputs import KVConnectorOutput
 from vllm.v1.request import Request
 from vllm.v1.simple_kv_offload.capacity import derive_logical_cpu_block_count
 from vllm.v1.simple_kv_offload.manager import SimpleCPUOffloadScheduler
-from vllm.v1.simple_kv_offload.metadata import SimpleCPUOffloadWorkerMetadata
+from vllm.v1.simple_kv_offload.metadata import (
+    SimpleCPUOffloadMetadata,
+    SimpleCPUOffloadWorkerMetadata,
+)
 from vllm.v1.simple_kv_offload.persistent_api import (
     PersistentSimpleOffloadAPIClient,
 )
 from vllm.v1.simple_kv_offload.persistent_disk import PersistentSimpleOffloadStore
+from vllm.v1.simple_kv_offload.worker import _required_cpu_blocks
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -323,6 +327,15 @@ def test_logical_cpu_block_count_is_shared_across_uneven_pp_stages() -> None:
 
     fix = make_scheduler(num_cpu_blocks=8, num_gpu_blocks=16, lazy=False)
     assert fix.scheduler.num_cpu_blocks == logical_blocks
+
+
+def test_worker_required_cpu_blocks_uses_max_scheduler_metadata_id() -> None:
+    metadata = SimpleCPUOffloadMetadata(
+        load_cpu_blocks=[0, 3],
+        store_cpu_blocks=[9],
+    )
+    assert _required_cpu_blocks(metadata) == 10
+    assert _required_cpu_blocks(SimpleCPUOffloadMetadata()) == 0
 
 
 def _allocate_gpu_blocks(
