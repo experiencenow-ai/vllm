@@ -119,10 +119,15 @@ if [[ "$DSV4_MTP_REQUESTED" == "1" ]]; then
 fi
 ds4_set_flashinfer_autotune_args DS4_ENABLE_FLASHINFER_AUTOTUNE
 
+LOGGING_ITERATION_ARGS=()
+if [[ "${DSV4_ENABLE_LOGGING_ITERATION_DETAILS:-0}" =~ ^(1|true|TRUE|yes|YES|on|ON)$ ]]; then
+  LOGGING_ITERATION_ARGS=(--enable-logging-iteration-details)
+fi
+
 export PYTHONPATH="$SOURCE_ROOT${PYTHONPATH:+:$PYTHONPATH}"
 export PATH="$(dirname "$RUNTIME_PYTHON"):$PATH"
 
-export VLLM_DS4_PROFILE_DEBUG="${VLLM_DS4_PROFILE_DEBUG:-1}"
+export VLLM_DS4_PROFILE_DEBUG="${VLLM_DS4_PROFILE_DEBUG:-0}"
 export VLLM_DS4_PROFILE_WATCHDOG_SECONDS="${VLLM_DS4_PROFILE_WATCHDOG_SECONDS:-120}"
 export VLLM_DS4_PROFILE_ABORT_SECONDS="${VLLM_DS4_PROFILE_ABORT_SECONDS:-600}"
 export VLLM_DS4_PROFILE_RUN_MAX_TOKENS="${VLLM_DS4_PROFILE_RUN_MAX_TOKENS:-512}"
@@ -260,7 +265,7 @@ COMMON_ARGS=(
   "${ASYNC_SCHEDULING_ARGS[@]}"
   "${KV_OFFLOAD_ARGS[@]}"
   --kv-cache-metrics
-  --enable-logging-iteration-details
+  "${LOGGING_ITERATION_ARGS[@]}"
   "${SPECULATIVE_ARGS[@]}"
   --compilation-config "$DSV4_COMPILATION_CONFIG"
   --tokenizer-mode deepseek_v4

@@ -18,6 +18,7 @@ def main() -> int:
     scheduler = read("vllm/v1/core/sched/scheduler.py")
     dsv4 = read("tools/ds4_launch_dsv4_flash_pp8.sh")
     qwen = read("tools/ds4_launch_qwen27_nvfp4_pp8.sh")
+    relaunch = read("tools/ds4_relaunch_spark_service.py")
 
     failures = 0
     failures += check(
@@ -55,6 +56,22 @@ def main() -> int:
     failures += check(
         "Qwen PP launcher exposes optional new-request wave cap without forcing it",
         'QWEN27_SCHED_MAX_NEW_REQS_PER_STEP:-0' in qwen,
+    )
+    failures += check(
+        "DSV4 throughput launcher keeps profile debug off by default",
+        'VLLM_DS4_PROFILE_DEBUG="${VLLM_DS4_PROFILE_DEBUG:-0}"' in dsv4,
+    )
+    failures += check(
+        "DSV4 iteration-detail logging is opt-in for benchmarks",
+        "DSV4_ENABLE_LOGGING_ITERATION_DETAILS" in dsv4
+        and "--enable-logging-iteration-details" in dsv4
+        and '"${LOGGING_ITERATION_ARGS[@]}"' in dsv4,
+    )
+    failures += check(
+        "Spark relaunch can pass explicit rank env without editing scripts",
+        '"--env"' in relaunch
+        and "KEY=VALUE" in relaunch
+        and '"VLLM_DEBUG_WORKSPACE": os.getenv("VLLM_DEBUG_WORKSPACE", "0")' in relaunch,
     )
     return 1 if failures else 0
 
