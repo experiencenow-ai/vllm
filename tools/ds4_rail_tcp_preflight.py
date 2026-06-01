@@ -256,12 +256,25 @@ def _iperf_server_command(pair_index: int) -> list[str]:
 
 
 def _parse_iperf_csv_bits_per_second(stdout: str) -> float:
-    summary: float | None = None
+    duration_s = float(_env("DS4_RAIL_TCP_PREFLIGHT_DURATION_S", "5"))
+    min_interval_s = float(
+        _env(
+            "DS4_RAIL_TCP_PREFLIGHT_MIN_REPORT_INTERVAL_S",
+            str(max(1.0, duration_s * 0.5)),
+        )
+    )
     for line in reversed([item.strip() for item in stdout.splitlines() if item.strip()]):
         fields = [field.strip() for field in line.split(",")]
         if len(fields) < 9:
             continue
         if fields[5] != "-1":
+            continue
+        try:
+            left, right = fields[6].split("-", 1)
+            interval_s = float(right) - float(left)
+        except ValueError:
+            continue
+        if interval_s < min_interval_s:
             continue
         try:
             summary = float(fields[-1])
@@ -270,7 +283,7 @@ def _parse_iperf_csv_bits_per_second(stdout: str) -> float:
         if summary > 0:
             return summary
     raise RuntimeError(
-        "could not parse iperf CSV summary bandwidth from -1 row: "
+        "could not parse iperf CSV summary bandwidth from a real -1 interval: "
         f"{stdout!r}"
     )
 
