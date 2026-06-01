@@ -34,5 +34,7 @@ check("PP4xTP2 launcher preserves fused execute/sample default", "VLLM_DS4_FUSED
 check("PP4xTP2 launcher serves existing DS4 DSV4 API model by default", 'DSV4_SERVED_MODEL_NAME:-deepseek-v4-flash-pp8' in pp4)
 check("PP4xTP2 launcher does not set PP-only global backend", 'export VLLM_DS4_PP_ONLY_GLOBAL_BACKEND=' not in pp4)
 check("PP4xTP2 launcher fails early if PP-only global backend leaks in", "PP4xTP2xEP refuses VLLM_DS4_PP_ONLY_GLOBAL_BACKEND" in pp4)
+check("PP4xTP2 launcher keeps PP device communicator enabled", "export VLLM_DS4_PP_DISABLE_DEVICE_COMMUNICATOR=0" in pp4)
+check("PP4xTP2 launcher refuses PP device communicator disable override", "PP4xTP2xEP refuses VLLM_DS4_PP_DISABLE_DEVICE_COMMUNICATOR" in pp4)
 check("relaunch supports PP4xTP2xEP service", "dsv4-pp4-tp2-ep" in relaunch)
 check("relaunch validates PP4xTP2 launcher and speed audit", "ds4_launch_dsv4_flash_pp4_tp2_ep.sh" in relaunch and "ds4_speed_path_audit.py" in relaunch)
