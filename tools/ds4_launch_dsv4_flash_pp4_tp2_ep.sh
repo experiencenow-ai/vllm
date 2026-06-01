@@ -216,6 +216,11 @@ if [[ ! "$VLLM_DS4_PP_PYNCCL_TENSOR_DICT" =~ ^(1|true|TRUE|yes|YES|on|ON)$ ]]; t
   echo "DSV4 PP4xTP2xEP requires VLLM_DS4_PP_PYNCCL_TENSOR_DICT=1. Disabling it would benchmark the slow torch/CPU tensor-dict path." >&2
   exit 64
 fi
+export VLLM_DS4_PP_DEVICE_TENSOR_DICT_METADATA="${VLLM_DS4_PP_DEVICE_TENSOR_DICT_METADATA:-1}"
+if [[ ! "$VLLM_DS4_PP_DEVICE_TENSOR_DICT_METADATA" =~ ^(1|true|TRUE|yes|YES|on|ON)$ ]]; then
+  echo "DSV4 PP4xTP2xEP requires VLLM_DS4_PP_DEVICE_TENSOR_DICT_METADATA=1. Pickled CPU/Gloo PP metadata caused stage stalls and is not valid for performance runs." >&2
+  exit 64
+fi
 export VLLM_DS4_PP_TENSOR_DICT_TP_ALL_GATHER="${VLLM_DS4_PP_TENSOR_DICT_TP_ALL_GATHER:-0}"
 if [[ "$VLLM_DS4_PP_TENSOR_DICT_TP_ALL_GATHER" =~ ^(1|true|TRUE|yes|YES|on|ON)$ ]]; then
   echo "DSV4 PP4xTP2xEP refuses VLLM_DS4_PP_TENSOR_DICT_TP_ALL_GATHER=1. The TP all-gather PP-boundary optimization is disabled for this topology; use direct PyNCCL PP tensor transfer." >&2
@@ -304,7 +309,7 @@ else
   unset VLLM_PP_LAYER_PARTITION
 fi
 
-echo "DSV4 PP${PP_SIZE}xTP${TP_SIZE}xEP profile=$DS4_DSV4_PIPELINE_RAM_PROFILE max_model_len=$DSV4_MAX_MODEL_LEN max_num_seqs=$DSV4_MAX_NUM_SEQS max_num_batched_tokens=$DSV4_MAX_NUM_BATCHED_TOKENS sched_max_new_reqs=$VLLM_DS4_SCHED_MAX_NEW_REQS_PER_STEP sched_max_new_prefill_tokens=$VLLM_DS4_SCHED_MAX_NEW_PREFILL_TOKENS_PER_STEP kv_cache_memory_bytes=$DSV4_KV_CACHE_MEMORY_BYTES kv_offloading_size=$DSV4_KV_OFFLOADING_SIZE gpu_memory_utilization=$DSV4_GPU_MEMORY_UTILIZATION workspace_prealloc_bytes=$VLLM_WORKSPACE_PREALLOC_BYTES mq_max_chunks=$VLLM_MQ_MAX_CHUNKS pp_layer_partition=${DSV4_FLASH_PP_LAYER_PARTITION:-auto} global_backend=$VLLM_DS4_DISTRIBUTED_BACKEND nccl_preflight=$DS4_NCCL_PREFLIGHT_MODE tp_groups=$DS4_NCCL_PREFLIGHT_GROUPS p2p_pairs=$DS4_NCCL_PREFLIGHT_P2P_PAIRS p2p_direction=$DS4_NCCL_PREFLIGHT_P2P_DIRECTION route_if=$DS4_200G_IFNAME nccl_transport=$DS4_200G_NCCL_TRANSPORT nccl_if=${DS4_200G_NCCL_IFNAME:-$DS4_200G_IFNAME} nccl_hca=${NCCL_IB_HCA:-<pre-guard>} pp_device_comm_disabled=$VLLM_DS4_PP_DISABLE_DEVICE_COMMUNICATOR pp_pynccl=$VLLM_DS4_PP_PYNCCL_TENSOR_DICT pp_pynccl_stripes=$VLLM_DS4_PP_PYNCCL_TENSOR_DICT_STRIPES pp_tp_all_gather=$VLLM_DS4_PP_TENSOR_DICT_TP_ALL_GATHER pp_cpu_staged=$VLLM_DS4_PP_CPU_STAGED_TENSOR_DICT tp_pg_all_reduce=$VLLM_DS4_TP_PROCESS_GROUP_ALL_REDUCE require_device_tp_all_reduce=$VLLM_DS4_REQUIRE_DEVICE_TP_ALL_REDUCE" >&2
+echo "DSV4 PP${PP_SIZE}xTP${TP_SIZE}xEP profile=$DS4_DSV4_PIPELINE_RAM_PROFILE max_model_len=$DSV4_MAX_MODEL_LEN max_num_seqs=$DSV4_MAX_NUM_SEQS max_num_batched_tokens=$DSV4_MAX_NUM_BATCHED_TOKENS sched_max_new_reqs=$VLLM_DS4_SCHED_MAX_NEW_REQS_PER_STEP sched_max_new_prefill_tokens=$VLLM_DS4_SCHED_MAX_NEW_PREFILL_TOKENS_PER_STEP kv_cache_memory_bytes=$DSV4_KV_CACHE_MEMORY_BYTES kv_offloading_size=$DSV4_KV_OFFLOADING_SIZE gpu_memory_utilization=$DSV4_GPU_MEMORY_UTILIZATION workspace_prealloc_bytes=$VLLM_WORKSPACE_PREALLOC_BYTES mq_max_chunks=$VLLM_MQ_MAX_CHUNKS pp_layer_partition=${DSV4_FLASH_PP_LAYER_PARTITION:-auto} global_backend=$VLLM_DS4_DISTRIBUTED_BACKEND nccl_preflight=$DS4_NCCL_PREFLIGHT_MODE tp_groups=$DS4_NCCL_PREFLIGHT_GROUPS p2p_pairs=$DS4_NCCL_PREFLIGHT_P2P_PAIRS p2p_direction=$DS4_NCCL_PREFLIGHT_P2P_DIRECTION route_if=$DS4_200G_IFNAME nccl_transport=$DS4_200G_NCCL_TRANSPORT nccl_if=${DS4_200G_NCCL_IFNAME:-$DS4_200G_IFNAME} nccl_hca=${NCCL_IB_HCA:-<pre-guard>} pp_device_comm_disabled=$VLLM_DS4_PP_DISABLE_DEVICE_COMMUNICATOR pp_pynccl=$VLLM_DS4_PP_PYNCCL_TENSOR_DICT pp_device_metadata=$VLLM_DS4_PP_DEVICE_TENSOR_DICT_METADATA pp_pynccl_stripes=$VLLM_DS4_PP_PYNCCL_TENSOR_DICT_STRIPES pp_tp_all_gather=$VLLM_DS4_PP_TENSOR_DICT_TP_ALL_GATHER pp_cpu_staged=$VLLM_DS4_PP_CPU_STAGED_TENSOR_DICT tp_pg_all_reduce=$VLLM_DS4_TP_PROCESS_GROUP_ALL_REDUCE require_device_tp_all_reduce=$VLLM_DS4_REQUIRE_DEVICE_TP_ALL_REDUCE" >&2
 
 KV_CACHE_MEMORY_ARGS=()
 case "$DSV4_KV_CACHE_MEMORY_BYTES" in

@@ -143,6 +143,7 @@ if TYPE_CHECKING:
     VLLM_DS4_PP_ONLY_GLOBAL_BACKEND: str = ""
     VLLM_DS4_PP_DISABLE_DEVICE_COMMUNICATOR: bool = False
     VLLM_DS4_PP_PYNCCL_TENSOR_DICT: bool = False
+    VLLM_DS4_PP_DEVICE_TENSOR_DICT_METADATA: bool = False
     VLLM_DS4_PP_PYNCCL_TENSOR_DICT_STRIPES: int = 1
     VLLM_DS4_PP_PYNCCL_TENSOR_DICT_STRIPE_MIN_BYTES: int = 1048576
     VLLM_DS4_PP_TENSOR_DICT_TP_ALL_GATHER: bool = True
@@ -1340,6 +1341,17 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # slower transport path.
     "VLLM_DS4_PP_PYNCCL_TENSOR_DICT": lambda: (
         os.environ.get("VLLM_DS4_PP_PYNCCL_TENSOR_DICT", "0")
+        .strip()
+        .lower()
+        in ("1", "true", "yes", "on")
+    ),
+    # DS4 PP tensor-dict metadata fast path. When enabled, the metadata header
+    # for PP intermediate tensors is sent as a small CUDA tensor on the PP
+    # device group instead of a pickled Python object on the CPU/Gloo group.
+    # This keeps the whole PP boundary on the same high-performance transport
+    # path and fails closed if an unexpected tensor dict shape appears.
+    "VLLM_DS4_PP_DEVICE_TENSOR_DICT_METADATA": lambda: (
+        os.environ.get("VLLM_DS4_PP_DEVICE_TENSOR_DICT_METADATA", "0")
         .strip()
         .lower()
         in ("1", "true", "yes", "on")
