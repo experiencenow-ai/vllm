@@ -9,7 +9,9 @@ and many unencrypted TCP streams per edge. It is not an NCCL collective test.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 import os
+import shutil
 import subprocess
 import sys
 import threading
@@ -203,7 +205,117 @@ def _client_stream(rail: Rail, port: int, bytes_to_send: int, timeout_s: float) 
     )
 
 
+def _preflight_tool() -> str:
+    tool = _env("DS4_RAIL_TCP_PREFLIGHT_TOOL", "iperf3").strip().lower()
+    if tool not in {"iperf3", "nc"}:
+        raise ValueError("DS4_RAIL_TCP_PREFLIGHT_TOOL must be iperf3 or nc")
+    if tool == "iperf3" and shutil.which("iperf3") is None:
+        raise RuntimeError(
+            "DS4_RAIL_TCP_PREFLIGHT_TOOL=iperf3 but iperf3 is not installed"
+        )
+    if tool == "nc" and shutil.which("nc") is None:
+        raise RuntimeError("DS4_RAIL_TCP_PREFLIGHT_TOOL=nc but nc is not installed")
+    return tool
+
+
+def _run_iperf3_server(pair_index: int, src: int, dst: int) -> int:
+    port_base = int(_env("DS4_RAIL_TCP_PREFLIGHT_PORT_BASE", "49400"))
+    port = port_base + (pair_index * 100)
+    bind_ip = _env("DS4_RAIL_TCP_PREFLIGHT_SERVER_BIND", "0.0.0.0")
+    duration_s = float(_env("DS4_RAIL_TCP_PREFLIGHT_DURATION_S", "5"))
+    timeout_s = duration_s + float(_env("DS4_RAIL_TCP_PREFLIGHT_TIMEOUT", "30"))
+    result = subprocess.run(
+        ["iperf3", "-s", "-B", bind_ip, "-p", str(port), "-1"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        timeout=timeout_s,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"rail TCP iperf3 server failed for pair={src}-{dst} "
+            f"port={port}: {result.stderr[-500:] or result.stdout[-500:]}"
+        )
+    print(
+        "DS4 rail TCP preflight iperf3 server complete: "
+        f"pair={src}-{dst} port={port}",
+        file=sys.stderr,
+    )
+    return 0
+
+
+def _run_iperf3_client(
+    pair_index: int,
+    src: int,
+    dst: int,
+    destination_ip: str,
+) -> int:
+    streams = max(1, int(_env("DS4_RAIL_TCP_PREFLIGHT_STREAMS", "16")))
+    port_base = int(_env("DS4_RAIL_TCP_PREFLIGHT_PORT_BASE", "49400"))
+    port = port_base + (pair_index * 100)
+    duration_s = float(_env("DS4_RAIL_TCP_PREFLIGHT_DURATION_S", "5"))
+    timeout_s = duration_s + float(_env("DS4_RAIL_TCP_PREFLIGHT_TIMEOUT", "30"))
+    min_gbps = float(
+        _env(
+            "DS4_RAIL_TCP_PREFLIGHT_MIN_GBPS",
+            _env("DS4_NCCL_PREFLIGHT_MIN_P2P_GBPS", "0"),
+        )
+    )
+    rails = _discover_rails(destination_ip)
+    rail = rails[0]
+    time.sleep(float(_env("DS4_RAIL_TCP_PREFLIGHT_CLIENT_DELAY_S", "0.5")))
+    result = subprocess.run(
+        [
+            "iperf3",
+            "-c",
+            rail.destination_ip,
+            "-B",
+            rail.source_ip,
+            "-p",
+            str(port),
+            "-P",
+            str(streams),
+            "-t",
+            str(duration_s),
+            "--json",
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        timeout=timeout_s,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"rail TCP iperf3 client failed for pair={src}-{dst} "
+            f"{rail.source_ip}->{rail.destination_ip}:{port}: "
+            f"{result.stderr[-500:] or result.stdout[-500:]}"
+        )
+    data = json.loads(result.stdout)
+    end = data.get("end", {})
+    summary = end.get("sum_sent") or end.get("sum") or {}
+    bits_per_second = float(summary.get("bits_per_second", 0.0))
+    gbps = bits_per_second / 8.0 / 1e9
+    rails_text = ",".join(
+        f"{item.source_ip}->{item.destination_ip}/{item.dev}" for item in rails
+    )
+    print(
+        "DS4 rail TCP preflight bandwidth: "
+        f"pair={src}-{dst} role=iperf3-client streams={streams} "
+        f"duration_s={duration_s:.3f} rails={rails_text} "
+        f"GBps={gbps:.3f} Gbit_s={(gbps * 8.0):.3f} "
+        f"min_GBps={min_gbps:.3f}",
+        file=sys.stderr,
+    )
+    if min_gbps > 0 and gbps < min_gbps:
+        return 68
+    return 0
+
+
 def _run_server(pair_index: int, src: int, dst: int) -> int:
+    if _preflight_tool() == "iperf3":
+        return _run_iperf3_server(pair_index, src, dst)
     streams = max(1, int(_env("DS4_RAIL_TCP_PREFLIGHT_STREAMS", "16")))
     total_bytes = max(streams, int(_env("DS4_RAIL_TCP_PREFLIGHT_BYTES", "268435456")))
     port_base = int(_env("DS4_RAIL_TCP_PREFLIGHT_PORT_BASE", "49400"))
@@ -252,6 +364,8 @@ def _run_server(pair_index: int, src: int, dst: int) -> int:
 
 
 def _run_client(pair_index: int, src: int, dst: int, destination_ip: str) -> int:
+    if _preflight_tool() == "iperf3":
+        return _run_iperf3_client(pair_index, src, dst, destination_ip)
     streams = max(1, int(_env("DS4_RAIL_TCP_PREFLIGHT_STREAMS", "16")))
     total_bytes = max(streams, int(_env("DS4_RAIL_TCP_PREFLIGHT_BYTES", "268435456")))
     port_base = int(_env("DS4_RAIL_TCP_PREFLIGHT_PORT_BASE", "49400"))
