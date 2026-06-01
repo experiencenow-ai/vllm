@@ -26,6 +26,7 @@ from vllm.utils.torch_utils import (
     _is_torch_equal_or_newer,
     is_torch_equal,
 )
+from vllm.v1.attention.backend import AttentionCGSupport
 from vllm.v1.cudagraph_dispatcher import CudagraphDispatcher
 
 # This import automatically registers `torch.ops.silly.attention`
@@ -583,6 +584,30 @@ def test_sequence_parallelism_requires_full_graph_compilation(
     assert (
         511 in vllm_config.compilation_config.compile_ranges_endpoints
     ) == expected_enable_sp
+
+
+def test_single_token_decode_support_disables_piecewise_cudagraph():
+    config = CompilationConfig(cudagraph_mode=CUDAGraphMode.FULL_AND_PIECEWISE)
+
+    mode = config.resolve_cudagraph_mode_and_sizes(
+        min_cg_support=AttentionCGSupport.UNIFORM_SINGLE_TOKEN_DECODE,
+        min_cg_attn_backend="DS4SparseAttention",
+    )
+
+    assert mode == CUDAGraphMode.FULL_DECODE_ONLY
+    assert config.cudagraph_mode == CUDAGraphMode.FULL_DECODE_ONLY
+
+
+def test_single_token_decode_support_rejects_piecewise_only_cudagraph():
+    config = CompilationConfig(cudagraph_mode=CUDAGraphMode.PIECEWISE)
+
+    mode = config.resolve_cudagraph_mode_and_sizes(
+        min_cg_support=AttentionCGSupport.UNIFORM_SINGLE_TOKEN_DECODE,
+        min_cg_attn_backend="DS4SparseAttention",
+    )
+
+    assert mode == CUDAGraphMode.NONE
+    assert config.cudagraph_mode == CUDAGraphMode.NONE
 
 
 def test_cached_compilation_config(default_vllm_config):
