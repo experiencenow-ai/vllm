@@ -41,7 +41,11 @@ from vllm.inputs import EngineInput
 from vllm.logger import init_logger
 from vllm.logprobs import Logprob
 from vllm.outputs import STREAM_FINISHED, RequestOutput
-from vllm.sampling_params import BeamSearchParams, SamplingParams
+from vllm.sampling_params import (
+    BeamSearchParams,
+    RequestOutputKind,
+    SamplingParams,
+)
 from vllm.tokenizers import TokenizerLike
 from vllm.utils.async_utils import merge_async_iterators
 from vllm.utils.collection_utils import as_list
@@ -192,6 +196,14 @@ class OpenAIServingCompletion(OpenAIServing):
                     max_tokens,
                     self.default_sampling_params,
                 )
+                if (
+                    envs.VLLM_DS4_FINAL_ONLY_NONSTREAMING
+                    and not request.stream
+                    and (request.n or 1) == 1
+                    and not request.logprobs
+                    and not request.prompt_logprobs
+                ):
+                    sampling_params.output_kind = RequestOutputKind.FINAL_ONLY
 
             request_id_item = f"{request_id}-{i}"
 

@@ -210,15 +210,26 @@ def fp8_mqa_logits_triton(
     weights: torch.Tensor,
     cu_seqlen_ks: torch.Tensor,
     cu_seqlen_ke: torch.Tensor,
+    logits_out: torch.Tensor | None = None,
 ) -> torch.Tensor:
     k_fp8, scale = kv
     num_q, num_heads, head_dim = q.shape
     seq_len_kv = k_fp8.shape[0]
-    logits = torch.empty(
-        (num_q, seq_len_kv),
-        device=q.device,
-        dtype=torch.float32,
-    )
+    if logits_out is None:
+        logits = torch.empty(
+            (num_q, seq_len_kv),
+            device=q.device,
+            dtype=torch.float32,
+        )
+    else:
+        if logits_out.shape[0] < num_q or logits_out.shape[1] < seq_len_kv:
+            raise ValueError(
+                "logits_out is too small for SM12x dense-MQA logits: "
+                f"got={tuple(logits_out.shape)} need=({num_q}, {seq_len_kv})"
+            )
+        if logits_out.dtype != torch.float32 or logits_out.device != q.device:
+            raise TypeError("logits_out must be a float32 tensor on the q device")
+        logits = logits_out[:num_q, :seq_len_kv]
     if num_q == 0 or seq_len_kv == 0:
         return logits
 
@@ -524,6 +535,7 @@ def fp8_paged_mqa_logits_rowwise_triton(
     max_model_len: int,
     token_start: int = 0,
     token_count: int | None = None,
+    logits_out: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Rowwise paged-MQA logits wrapper.
 
@@ -544,11 +556,21 @@ def fp8_paged_mqa_logits_rowwise_triton(
     assert token_start >= 0
     assert token_count >= 0
     assert token_start + token_count <= max_model_len
-    logits = torch.empty(
-        (num_rows, token_count),
-        device=q.device,
-        dtype=torch.float32,
-    )
+    if logits_out is None:
+        logits = torch.empty(
+            (num_rows, token_count),
+            device=q.device,
+            dtype=torch.float32,
+        )
+    else:
+        if logits_out.shape[0] < num_rows or logits_out.shape[1] < token_count:
+            raise ValueError(
+                "logits_out is too small for SM12x paged-MQA logits: "
+                f"got={tuple(logits_out.shape)} need=({num_rows}, {token_count})"
+            )
+        if logits_out.dtype != torch.float32 or logits_out.device != q.device:
+            raise TypeError("logits_out must be a float32 tensor on the q device")
+        logits = logits_out[:num_rows, :token_count]
     if num_rows == 0 or token_count == 0:
         return logits
 
@@ -607,6 +629,7 @@ def fp8_paged_mqa_logits_triton(
     max_model_len: int,
     token_start: int = 0,
     token_count: int | None = None,
+    logits_out: torch.Tensor | None = None,
 ) -> torch.Tensor:
     batch_size, next_n, num_heads, head_dim = q.size()
     num_rows = batch_size * next_n
@@ -630,6 +653,7 @@ def fp8_paged_mqa_logits_triton(
             max_model_len,
             token_start=token_start,
             token_count=token_count,
+            logits_out=logits_out,
         )
 
     kv_values, kv_scale = _view_packed_fp8_paged_mqa_kv_cache(kv_cache, head_dim)
@@ -641,11 +665,21 @@ def fp8_paged_mqa_logits_triton(
     assert token_start >= 0
     assert token_count >= 0
     assert token_start + token_count <= max_model_len
-    logits = torch.empty(
-        (num_rows, token_count),
-        device=q.device,
-        dtype=torch.float32,
-    )
+    if logits_out is None:
+        logits = torch.empty(
+            (num_rows, token_count),
+            device=q.device,
+            dtype=torch.float32,
+        )
+    else:
+        if logits_out.shape[0] < num_rows or logits_out.shape[1] < token_count:
+            raise ValueError(
+                "logits_out is too small for SM12x paged-MQA logits: "
+                f"got={tuple(logits_out.shape)} need=({num_rows}, {token_count})"
+            )
+        if logits_out.dtype != torch.float32 or logits_out.device != q.device:
+            raise TypeError("logits_out must be a float32 tensor on the q device")
+        logits = logits_out[:num_rows, :token_count]
     if num_rows == 0 or token_count == 0:
         return logits
 

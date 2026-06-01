@@ -134,6 +134,9 @@ if TYPE_CHECKING:
     VLLM_DS4_COHORT_PAUSE_DURING_ADMISSION: bool = False
     VLLM_DS4_SCHED_MAX_NEW_REQS_PER_STEP: int = 0
     VLLM_DS4_FUSED_EXECUTE_SAMPLE: bool = False
+    VLLM_DS4_FINAL_ONLY_NONSTREAMING: bool = False
+    VLLM_DS4_ITERATION_TIMING: bool = False
+    VLLM_DS4_ITERATION_TIMING_EVERY: int = 1
     VLLM_DS4_PP_ONLY_GLOBAL_BACKEND: str = ""
     VLLM_DS4_PP_DISABLE_DEVICE_COMMUNICATOR: bool = False
     VLLM_DS4_SKIP_PYNCCL_WARMUP_ALLREDUCE: bool = False
@@ -142,6 +145,7 @@ if TYPE_CHECKING:
     VLLM_DS4_SM12X_MQA_ROWWISE_MIN_TOKENS: int = 0
     VLLM_DS4_SM12X_PAGED_MQA_TOPK_CHUNK_SIZE: int = 8192
     VLLM_DS4_SM12X_MQA_TOPK_TRITON: bool = False
+    VLLM_DS4_SM12X_MQA_TOPK_CUDA_SELECT: bool = True
     VLLM_DS4_SM12X_MQA_TOPK_CHUNK_SIZE: int = 8192
     VLLM_DS4_SM12X_MQA_TOPK_MAX_LOGITS_BYTES: int = 536870912
     VLLM_DS4_ALLOW_SM12X_MQA_TOPK_TORCH_FALLBACK: bool = False
@@ -1239,12 +1243,9 @@ environment_variables: dict[str, Callable[[], Any]] = {
         .lower()
         in ("1", "true", "yes", "on")
     ),
-    # DS4 PP throughput mode: intentionally limit how many waiting requests
-    # are admitted in one scheduler iteration. A PP service needs multiple
-    # independently scheduled batches in flight to fill the pipe; admitting a
-    # giant prompt-array cohort into a single SchedulerOutput makes PP8 behave
-    # like one large batch walking through eight stages. 0 keeps upstream
-    # behavior. Values such as 32 or 64 create deterministic PP fill waves.
+    # DS4 PP service tuning: admit cohorts as deterministic PP fill waves
+    # instead of one huge scheduler batch or accidental HTTP timing fragments.
+    # 0 keeps upstream behavior.
     "VLLM_DS4_SCHED_MAX_NEW_REQS_PER_STEP": lambda: int(
         os.environ.get("VLLM_DS4_SCHED_MAX_NEW_REQS_PER_STEP", "0")
     ),
@@ -1254,6 +1255,21 @@ environment_variables: dict[str, Callable[[], Any]] = {
     "VLLM_DS4_FUSED_EXECUTE_SAMPLE": lambda: (
         os.environ.get("VLLM_DS4_FUSED_EXECUTE_SAMPLE", "0").strip().lower()
         in ("1", "true", "yes", "on")
+    ),
+    "VLLM_DS4_FINAL_ONLY_NONSTREAMING": lambda: (
+        os.environ.get("VLLM_DS4_FINAL_ONLY_NONSTREAMING", "0")
+        .strip()
+        .lower()
+        in ("1", "true", "yes", "on")
+    ),
+    "VLLM_DS4_ITERATION_TIMING": lambda: (
+        os.environ.get("VLLM_DS4_ITERATION_TIMING", "0")
+        .strip()
+        .lower()
+        in ("1", "true", "yes", "on")
+    ),
+    "VLLM_DS4_ITERATION_TIMING_EVERY": lambda: int(
+        os.environ.get("VLLM_DS4_ITERATION_TIMING_EVERY", "1")
     ),
     "VLLM_DS4_PP_ONLY_GLOBAL_BACKEND": lambda: os.environ.get(
         "VLLM_DS4_PP_ONLY_GLOBAL_BACKEND", ""
@@ -1287,6 +1303,12 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # A Torch fallback is diagnostic-only and must be explicitly opted into.
     "VLLM_DS4_SM12X_MQA_TOPK_TRITON": lambda: (
         os.environ.get("VLLM_DS4_SM12X_MQA_TOPK_TRITON", "1").strip().lower()
+        in ("1", "true", "yes", "on")
+    ),
+    "VLLM_DS4_SM12X_MQA_TOPK_CUDA_SELECT": lambda: (
+        os.environ.get("VLLM_DS4_SM12X_MQA_TOPK_CUDA_SELECT", "1")
+        .strip()
+        .lower()
         in ("1", "true", "yes", "on")
     ),
     "VLLM_DS4_SM12X_MQA_TOPK_CHUNK_SIZE": lambda: int(

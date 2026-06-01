@@ -8,6 +8,7 @@ import torch
 
 from vllm.logger import init_logger
 from vllm.platforms import current_platform
+from vllm.triton_utils import tl, triton
 
 logger = init_logger(__name__)
 
@@ -42,6 +43,205 @@ def _top_k_per_row_prefill_op():
         return torch.ops._C.top_k_per_row_prefill
     except (AttributeError, ImportError, RuntimeError):
         return None
+
+
+
+@triton.jit
+def _ds4_gather_values_i32_indices_kernel(
+    values_ptr,
+    indices_ptr,
+    out_values_ptr,
+    num_rows: tl.constexpr,
+    source_cols: tl.constexpr,
+    topk_cols: tl.constexpr,
+    values_stride_row: tl.constexpr,
+    values_stride_col: tl.constexpr,
+    indices_stride_row: tl.constexpr,
+    indices_stride_col: tl.constexpr,
+    out_stride_row: tl.constexpr,
+    out_stride_col: tl.constexpr,
+    BLOCK_K: tl.constexpr,
+):
+    row = tl.program_id(0)
+    offs = tl.arange(0, BLOCK_K)
+    mask = (row < num_rows) & (offs < topk_cols)
+    idx = tl.load(
+        indices_ptr + row * indices_stride_row + offs * indices_stride_col,
+        mask=mask,
+        other=0,
+    )
+    valid_idx = (idx >= 0) & (idx < source_cols)
+    vals = tl.load(
+        values_ptr + row * values_stride_row + idx * values_stride_col,
+        mask=mask & valid_idx,
+        other=float("-inf"),
+    )
+    tl.store(
+        out_values_ptr + row * out_stride_row + offs * out_stride_col,
+        vals,
+        mask=mask,
+    )
+
+
+@triton.jit
+def _ds4_gather_values_and_indices_i32_kernel(
+    candidate_values_ptr,
+    candidate_indices_ptr,
+    selected_ptr,
+    out_values_ptr,
+    out_indices_ptr,
+    num_rows: tl.constexpr,
+    candidate_cols: tl.constexpr,
+    topk_cols: tl.constexpr,
+    candidate_values_stride_row: tl.constexpr,
+    candidate_values_stride_col: tl.constexpr,
+    candidate_indices_stride_row: tl.constexpr,
+    candidate_indices_stride_col: tl.constexpr,
+    selected_stride_row: tl.constexpr,
+    selected_stride_col: tl.constexpr,
+    out_values_stride_row: tl.constexpr,
+    out_values_stride_col: tl.constexpr,
+    out_indices_stride_row: tl.constexpr,
+    out_indices_stride_col: tl.constexpr,
+    BLOCK_K: tl.constexpr,
+):
+    row = tl.program_id(0)
+    offs = tl.arange(0, BLOCK_K)
+    mask = (row < num_rows) & (offs < topk_cols)
+    selected = tl.load(
+        selected_ptr + row * selected_stride_row + offs * selected_stride_col,
+        mask=mask,
+        other=0,
+    )
+    valid_selected = (selected >= 0) & (selected < candidate_cols)
+    vals = tl.load(
+        candidate_values_ptr
+        + row * candidate_values_stride_row
+        + selected * candidate_values_stride_col,
+        mask=mask & valid_selected,
+        other=float("-inf"),
+    )
+    idx = tl.load(
+        candidate_indices_ptr
+        + row * candidate_indices_stride_row
+        + selected * candidate_indices_stride_col,
+        mask=mask & valid_selected,
+        other=-1,
+    )
+    tl.store(
+        out_values_ptr + row * out_values_stride_row + offs * out_values_stride_col,
+        vals,
+        mask=mask,
+    )
+    tl.store(
+        out_indices_ptr + row * out_indices_stride_row + offs * out_indices_stride_col,
+        idx,
+        mask=mask,
+    )
+
+
+def _ceil_power_of_two_at_least_one(value: int) -> int:
+    return 1 << max(0, value - 1).bit_length()
+
+
+def _cuda_topk_per_row_enabled() -> bool:
+    return _env_flag("VLLM_DS4_SM12X_MQA_TOPK_CUDA_SELECT", True)
+
+
+def _topk_per_row_cuda(
+    values: torch.Tensor,
+    topk: int,
+    valid_cols: int,
+    out_indices: torch.Tensor,
+) -> bool:
+    if not _cuda_topk_per_row_enabled():
+        return False
+    op = _top_k_per_row_prefill_op()
+    if op is None:
+        if _env_flag("VLLM_DS4_STRICT_NATIVE_FP4", False):
+            raise RuntimeError(
+                "DS4 requested CUDA top-k selection but _C.top_k_per_row_prefill "
+                "is not available. Rebuild the vLLM CUDA extension or disable "
+                "VLLM_DS4_SM12X_MQA_TOPK_CUDA_SELECT only for diagnostics."
+            )
+        return False
+    num_rows = values.shape[0]
+    row_starts = torch.zeros(num_rows, device=values.device, dtype=torch.int32)
+    row_ends = torch.empty(num_rows, device=values.device, dtype=torch.int32)
+    row_ends.fill_(valid_cols)
+    op(
+        values,
+        row_starts,
+        row_ends,
+        out_indices,
+        num_rows,
+        values.stride(0),
+        values.stride(1),
+        topk,
+    )
+    return True
+
+
+def _gather_values_i32_indices(
+    values: torch.Tensor,
+    indices: torch.Tensor,
+    out_values: torch.Tensor,
+) -> None:
+    num_rows, topk_cols = indices.shape
+    if num_rows == 0 or topk_cols == 0:
+        return
+    block_k = min(4096, _ceil_power_of_two_at_least_one(topk_cols))
+    _ds4_gather_values_i32_indices_kernel[(num_rows,)](
+        values,
+        indices,
+        out_values,
+        num_rows,
+        values.shape[1],
+        topk_cols,
+        values.stride(0),
+        values.stride(1),
+        indices.stride(0),
+        indices.stride(1),
+        out_values.stride(0),
+        out_values.stride(1),
+        BLOCK_K=block_k,
+        num_warps=8,
+    )
+
+
+def _gather_values_and_indices_i32(
+    candidate_values: torch.Tensor,
+    candidate_indices: torch.Tensor,
+    selected: torch.Tensor,
+    out_values: torch.Tensor,
+    out_indices: torch.Tensor,
+) -> None:
+    num_rows, topk_cols = selected.shape
+    if num_rows == 0 or topk_cols == 0:
+        return
+    block_k = min(4096, _ceil_power_of_two_at_least_one(topk_cols))
+    _ds4_gather_values_and_indices_i32_kernel[(num_rows,)](
+        candidate_values,
+        candidate_indices,
+        selected,
+        out_values,
+        out_indices,
+        num_rows,
+        candidate_values.shape[1],
+        topk_cols,
+        candidate_values.stride(0),
+        candidate_values.stride(1),
+        candidate_indices.stride(0),
+        candidate_indices.stride(1),
+        selected.stride(0),
+        selected.stride(1),
+        out_values.stride(0),
+        out_values.stride(1),
+        out_indices.stride(0),
+        out_indices.stride(1),
+        BLOCK_K=block_k,
+        num_warps=8,
+    )
 
 
 def _fp8_mqa_logits_head_chunk_size(
@@ -188,6 +388,11 @@ def _fp8_mqa_logits_topk_torch(
         device=q_values.device,
         dtype=torch.int64,
     )
+    selected_i32 = torch.empty(
+        (seq_len, topk_tokens),
+        device=q_values.device,
+        dtype=torch.int32,
+    )
 
     for k_start in range(0, seq_len_kv, k_chunk_size):
         k_end = min(k_start + k_chunk_size, seq_len_kv)
@@ -332,6 +537,16 @@ def _fp8_mqa_logits_topk_triton_chunked(
         device=q_values.device,
         dtype=torch.int64,
     )
+    selected_i32 = torch.empty(
+        (seq_len, topk_tokens),
+        device=q_values.device,
+        dtype=torch.int32,
+    )
+    chunk_logits_buf = torch.empty(
+        (seq_len, chunk_size),
+        device=q_values.device,
+        dtype=torch.float32,
+    )
 
     from vllm.models.deepseek_v4.nvidia.ops.sm12x_mqa import (
         fp8_mqa_logits_triton,
@@ -347,15 +562,19 @@ def _fp8_mqa_logits_topk_triton_chunked(
             weights,
             rel_ks,
             rel_ke,
+            logits_out=chunk_logits_buf[:, : k_end - k_start],
         )
         chunk_topk = min(topk_tokens, logits.shape[1])
         if chunk_topk == 0:
             continue
         chunk_values = chunk_values_buf[:, :chunk_topk]
-        chunk_indices = chunk_indices_buf[:, :chunk_topk]
-        torch.topk(logits, chunk_topk, dim=1, out=(chunk_values, chunk_indices))
         chunk_indices_out = chunk_indices_i32[:, :chunk_topk]
-        chunk_indices_out.copy_(chunk_indices)
+        if _topk_per_row_cuda(logits, chunk_topk, logits.shape[1], chunk_indices_out):
+            _gather_values_i32_indices(logits, chunk_indices_out, chunk_values)
+        else:
+            chunk_indices = chunk_indices_buf[:, :chunk_topk]
+            torch.topk(logits, chunk_topk, dim=1, out=(chunk_values, chunk_indices))
+            chunk_indices_out.copy_(chunk_indices)
         chunk_indices_out.add_(k_start)
 
         candidate_cols = topk_tokens + chunk_topk
@@ -365,13 +584,27 @@ def _fp8_mqa_logits_topk_triton_chunked(
         candidate_values_view[:, topk_tokens:candidate_cols].copy_(chunk_values)
         candidate_indices_view[:, :topk_tokens].copy_(out)
         candidate_indices_view[:, topk_tokens:candidate_cols].copy_(chunk_indices_out)
-        torch.topk(
+        if _topk_per_row_cuda(
             candidate_values_view,
             topk_tokens,
-            dim=1,
-            out=(next_best_values, selected),
-        )
-        torch.gather(candidate_indices_view, 1, selected, out=out)
+            candidate_cols,
+            selected_i32[:, :topk_tokens],
+        ):
+            _gather_values_and_indices_i32(
+                candidate_values_view,
+                candidate_indices_view,
+                selected_i32[:, :topk_tokens],
+                next_best_values,
+                out,
+            )
+        else:
+            torch.topk(
+                candidate_values_view,
+                topk_tokens,
+                dim=1,
+                out=(next_best_values, selected),
+            )
+            torch.gather(candidate_indices_view, 1, selected, out=out)
         best_values, next_best_values = next_best_values, best_values
         out.masked_fill_(~torch.isfinite(best_values), -1)
     return True
@@ -619,6 +852,16 @@ def fp8_fp4_paged_mqa_topk_indices(
         device=q_values.device,
         dtype=torch.int64,
     )
+    selected_i32 = torch.empty(
+        (num_rows, topk_tokens),
+        device=q_values.device,
+        dtype=torch.int32,
+    )
+    chunk_logits_buf = torch.empty(
+        (num_rows, chunk_size),
+        device=q_values.device,
+        dtype=torch.float32,
+    )
 
     from vllm.models.deepseek_v4.nvidia.ops.sm12x_mqa import (
         fp8_paged_mqa_logits_triton,
@@ -635,13 +878,22 @@ def fp8_fp4_paged_mqa_topk_indices(
             max_model_len,
             token_start=token_start,
             token_count=token_count,
+            logits_out=chunk_logits_buf[:, :token_count],
         )
         chunk_topk = min(topk_tokens, token_count)
         chunk_values = chunk_values_buf[:, :chunk_topk]
-        chunk_indices = chunk_indices_buf[:, :chunk_topk]
-        torch.topk(chunk_logits, chunk_topk, dim=1, out=(chunk_values, chunk_indices))
         chunk_indices_out = chunk_indices_i32[:, :chunk_topk]
-        chunk_indices_out.copy_(chunk_indices)
+        if _topk_per_row_cuda(
+            chunk_logits,
+            chunk_topk,
+            token_count,
+            chunk_indices_out,
+        ):
+            _gather_values_i32_indices(chunk_logits, chunk_indices_out, chunk_values)
+        else:
+            chunk_indices = chunk_indices_buf[:, :chunk_topk]
+            torch.topk(chunk_logits, chunk_topk, dim=1, out=(chunk_values, chunk_indices))
+            chunk_indices_out.copy_(chunk_indices)
         chunk_indices_out.add_(token_start)
 
         candidate_cols = topk_tokens + chunk_topk
@@ -651,13 +903,27 @@ def fp8_fp4_paged_mqa_topk_indices(
         candidate_values_view[:, topk_tokens:candidate_cols].copy_(chunk_values)
         candidate_indices_view[:, :topk_tokens].copy_(topk_indices)
         candidate_indices_view[:, topk_tokens:candidate_cols].copy_(chunk_indices_out)
-        torch.topk(
+        if _topk_per_row_cuda(
             candidate_values_view,
             topk_tokens,
-            dim=1,
-            out=(next_best_values, selected),
-        )
-        torch.gather(candidate_indices_view, 1, selected, out=topk_indices)
+            candidate_cols,
+            selected_i32[:, :topk_tokens],
+        ):
+            _gather_values_and_indices_i32(
+                candidate_values_view,
+                candidate_indices_view,
+                selected_i32[:, :topk_tokens],
+                next_best_values,
+                topk_indices,
+            )
+        else:
+            torch.topk(
+                candidate_values_view,
+                topk_tokens,
+                dim=1,
+                out=(next_best_values, selected),
+            )
+            torch.gather(candidate_indices_view, 1, selected, out=topk_indices)
         best_values, next_best_values = next_best_values, best_values
         topk_indices.masked_fill_(~torch.isfinite(best_values), -1)
 
