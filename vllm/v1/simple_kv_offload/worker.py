@@ -143,9 +143,10 @@ class SimpleCPUOffloadWorker:
         self.gpu_kv_caches = unique_gpu_caches
         self._allocate_cpu_kv_caches()
 
-    def _allocate_cpu_kv_caches(self) -> None:
+    def _allocate_cpu_kv_caches(self, min_num_cpu_blocks: int = 0) -> None:
         """Allocate pinned CPU KV tensors for the registered GPU KV cache."""
         if self.cpu_kv_caches is not None:
+            self._ensure_cpu_block_capacity(min_num_cpu_blocks)
             return
         assert self.gpu_kv_caches is not None
 
@@ -157,8 +158,11 @@ class SimpleCPUOffloadWorker:
             1, self.cpu_capacity_bytes // total_bytes_per_block
         )
         assert self.kv_cache_config is not None
-        self.num_cpu_blocks = derive_logical_cpu_block_count(
-            self.kv_cache_config, self.cpu_capacity_bytes
+        self.num_cpu_blocks = max(
+            min_num_cpu_blocks,
+            derive_logical_cpu_block_count(
+                self.kv_cache_config, self.cpu_capacity_bytes
+            ),
         )
         allocated_cpu_bytes = self.num_cpu_blocks * total_bytes_per_block
 
@@ -226,10 +230,67 @@ class SimpleCPUOffloadWorker:
                 len(entries),
             )
 
+    def _ensure_cpu_block_capacity(self, min_num_cpu_blocks: int) -> None:
+        if min_num_cpu_blocks <= self.num_cpu_blocks:
+            return
+        assert self.gpu_kv_caches is not None
+        assert self.cpu_kv_caches is not None
+        assert self.device is not None
+        assert self.load_stream is not None
+        assert self.store_stream is not None
+
+        old_num_cpu_blocks = self.num_cpu_blocks
+        logger.warning(
+            "SimpleCPUOffloadWorker: growing CPU KV offload block id space "
+            "from %d to %d blocks to satisfy scheduler metadata.",
+            old_num_cpu_blocks,
+            min_num_cpu_blocks,
+        )
+
+        # Finish any queued copies before replacing backing CPU tensors.
+        self._backend.shutdown()
+        self.load_stream.synchronize()
+        self.store_stream.synchronize()
+        self._flush_and_sync_all()
+
+        grown: dict[str, torch.Tensor] = {}
+        released: list[torch.Tensor] = []
+        for name, old_tensor in self.cpu_kv_caches.items():
+            new_shape = (min_num_cpu_blocks,) + tuple(old_tensor.shape[1:])
+            new_tensor = torch.zeros(
+                new_shape, dtype=old_tensor.dtype, device=old_tensor.device
+            )
+            new_tensor[:old_num_cpu_blocks].copy_(old_tensor)
+            if self._pin_memory:
+                pin_tensor(new_tensor)
+                released.append(old_tensor)
+            grown[name] = new_tensor
+        if self._pin_memory:
+            for tensor in released:
+                with suppress(Exception):
+                    unpin_tensor(tensor)
+
+        self.cpu_kv_caches = grown
+        self.num_cpu_blocks = min_num_cpu_blocks
+        self._persistent_store = PersistentSimpleOffloadStore.from_env(
+            role="worker",
+            vllm_config=self.vllm_config,
+            num_cpu_blocks=self.num_cpu_blocks,
+            tensor_names=list(self.cpu_kv_caches.keys()),
+        )
+        self._backend = DmaCopyBackend()
+        self._backend.init(
+            self.gpu_kv_caches,
+            self.cpu_kv_caches,
+            self.device,
+            self.load_stream,
+            self.store_stream,
+        )
+
     def bind_connector_metadata(self, metadata: SimpleCPUOffloadMetadata) -> None:
         self._connector_metadata = metadata
         if metadata.load_cpu_blocks or metadata.store_cpu_blocks:
-            self._allocate_cpu_kv_caches()
+            self._allocate_cpu_kv_caches(_required_cpu_blocks(metadata))
         if metadata.load_event >= 0:
             self._pending_load_event_indices.add(metadata.load_event)
             if metadata.load_cpu_blocks and self._persistent_store is not None:
@@ -437,3 +498,10 @@ class SimpleCPUOffloadWorker:
             "offload_memory_released": release_offload_memory,
             "process": process,
         }
+
+
+def _required_cpu_blocks(metadata: SimpleCPUOffloadMetadata) -> int:
+    cpu_block_ids = metadata.load_cpu_blocks + metadata.store_cpu_blocks
+    if not cpu_block_ids:
+        return 0
+    return max(int(block_id) for block_id in cpu_block_ids) + 1
