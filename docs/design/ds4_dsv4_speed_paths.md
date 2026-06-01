@@ -34,8 +34,10 @@ ring links are investigated:
 ```text
 rail TCP fail floor:     10 Gbit/s
 rail TCP warning floor:  64 Gbit/s
-PP4 NCCL P2P fail floor: 3.125 GB/s
-PP4 NCCL P2P warning:    8 GB/s
+NCCL collective fail:    1.25 GB/s  (10 Gbit/s)
+NCCL collective warning: 8 GB/s     (64 Gbit/s)
+PP4 NCCL P2P fail floor: 1.25 GB/s  (10 Gbit/s)
+PP4 NCCL P2P warning:    8 GB/s     (64 Gbit/s)
 ```
 
 Each restart still prints the measured rail result and emits a warning when a
