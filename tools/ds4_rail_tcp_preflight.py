@@ -308,37 +308,49 @@ def _run_iperf_client(
     rails = _discover_rails(destination_ip)
     rail = rails[0]
     time.sleep(float(_env("DS4_RAIL_TCP_PREFLIGHT_CLIENT_DELAY_S", "0.5")))
-    result = subprocess.run(
-        [
-            "iperf",
-            "-c",
-            rail.destination_ip,
-            "-B",
-            rail.source_ip,
-            "-p",
-            str(port),
-            "-P",
-            str(streams),
-            "-t",
-            str(duration_s),
-            "-f",
-            "g",
-            "-y",
-            "C",
-        ],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        timeout=timeout_s,
-        check=False,
-    )
-    if result.returncode != 0:
+    deadline = time.monotonic() + timeout_s
+    last_error = ""
+    bits_per_second = 0.0
+    while time.monotonic() < deadline:
+        remaining_s = max(1.0, deadline - time.monotonic())
+        result = subprocess.run(
+            [
+                "iperf",
+                "-c",
+                rail.destination_ip,
+                "-B",
+                rail.source_ip,
+                "-p",
+                str(port),
+                "-P",
+                str(streams),
+                "-t",
+                str(duration_s),
+                "-f",
+                "g",
+                "-y",
+                "C",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=remaining_s,
+            check=False,
+        )
+        if result.returncode == 0:
+            try:
+                bits_per_second = _parse_iperf_csv_bits_per_second(result.stdout)
+                break
+            except RuntimeError as exc:
+                last_error = str(exc)
+        else:
+            last_error = result.stderr[-500:] or result.stdout[-500:]
+        time.sleep(float(_env("DS4_RAIL_TCP_PREFLIGHT_CLIENT_RETRY_SLEEP_S", "0.5")))
+    if bits_per_second <= 0:
         raise RuntimeError(
             f"rail TCP iperf client failed for pair={src}-{dst} "
-            f"{rail.source_ip}->{rail.destination_ip}:{port}: "
-            f"{result.stderr[-500:] or result.stdout[-500:]}"
+            f"{rail.source_ip}->{rail.destination_ip}:{port}: {last_error}"
         )
-    bits_per_second = _parse_iperf_csv_bits_per_second(result.stdout)
     gbps = bits_per_second / 8.0 / 1e9
     rails_text = ",".join(
         f"{item.source_ip}->{item.destination_ip}/{item.dev}" for item in rails
@@ -410,37 +422,51 @@ def _run_iperf3_client(
     rails = _discover_rails(destination_ip)
     rail = rails[0]
     time.sleep(float(_env("DS4_RAIL_TCP_PREFLIGHT_CLIENT_DELAY_S", "0.5")))
-    result = subprocess.run(
-        [
-            "iperf3",
-            "-c",
-            rail.destination_ip,
-            "-B",
-            rail.source_ip,
-            "-p",
-            str(port),
-            "-P",
-            str(streams),
-            "-t",
-            str(duration_s),
-            "--json",
-        ],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        timeout=timeout_s,
-        check=False,
-    )
-    if result.returncode != 0:
+    deadline = time.monotonic() + timeout_s
+    last_error = ""
+    bits_per_second = 0.0
+    while time.monotonic() < deadline:
+        remaining_s = max(1.0, deadline - time.monotonic())
+        result = subprocess.run(
+            [
+                "iperf3",
+                "-c",
+                rail.destination_ip,
+                "-B",
+                rail.source_ip,
+                "-p",
+                str(port),
+                "-P",
+                str(streams),
+                "-t",
+                str(duration_s),
+                "--json",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=remaining_s,
+            check=False,
+        )
+        if result.returncode == 0:
+            try:
+                data = json.loads(result.stdout)
+                end = data.get("end", {})
+                summary = end.get("sum_sent") or end.get("sum") or {}
+                bits_per_second = float(summary.get("bits_per_second", 0.0))
+            except (json.JSONDecodeError, TypeError, ValueError) as exc:
+                last_error = str(exc)
+                bits_per_second = 0.0
+            if bits_per_second > 0:
+                break
+        else:
+            last_error = result.stderr[-500:] or result.stdout[-500:]
+        time.sleep(float(_env("DS4_RAIL_TCP_PREFLIGHT_CLIENT_RETRY_SLEEP_S", "0.5")))
+    if bits_per_second <= 0:
         raise RuntimeError(
             f"rail TCP iperf3 client failed for pair={src}-{dst} "
-            f"{rail.source_ip}->{rail.destination_ip}:{port}: "
-            f"{result.stderr[-500:] or result.stdout[-500:]}"
+            f"{rail.source_ip}->{rail.destination_ip}:{port}: {last_error}"
         )
-    data = json.loads(result.stdout)
-    end = data.get("end", {})
-    summary = end.get("sum_sent") or end.get("sum") or {}
-    bits_per_second = float(summary.get("bits_per_second", 0.0))
     gbps = bits_per_second / 8.0 / 1e9
     rails_text = ",".join(
         f"{item.source_ip}->{item.destination_ip}/{item.dev}" for item in rails
