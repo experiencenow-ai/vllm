@@ -61,6 +61,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--health-timeout-s", type=float, default=900.0)
     parser.add_argument("--health-poll-s", type=float, default=5.0)
     parser.add_argument(
+        "--startup-fail-fast-s",
+        type=float,
+        default=30.0,
+        help="after this grace period, fail health polling early if no head-node launch, preflight, or vLLM process is alive",
+    )
+    parser.add_argument(
         "--health-url",
         default="",
         help="direct health URL; by default health is checked through ssh head-node",
@@ -209,6 +215,7 @@ def service_url(args: argparse.Namespace) -> str:
 
 def poll_health(args: argparse.Namespace) -> bool:
     deadline = time.monotonic() + args.health_timeout_s
+    started = time.monotonic()
     url = service_url(args)
     last_error = ""
     while time.monotonic() < deadline:
@@ -239,9 +246,55 @@ def poll_health(args: argparse.Namespace) -> bool:
         except (OSError, subprocess.CalledProcessError, json.JSONDecodeError) as exc:
             last_error = str(exc)
             print(f"health waiting: {last_error}")
+            if (
+                time.monotonic() - started >= args.startup_fail_fast_s
+                and not head_service_process_alive(args)
+            ):
+                print(
+                    "health failed early: no head-node launch/preflight/vLLM process is alive",
+                    file=sys.stderr,
+                )
+                print_head_diagnostics(args)
+                return False
             time.sleep(args.health_poll_s)
     print(f"health failed after {args.health_timeout_s:g}s: {last_error}", file=sys.stderr)
     return False
+
+
+def head_service_process_alive(args: argparse.Namespace) -> bool:
+    pattern = (
+        "vllm.entrypoints.cli.main serve|"
+        "VLLM::|"
+        "ds4_launch_dsv4_flash_|"
+        "ds4_nccl_preflight.py"
+    )
+    command = f"pgrep -af {shlex.quote(pattern)} >/dev/null"
+    try:
+        result = subprocess.run(["ssh", args.head_node, command], text=True)
+    except OSError:
+        return True
+    return result.returncode == 0
+
+
+def print_head_diagnostics(args: argparse.Namespace) -> None:
+    command = (
+        "printf 'processes:\\n'; "
+        "pgrep -af 'vllm.entrypoints.cli.main serve|VLLM::|ds4_launch_dsv4_flash_|ds4_nccl_preflight.py' || true; "
+        "printf '\\nrecent dsv4 logs:\\n'; "
+        "ls -td ~/ds4_logs/dsv4_pp*_rank0.log ~/ds4_logs/dsv4_pp*-rank0.log 2>/dev/null | head -3 | "
+        "xargs -r -I{} sh -c 'echo ==== {}; tail -80 {}'"
+    )
+    try:
+        result = subprocess.run(
+            ["ssh", args.head_node, command],
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        print(result.stdout[-12000:], file=sys.stderr)
+    except OSError as exc:
+        print(f"failed to collect head diagnostics: {exc}", file=sys.stderr)
 
 
 def run_on_nodes(args: argparse.Namespace, nodes: list[str], command_factory) -> None:

@@ -26,7 +26,8 @@ DEFAULT_NODES = ",".join(f"spark{i}" for i in range(8))
 SERVICE_PATTERNS = {
     "dsv4": [
         r"\bvllm\.entrypoints\.cli\.main serve .*DeepSeek-V4-Flash\b",
-        r"\bds4_launch_dsv4_flash_(?:pp8|tp2_native_benchmark)\.sh\b",
+        r"\bds4_launch_dsv4_flash_(?:pp8|pp4_tp2_ep|tp2_native_benchmark)\.sh\b",
+        r"\bds4_nccl_preflight\.py\b",
     ],
     "qwen": [
         r"\bvllm\.entrypoints\.cli\.main serve .*(?:Qwen|qwen|sakamakismile)\b",
@@ -35,6 +36,7 @@ SERVICE_PATTERNS = {
     "vllm": [
         r"\bvllm\.entrypoints\.cli\.main serve\b",
         r"\bds4_launch_(?:dsv4|qwen).*\.sh\b",
+        r"\bds4_nccl_preflight\.py\b",
     ],
     "benchmarks": [
         r"\bds4_api_queue_benchmark\.py\b",
