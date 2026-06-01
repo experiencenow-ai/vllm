@@ -226,6 +226,11 @@ ds4_require_200g_fabric()
       ds4_200g_check_or_export NCCL_NET "Socket"
       if [[ "$routed_loopback_socket" == "1" ]]; then
         ds4_200g_check_or_export NCCL_ALGO "Ring"
+        export NCCL_SOCKET_NTHREADS="${NCCL_SOCKET_NTHREADS:-4}"
+        export NCCL_NSOCKS_PERTHREAD="${NCCL_NSOCKS_PERTHREAD:-8}"
+        export DS4_NCCL_PREFLIGHT_BENCH_BYTES="${DS4_NCCL_PREFLIGHT_BENCH_BYTES:-67108864}"
+        export DS4_NCCL_PREFLIGHT_BENCH_ITERS="${DS4_NCCL_PREFLIGHT_BENCH_ITERS:-3}"
+        export DS4_NCCL_PREFLIGHT_MIN_BUSBW_GBPS="${DS4_NCCL_PREFLIGHT_MIN_BUSBW_GBPS:-10}"
         export DS4_200G_VERIFIED_ROUTED_LOOPBACK_NCCL=1
       fi
       if [[ -n "${NCCL_IB_HCA:-}" ]]; then
@@ -284,7 +289,11 @@ ds4_run_preflight_checked()
   set -e
   printf "%s\n" "$output" >&2
   if [[ "$output" == *"Could not get speed from"* || "$output" == *"Defaulting to 10 Gbps"* ]]; then
-    ds4_200g_die "NCCL reported a link-speed fallback during preflight; refusing to launch on an ambiguous or slow fabric"
+    if [[ "$status" == "0" && "${DS4_200G_VERIFIED_ROUTED_LOOPBACK_NCCL:-0}" == "1" && "$output" == *"DS4 NCCL preflight bandwidth:"* ]]; then
+      echo "DS4 200G route guard: NCCL could not read virtual ds4ring0 speed, but all-peer routes were verified over 200G interfaces and the measured NCCL bandwidth preflight passed." >&2
+    else
+      ds4_200g_die "NCCL reported a link-speed fallback during preflight; refusing to launch on an ambiguous or slow fabric"
+    fi
   fi
   if [[ "$status" != "0" ]]; then
     ds4_200g_die "preflight command failed with status $status"

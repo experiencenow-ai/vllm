@@ -6,6 +6,7 @@ from __future__ import annotations
 import datetime as _dt
 import os
 import sys
+import time
 
 import torch
 import torch.distributed as dist
@@ -34,9 +35,56 @@ def _print_env() -> None:
         "DS4_200G_VERIFIED_ROUTED_LOOPBACK_NCCL",
         "NCCL_DEBUG",
         "NCCL_DEBUG_SUBSYS",
+        "NCCL_SOCKET_NTHREADS",
+        "NCCL_NSOCKS_PERTHREAD",
+        "DS4_NCCL_PREFLIGHT_BENCH_BYTES",
+        "DS4_NCCL_PREFLIGHT_BENCH_ITERS",
+        "DS4_NCCL_PREFLIGHT_MIN_BUSBW_GBPS",
     ]
     for name in names:
         print(f"{name}={_env(name, '<unset>')}", file=sys.stderr)
+
+
+def _run_bandwidth_probe(rank: int, world_size: int) -> int:
+    bench_bytes = int(_env("DS4_NCCL_PREFLIGHT_BENCH_BYTES", "0"))
+    if bench_bytes <= 0:
+        return 0
+    bench_iters = max(1, int(_env("DS4_NCCL_PREFLIGHT_BENCH_ITERS", "3")))
+    min_busbw_gbps = float(_env("DS4_NCCL_PREFLIGHT_MIN_BUSBW_GBPS", "0"))
+    element_size = torch.empty((), dtype=torch.float32).element_size()
+    numel = max(1, bench_bytes // element_size)
+    actual_bytes = (numel * element_size)
+    buf = torch.full((numel,), float(rank + 1), dtype=torch.float32, device="cuda")
+    print(
+        "DS4 NCCL preflight bandwidth begin: "
+        f"bytes={actual_bytes} iters={bench_iters} min_busbw_GBps={min_busbw_gbps:.3f}",
+        file=sys.stderr,
+    )
+    dist.all_reduce(buf, op=dist.ReduceOp.SUM)
+    torch.cuda.synchronize()
+    start = time.perf_counter()
+    for _ in range(bench_iters):
+        dist.all_reduce(buf, op=dist.ReduceOp.SUM)
+    torch.cuda.synchronize()
+    elapsed_s = max(time.perf_counter() - start, 1e-9)
+    algbw_gbps = ((actual_bytes * bench_iters) / elapsed_s) / 1e9
+    bus_factor = ((2.0 * (world_size - 1)) / world_size) if world_size > 1 else 1.0
+    busbw_gbps = (algbw_gbps * bus_factor)
+    print(
+        "DS4 NCCL preflight bandwidth: "
+        f"bytes={actual_bytes} iters={bench_iters} elapsed_s={elapsed_s:.6f} "
+        f"algbw_GBps={algbw_gbps:.3f} busbw_GBps={busbw_gbps:.3f} "
+        f"min_busbw_GBps={min_busbw_gbps:.3f}",
+        file=sys.stderr,
+    )
+    if min_busbw_gbps > 0 and busbw_gbps < min_busbw_gbps:
+        print(
+            "DS4 NCCL preflight failed: "
+            f"measured busbw {busbw_gbps:.3f} GB/s < required {min_busbw_gbps:.3f} GB/s",
+            file=sys.stderr,
+        )
+        return 68
+    return 0
 
 
 def main() -> int:
@@ -91,6 +139,10 @@ def main() -> int:
                 file=sys.stderr,
             )
             return 66
+        if backend == "nccl":
+            bw_status = _run_bandwidth_probe(rank, world_size)
+            if bw_status != 0:
+                return bw_status
         print(f"DS4 NCCL preflight passed on rank {rank}", file=sys.stderr)
         return 0
     except Exception as exc:
