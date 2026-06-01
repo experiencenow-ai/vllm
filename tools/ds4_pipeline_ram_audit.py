@@ -162,7 +162,7 @@ CHECKS = [
     (
         "DSV4 PP8 default shifts layers away from slow late ranks",
         "tools/ds4_launch_dsv4_flash_pp8.sh",
-        'DSV4_FLASH_PP_LAYER_PARTITION="${DSV4_FLASH_PP_LAYER_PARTITION_DEFAULT:-7,7,7,6,6,4,4,4}"',
+        'DSV4_FLASH_PP_LAYER_PARTITION="${DSV4_FLASH_PP_LAYER_PARTITION_DEFAULT:-7,7,7,6,6,4,3,3}"',
     ),
     (
         "DSV4 throughput profiles cannot silently fall back to auto partition",
