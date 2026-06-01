@@ -42,3 +42,4 @@ check("relaunch validates PP4xTP2 launcher and speed audit", "ds4_launch_dsv4_fl
 check("stop script catches PP4xTP2 launcher", "pp4_tp2_ep" in stop)
 check("stop script catches stale NCCL preflight processes", "ds4_nccl_preflight" in stop)
 check("relaunch fails early when head startup process exits", "startup-fail-fast-s" in relaunch and "head_service_process_alive" in relaunch)
+check("relaunch process probe avoids pgrep self-match", "[d]s4_nccl_preflight.py" in relaunch and "[v]llm.entrypoints" in relaunch)
