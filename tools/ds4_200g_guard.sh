@@ -349,6 +349,13 @@ ds4_run_nccl_preflight()
         ds4_run_preflight_checked env RANK="$NODE_RANK" WORLD_SIZE="$world_size" MASTER_ADDR="$HEAD_ADDR" MASTER_PORT="$preflight_port" DS4_NCCL_PREFLIGHT_BACKEND=tp_pair_nccl "$RUNTIME_PYTHON" "$SCRIPT_DIR/ds4_nccl_preflight.py"
       fi
       ;;
+    p2p_nccl)
+      if command -v timeout >/dev/null 2>&1; then
+        ds4_run_preflight_checked env RANK="$NODE_RANK" WORLD_SIZE="$world_size" MASTER_ADDR="$HEAD_ADDR" MASTER_PORT="$preflight_port" DS4_NCCL_PREFLIGHT_BACKEND=p2p_nccl timeout --kill-after=5s "$((timeout_s + 15))s" "$RUNTIME_PYTHON" "$SCRIPT_DIR/ds4_nccl_preflight.py"
+      else
+        ds4_run_preflight_checked env RANK="$NODE_RANK" WORLD_SIZE="$world_size" MASTER_ADDR="$HEAD_ADDR" MASTER_PORT="$preflight_port" DS4_NCCL_PREFLIGHT_BACKEND=p2p_nccl "$RUNTIME_PYTHON" "$SCRIPT_DIR/ds4_nccl_preflight.py"
+      fi
+      ;;
     store)
       echo "DS4 store preflight: rank=$NODE_RANK/$world_size addr=$HEAD_ADDR port=$preflight_port" >&2
       RANK="$NODE_RANK" WORLD_SIZE="$world_size" MASTER_ADDR="$HEAD_ADDR" MASTER_PORT="$preflight_port" DS4_STORE_PREFLIGHT_TIMEOUT="$timeout_s" "$RUNTIME_PYTHON" - <<'PY'
@@ -402,7 +409,7 @@ PY
       echo "DS4 NCCL preflight skipped by DS4_NCCL_PREFLIGHT_MODE=skip" >&2
       ;;
     *)
-      ds4_200g_die "unsupported DS4_NCCL_PREFLIGHT_MODE=$mode; expected gloo, nccl, tp_pair_nccl, store, or skip"
+      ds4_200g_die "unsupported DS4_NCCL_PREFLIGHT_MODE=$mode; expected gloo, nccl, tp_pair_nccl, p2p_nccl, store, or skip"
       ;;
   esac
 }
