@@ -182,62 +182,40 @@ fi
 export VLLM_TEST_FORCE_FP8_MARLIN=0
 export VLLM_DISABLED_KERNELS="${VLLM_DISABLED_KERNELS:-MarlinNvFp4LinearKernel,EmulationNvFp4LinearKernel,MarlinMxFp4LinearKernel,MarlinMxfp8LinearKernel,EmulationMxfp8LinearKernel,MarlinFP8ScaledMMLinearKernel}"
 export DS4_200G_IFNAME="${DS4_200G_IFNAME:-enP2p1s0f0np0,enP2p1s0f1np1}"
-ds4_select_tp_pair_nccl_ifname()
-{
-  local partner_rank partner_loopback pair_ifname pair_hca
-  if [[ -n "${DS4_200G_NCCL_IFNAME:-}" ]]; then
-    return
-  fi
-  if [[ ! "$NODE_RANK" =~ ^[0-7]$ ]]; then
-    ds4_200g_die "PP4xTP2 pair-local NCCL selection requires NODE_RANK 0..7; got '$NODE_RANK'"
-  fi
-  if (( NODE_RANK % 2 == 0 )); then
-    partner_rank=$((NODE_RANK + 1))
-  else
-    partner_rank=$((NODE_RANK - 1))
-  fi
-  partner_loopback="10.10.100.$((10 + partner_rank))"
-  pair_ifname="$(ds4_200g_route_dev "$partner_loopback")"
-  [[ -n "$pair_ifname" ]] || ds4_200g_die "no route to TP/EP partner loopback '$partner_loopback' for pair-local NCCL"
-  ds4_200g_csv_contains "$DS4_200G_IFNAME" "$pair_ifname" || ds4_200g_die "route to TP/EP partner '$partner_loopback' uses '$pair_ifname', not route-verified 200G interface list '$DS4_200G_IFNAME'"
-  pair_hca="$(ds4_200g_hca_for_if "$pair_ifname")"
-  [[ -n "$pair_hca" ]] || ds4_200g_die "no RoCE HCA maps to TP/EP partner interface '$pair_ifname'"
-  export DS4_200G_NCCL_IFNAME="$pair_ifname"
-  echo "DSV4 PP4xTP2xEP pair-local NCCL: rank=$NODE_RANK partner_rank=$partner_rank partner_loopback=$partner_loopback if=$DS4_200G_NCCL_IFNAME hca=$pair_hca" >&2
-}
-if [[ "${DS4_200G_PAIR_LOCAL_NCCL:-1}" =~ ^(1|true|TRUE|yes|YES|on|ON)$ ]]; then
-  ds4_select_tp_pair_nccl_ifname
+if [[ "${DS4_200G_PAIR_LOCAL_NCCL:-0}" =~ ^(1|true|TRUE|yes|YES|on|ON)$ ]]; then
+  echo "DSV4 PP4xTP2xEP refuses DS4_200G_PAIR_LOCAL_NCCL=1. The production fast path requires one all-rank NCCL/socket fabric so PP, TP, and EP cannot silently fall back to a pair-only view." >&2
+  exit 64
 fi
 export DS4_CONTROL_IFNAME="${DS4_CONTROL_IFNAME:-ds4ring0}"
 export DS4_200G_ADVERTISE_LOOPBACK="${DS4_200G_ADVERTISE_LOOPBACK:-1}"
-export DS4_200G_NCCL_TRANSPORT="${DS4_200G_NCCL_TRANSPORT:-ib}"
-export VLLM_DS4_DISTRIBUTED_BACKEND="${VLLM_DS4_DISTRIBUTED_BACKEND:-gloo}"
-if [[ "$VLLM_DS4_DISTRIBUTED_BACKEND" != "gloo" ]]; then
-  echo "DSV4 PP4xTP2xEP requires VLLM_DS4_DISTRIBUTED_BACKEND=gloo. All-8 NCCL/IB is invalid on the routed Spark ring; adjacent TP/EP device collectives are preflighted separately." >&2
+export DS4_200G_NCCL_TRANSPORT="${DS4_200G_NCCL_TRANSPORT:-socket}"
+export VLLM_DS4_DISTRIBUTED_BACKEND="${VLLM_DS4_DISTRIBUTED_BACKEND:-nccl}"
+if [[ "$VLLM_DS4_DISTRIBUTED_BACKEND" != "nccl" ]]; then
+  echo "DSV4 PP4xTP2xEP requires VLLM_DS4_DISTRIBUTED_BACKEND=nccl. gloo/CPU control paths hide PP transport regressions and are not valid for performance runs." >&2
   exit 64
 fi
 if [[ -n "${VLLM_DS4_PP_ONLY_GLOBAL_BACKEND:-}" ]]; then
-  echo "DSV4 PP4xTP2xEP refuses VLLM_DS4_PP_ONLY_GLOBAL_BACKEND=$VLLM_DS4_PP_ONLY_GLOBAL_BACKEND; use VLLM_DS4_DISTRIBUTED_BACKEND=gloo for this topology." >&2
+  echo "DSV4 PP4xTP2xEP refuses VLLM_DS4_PP_ONLY_GLOBAL_BACKEND=$VLLM_DS4_PP_ONLY_GLOBAL_BACKEND; use VLLM_DS4_DISTRIBUTED_BACKEND=nccl for one fail-closed all-rank fabric." >&2
   exit 64
 fi
-export VLLM_DS4_PP_DISABLE_DEVICE_COMMUNICATOR="${VLLM_DS4_PP_DISABLE_DEVICE_COMMUNICATOR:-1}"
-if [[ ! "$VLLM_DS4_PP_DISABLE_DEVICE_COMMUNICATOR" =~ ^(1|true|TRUE|yes|YES|on|ON)$ ]]; then
-  echo "DSV4 PP4xTP2xEP requires VLLM_DS4_PP_DISABLE_DEVICE_COMMUNICATOR=1. Non-adjacent PP RoCE QPs are not valid on the Spark ring." >&2
+export VLLM_DS4_PP_DISABLE_DEVICE_COMMUNICATOR="${VLLM_DS4_PP_DISABLE_DEVICE_COMMUNICATOR:-0}"
+if [[ "$VLLM_DS4_PP_DISABLE_DEVICE_COMMUNICATOR" =~ ^(1|true|TRUE|yes|YES|on|ON)$ ]]; then
+  echo "DSV4 PP4xTP2xEP refuses VLLM_DS4_PP_DISABLE_DEVICE_COMMUNICATOR=1. The PP device communicator is required for the fast path." >&2
   exit 64
 fi
-export VLLM_DS4_PP_CPU_STAGED_TENSOR_DICT="${VLLM_DS4_PP_CPU_STAGED_TENSOR_DICT:-1}"
-if [[ ! "$VLLM_DS4_PP_CPU_STAGED_TENSOR_DICT" =~ ^(1|true|TRUE|yes|YES|on|ON)$ ]]; then
-  echo "DSV4 PP4xTP2xEP requires VLLM_DS4_PP_CPU_STAGED_TENSOR_DICT=1 when the PP device communicator is disabled." >&2
+export VLLM_DS4_PP_CPU_STAGED_TENSOR_DICT="${VLLM_DS4_PP_CPU_STAGED_TENSOR_DICT:-0}"
+if [[ "$VLLM_DS4_PP_CPU_STAGED_TENSOR_DICT" =~ ^(1|true|TRUE|yes|YES|on|ON)$ ]]; then
+  echo "DSV4 PP4xTP2xEP refuses VLLM_DS4_PP_CPU_STAGED_TENSOR_DICT=1. CPU-staged PP tensors are a slow fallback, not a production path." >&2
   exit 64
 fi
-export VLLM_DS4_PP_PYNCCL_TENSOR_DICT="${VLLM_DS4_PP_PYNCCL_TENSOR_DICT:-0}"
-if [[ "$VLLM_DS4_PP_PYNCCL_TENSOR_DICT" =~ ^(1|true|TRUE|yes|YES|on|ON)$ ]]; then
-  echo "DSV4 PP4xTP2xEP refuses VLLM_DS4_PP_PYNCCL_TENSOR_DICT=1. PyNCCL PP P2P tries non-adjacent RoCE links on this topology." >&2
+export VLLM_DS4_PP_PYNCCL_TENSOR_DICT="${VLLM_DS4_PP_PYNCCL_TENSOR_DICT:-1}"
+if [[ ! "$VLLM_DS4_PP_PYNCCL_TENSOR_DICT" =~ ^(1|true|TRUE|yes|YES|on|ON)$ ]]; then
+  echo "DSV4 PP4xTP2xEP requires VLLM_DS4_PP_PYNCCL_TENSOR_DICT=1. Disabling it would benchmark the slow torch/CPU tensor-dict path." >&2
   exit 64
 fi
 export VLLM_DS4_SKIP_PYNCCL_WARMUP_ALLREDUCE="${VLLM_DS4_SKIP_PYNCCL_WARMUP_ALLREDUCE:-1}"
-export DS4_NCCL_PREFLIGHT_MODE="${DS4_NCCL_PREFLIGHT_MODE:-tp_pair_nccl}"
-export DS4_NCCL_PREFLIGHT_GROUPS="${DS4_NCCL_PREFLIGHT_GROUPS:-0,1;2,3;4,5;6,7}"
+export DS4_NCCL_PREFLIGHT_MODE="${DS4_NCCL_PREFLIGHT_MODE:-nccl}"
+export DS4_NCCL_PREFLIGHT_GROUPS="${DS4_NCCL_PREFLIGHT_GROUPS:-all}"
 if [[ "$NODE_RANK" == "0" ]]; then
   export DS4_200G_ALLOW_LOOPBACK_HEAD="${DS4_200G_ALLOW_LOOPBACK_HEAD:-1}"
 fi
@@ -301,7 +279,7 @@ else
   unset VLLM_PP_LAYER_PARTITION
 fi
 
-echo "DSV4 PP${PP_SIZE}xTP${TP_SIZE}xEP profile=$DS4_DSV4_PIPELINE_RAM_PROFILE max_model_len=$DSV4_MAX_MODEL_LEN max_num_seqs=$DSV4_MAX_NUM_SEQS max_num_batched_tokens=$DSV4_MAX_NUM_BATCHED_TOKENS sched_max_new_reqs=$VLLM_DS4_SCHED_MAX_NEW_REQS_PER_STEP sched_max_new_prefill_tokens=$VLLM_DS4_SCHED_MAX_NEW_PREFILL_TOKENS_PER_STEP kv_cache_memory_bytes=$DSV4_KV_CACHE_MEMORY_BYTES kv_offloading_size=$DSV4_KV_OFFLOADING_SIZE gpu_memory_utilization=$DSV4_GPU_MEMORY_UTILIZATION workspace_prealloc_bytes=$VLLM_WORKSPACE_PREALLOC_BYTES mq_max_chunks=$VLLM_MQ_MAX_CHUNKS pp_layer_partition=${DSV4_FLASH_PP_LAYER_PARTITION:-auto} global_backend=$VLLM_DS4_DISTRIBUTED_BACKEND nccl_preflight=$DS4_NCCL_PREFLIGHT_MODE nccl_groups=$DS4_NCCL_PREFLIGHT_GROUPS route_if=$DS4_200G_IFNAME nccl_if=${DS4_200G_NCCL_IFNAME:-$DS4_200G_IFNAME} nccl_hca=${NCCL_IB_HCA:-<pre-guard>} pp_cpu_staged=$VLLM_DS4_PP_CPU_STAGED_TENSOR_DICT" >&2
+echo "DSV4 PP${PP_SIZE}xTP${TP_SIZE}xEP profile=$DS4_DSV4_PIPELINE_RAM_PROFILE max_model_len=$DSV4_MAX_MODEL_LEN max_num_seqs=$DSV4_MAX_NUM_SEQS max_num_batched_tokens=$DSV4_MAX_NUM_BATCHED_TOKENS sched_max_new_reqs=$VLLM_DS4_SCHED_MAX_NEW_REQS_PER_STEP sched_max_new_prefill_tokens=$VLLM_DS4_SCHED_MAX_NEW_PREFILL_TOKENS_PER_STEP kv_cache_memory_bytes=$DSV4_KV_CACHE_MEMORY_BYTES kv_offloading_size=$DSV4_KV_OFFLOADING_SIZE gpu_memory_utilization=$DSV4_GPU_MEMORY_UTILIZATION workspace_prealloc_bytes=$VLLM_WORKSPACE_PREALLOC_BYTES mq_max_chunks=$VLLM_MQ_MAX_CHUNKS pp_layer_partition=${DSV4_FLASH_PP_LAYER_PARTITION:-auto} global_backend=$VLLM_DS4_DISTRIBUTED_BACKEND nccl_preflight=$DS4_NCCL_PREFLIGHT_MODE nccl_groups=$DS4_NCCL_PREFLIGHT_GROUPS route_if=$DS4_200G_IFNAME nccl_transport=$DS4_200G_NCCL_TRANSPORT nccl_if=${DS4_200G_NCCL_IFNAME:-$DS4_200G_IFNAME} nccl_hca=${NCCL_IB_HCA:-<pre-guard>} pp_device_comm_disabled=$VLLM_DS4_PP_DISABLE_DEVICE_COMMUNICATOR pp_pynccl=$VLLM_DS4_PP_PYNCCL_TENSOR_DICT pp_cpu_staged=$VLLM_DS4_PP_CPU_STAGED_TENSOR_DICT" >&2
 
 KV_CACHE_MEMORY_ARGS=()
 case "$DSV4_KV_CACHE_MEMORY_BYTES" in

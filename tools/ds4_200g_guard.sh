@@ -178,7 +178,7 @@ ds4_require_routed_loopback_over_200g()
 
 ds4_require_200g_fabric()
 {
-  local ifname ifnames_csv control_ifname socket_ifname speed carrier local_ip bound_dev route_dev hca hcas_csv advertise_ip advertise_bound nccl_transport routed_loopback_socket nccl_ifname nccl_ifnames_csv nccl_hcas_csv
+  local ifname ifnames_csv control_ifname socket_ifname speed carrier local_ip bound_dev route_dev hca hcas_csv advertise_ip advertise_bound nccl_transport nccl_ifname nccl_ifnames_csv nccl_hcas_csv
   : "${NODE_RANK:?set NODE_RANK before ds4_require_200g_fabric}"
   : "${HEAD_ADDR:?set HEAD_ADDR before ds4_require_200g_fabric}"
   if [[ -z "${DS4_200G_IFNAME:-}" ]]; then
@@ -237,34 +237,26 @@ ds4_require_200g_fabric()
   case "$nccl_transport" in
     socket)
       export DS4_200G_NCCL_TRANSPORT="socket"
-      routed_loopback_socket=0
       if [[ "${DS4_200G_ADVERTISE_LOOPBACK:-0}" =~ ^(1|true|TRUE|yes|YES|on|ON)$ ]]; then
-        socket_ifname="${DS4_200G_SOCKET_IFNAME:-$control_ifname}"
+        socket_ifname="${DS4_200G_SOCKET_IFNAME:-$ifnames_csv}"
       else
         socket_ifname="${DS4_200G_SOCKET_IFNAME:-$ifnames_csv}"
       fi
       IFS=',' read -r -a socket_ifnames <<< "$socket_ifname"
       for ifname in "${socket_ifnames[@]}"; do
         [[ -n "$ifname" ]] || ds4_200g_die "DS4_200G_SOCKET_IFNAME contains an empty interface"
-        if ds4_200g_csv_contains "$control_ifname" "$ifname" && [[ "${DS4_200G_ADVERTISE_LOOPBACK:-0}" =~ ^(1|true|TRUE|yes|YES|on|ON)$ ]]; then
-          routed_loopback_socket=1
-        else
-          ds4_200g_require_link_200g "$ifname" "NCCL socket"
-        fi
+        ds4_200g_require_link_200g "$ifname" "NCCL socket"
       done
       ds4_200g_check_or_export NCCL_SOCKET_IFNAME "$socket_ifname"
       ds4_200g_check_or_export TP_SOCKET_IFNAME "$socket_ifname"
       ds4_200g_check_or_export NCCL_IB_DISABLE "1"
       ds4_200g_check_or_export NCCL_NET "Socket"
-      if [[ "$routed_loopback_socket" == "1" ]]; then
-        ds4_200g_check_or_export NCCL_ALGO "Ring"
-        export NCCL_SOCKET_NTHREADS="${NCCL_SOCKET_NTHREADS:-4}"
-        export NCCL_NSOCKS_PERTHREAD="${NCCL_NSOCKS_PERTHREAD:-8}"
-        export DS4_NCCL_PREFLIGHT_BENCH_BYTES="${DS4_NCCL_PREFLIGHT_BENCH_BYTES:-67108864}"
-        export DS4_NCCL_PREFLIGHT_BENCH_ITERS="${DS4_NCCL_PREFLIGHT_BENCH_ITERS:-3}"
-        export DS4_NCCL_PREFLIGHT_MIN_BUSBW_GBPS="${DS4_NCCL_PREFLIGHT_MIN_BUSBW_GBPS:-10}"
-        export DS4_200G_VERIFIED_ROUTED_LOOPBACK_NCCL=1
-      fi
+      ds4_200g_check_or_export NCCL_ALGO "Ring"
+      export NCCL_SOCKET_NTHREADS="${NCCL_SOCKET_NTHREADS:-4}"
+      export NCCL_NSOCKS_PERTHREAD="${NCCL_NSOCKS_PERTHREAD:-8}"
+      export DS4_NCCL_PREFLIGHT_BENCH_BYTES="${DS4_NCCL_PREFLIGHT_BENCH_BYTES:-67108864}"
+      export DS4_NCCL_PREFLIGHT_BENCH_ITERS="${DS4_NCCL_PREFLIGHT_BENCH_ITERS:-3}"
+      export DS4_NCCL_PREFLIGHT_MIN_BUSBW_GBPS="${DS4_NCCL_PREFLIGHT_MIN_BUSBW_GBPS:-10}"
       if [[ -n "${NCCL_IB_HCA:-}" ]]; then
         ds4_200g_die "NCCL_IB_HCA is set while DS4_200G_NCCL_TRANSPORT=socket; unset it or use DS4_200G_NCCL_TRANSPORT=ib"
       fi
@@ -321,11 +313,7 @@ ds4_run_preflight_checked()
   set -e
   printf "%s\n" "$output" >&2
   if [[ "$output" == *"Could not get speed from"* || "$output" == *"Defaulting to 10 Gbps"* ]]; then
-    if [[ "$status" == "0" && "${DS4_200G_VERIFIED_ROUTED_LOOPBACK_NCCL:-0}" == "1" && "$output" == *"DS4 NCCL preflight bandwidth:"* ]]; then
-      echo "DS4 200G route guard: NCCL could not read virtual ds4ring0 speed, but all-peer routes were verified over 200G interfaces and the measured NCCL bandwidth preflight passed." >&2
-    else
-      ds4_200g_die "NCCL reported a link-speed fallback during preflight; refusing to launch on an ambiguous or slow fabric"
-    fi
+    ds4_200g_die "NCCL reported a link-speed fallback during preflight; refusing to launch on an ambiguous or slow fabric"
   fi
   if [[ "$status" != "0" ]]; then
     ds4_200g_die "preflight command failed with status $status"
