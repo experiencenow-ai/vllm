@@ -214,6 +214,10 @@ class SimpleCPUOffloadConnector(KVConnectorBase_V1, SupportsHMA):
         if self.scheduler_manager is not None:
             self.scheduler_manager.update_connector_output(connector_output)
 
+    def on_new_request(self, request: "Request") -> None:
+        if self.scheduler_manager is not None:
+            self.scheduler_manager.validate_new_request(request)
+
     def request_finished(
         self,
         request: "Request",

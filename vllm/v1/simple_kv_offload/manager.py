@@ -263,43 +263,11 @@ class SimpleCPUOffloadScheduler:
         if stale := self._pending_cpu_hits.pop(request.request_id, None):
             self._free_pending_cpu_hit(stale)
 
-        num_skipped_hashes = num_computed_tokens // self.hash_block_size
-        remaining_hashes = request.block_hashes[num_skipped_hashes:]
-
-        if not remaining_hashes:
-            return 0, False
-        # Must recompute at least the last token, matching the logic in
-        # kv_cache_manager.get_computed_blocks().
-        max_hit_len = request.num_tokens - 1 - num_computed_tokens
-        if max_hit_len <= 0:
-            return 0, False
-        cache_ref = _request_cache_ref(request)
-        self._seed_persistent_hits(remaining_hashes, max_hit_len, cache_ref)
-        cpu_hit_blocks, hit_length = self.cpu_coordinator.find_longest_cache_hit(
-            remaining_hashes, max_hit_len
+        cpu_hit_blocks, hit_length, cache_ref = self._find_cpu_hit(
+            request, num_computed_tokens
         )
 
         if hit_length > 0:
-            if self._persistent_store is not None:
-                raw_hit_length = hit_length
-                guard_tokens = max(
-                    self.block_size,
-                    getattr(self.cpu_coordinator, "lcm_block_size", self.block_size),
-                )
-                # HMA grouped/sliding KV needs one aligned lookahead block during
-                # post-allocation use. Advertise one LCM less than the raw hit
-                # while keeping the full pending hit pinned for the loader.
-                hit_length = max(0, hit_length - guard_tokens)
-                if hit_length == 0:
-                    return 0, False
-                logger.info(
-                    "DS4 persistent SimpleCPUOffload scheduler hit: "
-                    "request=%s tokens=%d raw_tokens=%d guard_tokens=%d",
-                    request.request_id,
-                    hit_length,
-                    raw_hit_length,
-                    guard_tokens,
-                )
             pin_blocks = [
                 blk for grp in cpu_hit_blocks for blk in grp if not blk.is_null
             ]
@@ -311,6 +279,56 @@ class SimpleCPUOffloadScheduler:
             )
             return hit_length, True
         return 0, False
+
+    def validate_new_request(self, request: "Request") -> None:
+        """Fail closed before scheduling DS4 cache loads that cannot hit."""
+        if not _request_requires_strict_load(request):
+            return
+        _, hit_length, cache_ref = self._find_cpu_hit(request, 0)
+        if hit_length > 0:
+            return
+        raise ValueError(
+            "DS4 KV cache load was required, but SimpleCPUOffload found no "
+            f"matching cache blocks for cache_ref={cache_ref!r}. Refusing to "
+            "serve the request cold because that hides broken external-KV "
+            "benchmark/deployment plumbing."
+        )
+
+    def _find_cpu_hit(
+        self, request: "Request", num_computed_tokens: int
+    ) -> tuple[tuple[list["KVCacheBlock"], ...], int, str | None]:
+        num_skipped_hashes = num_computed_tokens // self.hash_block_size
+        remaining_hashes = request.block_hashes[num_skipped_hashes:]
+        cache_ref = _request_cache_ref(request)
+        if not remaining_hashes:
+            return tuple(), 0, cache_ref
+        max_hit_len = request.num_tokens - 1 - num_computed_tokens
+        if max_hit_len <= 0:
+            return tuple(), 0, cache_ref
+        self._seed_persistent_hits(remaining_hashes, max_hit_len, cache_ref)
+        cpu_hit_blocks, hit_length = self.cpu_coordinator.find_longest_cache_hit(
+            remaining_hashes, max_hit_len
+        )
+        if hit_length > 0 and self._persistent_store is not None:
+            raw_hit_length = hit_length
+            guard_tokens = max(
+                self.block_size,
+                getattr(self.cpu_coordinator, "lcm_block_size", self.block_size),
+            )
+            # HMA grouped/sliding KV needs one aligned lookahead block during
+            # post-allocation use. Advertise one LCM less than the raw hit
+            # while keeping the full pending hit pinned for the loader.
+            hit_length = max(0, hit_length - guard_tokens)
+            if hit_length > 0:
+                logger.info(
+                    "DS4 persistent SimpleCPUOffload scheduler hit: "
+                    "request=%s tokens=%d raw_tokens=%d guard_tokens=%d",
+                    request.request_id,
+                    hit_length,
+                    raw_hit_length,
+                    guard_tokens,
+                )
+        return cpu_hit_blocks, hit_length, cache_ref
 
     def _seed_persistent_hits(
         self,
@@ -1031,3 +1049,18 @@ def _request_cache_ref(request: "Request") -> str | None:
         if isinstance(value, str) and value:
             return value
     return None
+
+
+def _request_requires_strict_load(request: "Request") -> bool:
+    params = request.kv_transfer_params
+    if not isinstance(params, dict):
+        return False
+    plan = params.get("ds4_kv_cache")
+    if not isinstance(plan, dict):
+        return False
+    load = plan.get("load")
+    if not isinstance(load, dict):
+        return False
+    if load.get("mode") == "require":
+        return True
+    return bool(params.get("ds4_require_kv_transfer") and plan.get("miss_policy") == "fail")

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import pytest
 import torch
 
 from vllm import SamplingParams
@@ -1583,6 +1584,29 @@ def test_persistent_api_lookup_seeds_scheduler_hits(monkeypatch) -> None:
         make_scheduler_output({req.request_id: 1})
     )
     assert meta.load_cache_refs == ["bundle-1", "bundle-1"]
+
+
+def test_required_ds4_cache_miss_fails_before_scheduling() -> None:
+    fix = make_scheduler(num_cpu_blocks=8, num_gpu_blocks=16, lazy=False)
+    req = make_request(num_blocks=3)
+    req.kv_transfer_params = {
+        "ds4_require_kv_transfer": True,
+        "cache_ref": "missing-bundle",
+        "ds4_kv_cache": {
+            "format": "ds4-kv-cache-plan-v1",
+            "cache_id": "missing-bundle",
+            "load": {
+                "mode": "require",
+                "transport": "local_store",
+                "cache_key": "missing-bundle",
+            },
+            "store": {"mode": "skip", "transport": "none"},
+            "miss_policy": "fail",
+        },
+    }
+
+    with pytest.raises(ValueError, match="DS4 KV cache load was required"):
+        fix.scheduler.validate_new_request(req)
 
 
 def test_persistent_scheduler_restore_uses_guarded_hits(tmp_path, monkeypatch) -> None:
