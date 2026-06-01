@@ -65,7 +65,20 @@ def main() -> None:
     _require(
         "scheduler only stores DS4-marked cache requests",
         "vllm/v1/simple_kv_offload/manager.py",
-        ["_request_wants_store", "and _request_wants_store(request)"],
+        [
+            "_request_wants_store",
+            "and _request_wants_store(request)",
+            "VLLM_DS4_SIMPLE_KV_STORE_UNMARKED",
+        ],
+    )
+    _require(
+        "persistent cache startup restore can be disabled for DS4 services",
+        "vllm/v1/simple_kv_offload/manager.py",
+        [
+            "_startup_restore_enabled",
+            "persistent startup restore disabled",
+            "VLLM_DS4_SIMPLE_KV_STARTUP_RESTORE",
+        ],
     )
     _require(
         "store metadata carries cache refs to workers",
@@ -88,6 +101,8 @@ def main() -> None:
                 "DSV4_OFFLOAD_PARTITION_KEY",
                 "VLLM_SIMPLE_KV_OFFLOAD_PERSIST_NAMESPACE",
                 "part_${DSV4_OFFLOAD_PARTITION_KEY}",
+                "VLLM_DS4_SIMPLE_KV_STARTUP_RESTORE",
+                "VLLM_DS4_SIMPLE_KV_STORE_UNMARKED",
             ],
         )
 
