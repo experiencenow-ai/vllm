@@ -196,13 +196,21 @@ class OpenAIServing(BeamSearchOnlineMixin):
         )
         return json_str
 
-    def _raise_if_error(self, finish_reason: str | None, request_id: str) -> None:
+    def _raise_if_error(
+        self,
+        finish_reason: str | None,
+        request_id: str,
+        stop_reason: int | str | None = None,
+    ) -> None:
         """Raise GenerationError if finish_reason indicates an error."""
         if finish_reason == "error":
             logger.error(
-                "Request %s failed with an internal error during generation",
+                "Request %s failed with an error during generation: %s",
                 request_id,
+                stop_reason,
             )
+            if isinstance(stop_reason, str) and stop_reason:
+                raise GenerationError(stop_reason)
             raise GenerationError("Internal server error")
 
     def _convert_generation_error_to_streaming_response(
