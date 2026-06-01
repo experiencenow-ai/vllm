@@ -61,6 +61,13 @@ def parse_args() -> argparse.Namespace:
         default="",
         help="direct health URL; by default health is checked through ssh head-node",
     )
+    parser.add_argument(
+        "--env",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="extra environment variable passed to every service rank; repeatable",
+    )
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args()
 
@@ -136,14 +143,14 @@ def stop_command(args: argparse.Namespace) -> str:
 
 
 def launch_env(args: argparse.Namespace, rank: int) -> dict[str, str]:
-    return {
+    env = {
         "NODE_RANK": str(rank),
         "HEAD_ADDR": args.head_addr,
         "NNODES": str(args.nnodes),
         "MASTER_PORT": args.master_port,
         "API_PORT": args.api_port,
         "DS4_DSV4_PIPELINE_RAM_PROFILE": args.profile,
-        "VLLM_DEBUG_WORKSPACE": os.getenv("VLLM_DEBUG_WORKSPACE", "1"),
+        "VLLM_DEBUG_WORKSPACE": os.getenv("VLLM_DEBUG_WORKSPACE", "0"),
         "DS4_VLLM_SOURCE_ROOT": args.source_root.replace("~", f"/home/{node_user(rank)}", 1)
         if args.source_root.startswith("~/")
         else args.source_root,
@@ -151,6 +158,15 @@ def launch_env(args: argparse.Namespace, rank: int) -> dict[str, str]:
         if args.python.startswith("~/")
         else args.python,
     }
+    for item in args.env:
+        if "=" not in item:
+            raise SystemExit(f"--env expects KEY=VALUE, got {item!r}")
+        key, value = item.split("=", 1)
+        key = key.strip()
+        if not key:
+            raise SystemExit(f"--env has empty key: {item!r}")
+        env[key] = value
+    return env
 
 
 def node_user(rank: int) -> str:
