@@ -123,11 +123,14 @@ def build_command(args: argparse.Namespace) -> str:
         "if [ -f Makefile ]; then "
         "make; "
         "else "
-        f"{py} -m py_compile vllm/envs.py vllm/v1/worker/workspace.py "
+        f"{py} -m py_compile vllm/envs.py vllm/v1/core/sched/scheduler.py "
+        "vllm/v1/worker/workspace.py "
         "tools/ds4_stop_spark_processes.py tools/ds4_relaunch_spark_service.py "
-        "tools/ds4_workspace_prealloc_audit.py && "
+        "tools/ds4_workspace_prealloc_audit.py "
+        "tools/ds4_pp_wave_admission_audit.py && "
         "bash -n tools/ds4_launch_dsv4_flash_pp8.sh && "
         f"{py} tools/ds4_workspace_prealloc_audit.py && "
+        f"{py} tools/ds4_pp_wave_admission_audit.py && "
         f"{py} tools/ds4_no_marlin_static_audit.py; "
         "fi",
     )
