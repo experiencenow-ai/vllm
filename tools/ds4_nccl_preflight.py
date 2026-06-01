@@ -158,6 +158,7 @@ def _run_p2p_pair_probe(rank: int, src: int, dst: int) -> int:
     if bench_bytes <= 0:
         return 0
     bench_iters = max(1, int(_env("DS4_NCCL_PREFLIGHT_BENCH_ITERS", "3")))
+    stripes = max(1, int(_env("DS4_NCCL_PREFLIGHT_P2P_STRIPES", "1")))
     min_p2p_gbps = float(
         _env(
             "DS4_NCCL_PREFLIGHT_MIN_P2P_GBPS",
@@ -172,18 +173,19 @@ def _run_p2p_pair_probe(rank: int, src: int, dst: int) -> int:
     peer = dst if rank == src else src
     send = torch.full((numel,), float(rank + 1), dtype=torch.float32, device="cuda")
     recv = torch.empty_like(send)
+    send_chunks = _split_p2p_tensor(send, stripes)
+    recv_chunks = _split_p2p_tensor(recv, stripes)
 
     def exchange() -> None:
+        ops = []
         if rank == src:
-            ops = [
-                dist.P2POp(dist.isend, send, dst),
-                dist.P2POp(dist.irecv, recv, dst),
-            ]
+            for send_chunk, recv_chunk in zip(send_chunks, recv_chunks):
+                ops.append(dist.P2POp(dist.isend, send_chunk, dst))
+                ops.append(dist.P2POp(dist.irecv, recv_chunk, dst))
         else:
-            ops = [
-                dist.P2POp(dist.irecv, recv, src),
-                dist.P2POp(dist.isend, send, src),
-            ]
+            for send_chunk, recv_chunk in zip(send_chunks, recv_chunks):
+                ops.append(dist.P2POp(dist.irecv, recv_chunk, src))
+                ops.append(dist.P2POp(dist.isend, send_chunk, src))
         reqs = dist.batch_isend_irecv(ops)
         for req in reqs:
             req.wait()
@@ -191,17 +193,20 @@ def _run_p2p_pair_probe(rank: int, src: int, dst: int) -> int:
     print(
         "DS4 NCCL P2P preflight bandwidth begin: "
         f"pair={src}-{dst} local_rank={rank} peer={peer} "
-        f"bytes={actual_bytes} iters={bench_iters} min_p2p_GBps={min_p2p_gbps:.3f}",
+        f"bytes={actual_bytes} iters={bench_iters} stripes={len(send_chunks)} "
+        f"min_p2p_GBps={min_p2p_gbps:.3f}",
         file=sys.stderr,
     )
     exchange()
     torch.cuda.synchronize()
     expected = float(peer + 1)
     actual = float(recv[0].item())
-    if actual != expected:
+    actual_tail = float(recv[-1].item())
+    if actual != expected or actual_tail != expected:
         print(
             "DS4 NCCL P2P preflight failed: "
-            f"pair={src}-{dst} rank={rank} recv {actual} != expected {expected}",
+            f"pair={src}-{dst} rank={rank} recv head/tail "
+            f"{actual}/{actual_tail} != expected {expected}",
             file=sys.stderr,
         )
         return 66
@@ -214,7 +219,8 @@ def _run_p2p_pair_probe(rank: int, src: int, dst: int) -> int:
     print(
         "DS4 NCCL P2P preflight bandwidth: "
         f"pair={src}-{dst} local_rank={rank} bytes={actual_bytes} "
-        f"iters={bench_iters} elapsed_s={elapsed_s:.6f} "
+        f"iters={bench_iters} stripes={len(send_chunks)} "
+        f"elapsed_s={elapsed_s:.6f} "
         f"bidirectional_GBps={bidirectional_gbps:.3f} "
         f"min_p2p_GBps={min_p2p_gbps:.3f}",
         file=sys.stderr,
@@ -228,6 +234,22 @@ def _run_p2p_pair_probe(rank: int, src: int, dst: int) -> int:
         )
         return 68
     return 0
+
+
+def _split_p2p_tensor(tensor: torch.Tensor, stripes: int) -> list[torch.Tensor]:
+    stripes = min(max(1, stripes), tensor.numel())
+    if stripes <= 1:
+        return [tensor]
+    base = tensor.numel() // stripes
+    rem = tensor.numel() % stripes
+    chunks: list[torch.Tensor] = []
+    offset = 0
+    for index in range(stripes):
+        length = base + (1 if index < rem else 0)
+        if length > 0:
+            chunks.append(tensor.narrow(0, offset, length))
+        offset += length
+    return chunks
 
 
 def _run_p2p_nccl_preflight(rank: int, world_size: int) -> int:

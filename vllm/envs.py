@@ -141,6 +141,8 @@ if TYPE_CHECKING:
     VLLM_DS4_PP_ONLY_GLOBAL_BACKEND: str = ""
     VLLM_DS4_PP_DISABLE_DEVICE_COMMUNICATOR: bool = False
     VLLM_DS4_PP_PYNCCL_TENSOR_DICT: bool = False
+    VLLM_DS4_PP_PYNCCL_TENSOR_DICT_STRIPES: int = 1
+    VLLM_DS4_PP_PYNCCL_TENSOR_DICT_STRIPE_MIN_BYTES: int = 1048576
     VLLM_DS4_SKIP_PYNCCL_WARMUP_ALLREDUCE: bool = False
     VLLM_DS4_SM12X_MQA_ROWWISE: bool = True
     VLLM_DS4_SM12X_MQA_ROWWISE_MAX_ROWS: int = 4
@@ -1305,6 +1307,15 @@ environment_variables: dict[str, Callable[[], Any]] = {
         .strip()
         .lower()
         in ("1", "true", "yes", "on")
+    ),
+    "VLLM_DS4_PP_PYNCCL_TENSOR_DICT_STRIPES": lambda: int(
+        os.environ.get("VLLM_DS4_PP_PYNCCL_TENSOR_DICT_STRIPES", "1")
+    ),
+    "VLLM_DS4_PP_PYNCCL_TENSOR_DICT_STRIPE_MIN_BYTES": lambda: int(
+        os.environ.get(
+            "VLLM_DS4_PP_PYNCCL_TENSOR_DICT_STRIPE_MIN_BYTES",
+            str(1024 * 1024),
+        )
     ),
     "VLLM_DS4_PP_CPU_STAGED_TENSOR_DICT": lambda: (
         os.environ.get("VLLM_DS4_PP_CPU_STAGED_TENSOR_DICT", "0")
