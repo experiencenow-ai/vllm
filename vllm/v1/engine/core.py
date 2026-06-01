@@ -487,6 +487,16 @@ class EngineCore:
         batch_queue = self.batch_queue
         assert batch_queue is not None
 
+        ds4_timing_enabled = envs.VLLM_DS4_ITERATION_TIMING
+        ds4_iter_started = time.perf_counter() if ds4_timing_enabled else 0.0
+        ds4_schedule_ms = 0.0
+        ds4_submit_ms = 0.0
+        ds4_wait_ms = 0.0
+        ds4_update_ms = 0.0
+        ds4_scheduled_tokens = 0
+        ds4_queue_depth_before = len(batch_queue)
+        ds4_popped_tokens = 0
+
         # Try to schedule a new batch if the batch queue is not full, but
         # the scheduler may return an empty batch if all requests are scheduled.
         # Note that this is not blocking.
@@ -495,7 +505,11 @@ class EngineCore:
         model_executed = False
         deferred_scheduler_output = None
         if self.scheduler.has_requests():
+            ds4_schedule_started = time.perf_counter() if ds4_timing_enabled else 0.0
             scheduler_output = self.scheduler.schedule()
+            if ds4_timing_enabled:
+                ds4_schedule_ms = (time.perf_counter() - ds4_schedule_started) * 1000
+                ds4_scheduled_tokens = scheduler_output.total_num_scheduled_tokens
             if self.is_ec_consumer:
                 model_executed = scheduler_output.total_num_scheduled_tokens > 0
 
@@ -509,15 +523,29 @@ class EngineCore:
             if use_ds4_fused_execute_sample:
                 grammar_output = self.scheduler.get_grammar_bitmask(scheduler_output)
                 with self.log_error_detail(scheduler_output):
+                    ds4_submit_started = (
+                        time.perf_counter() if ds4_timing_enabled else 0.0
+                    )
                     future = self.model_executor.execute_model_and_sample_tokens(
                         scheduler_output, grammar_output, non_block=True
                     )
+                    if ds4_timing_enabled:
+                        ds4_submit_ms = (
+                            time.perf_counter() - ds4_submit_started
+                        ) * 1000
                 exec_future = future
             else:
                 with self.log_error_detail(scheduler_output):
+                    ds4_submit_started = (
+                        time.perf_counter() if ds4_timing_enabled else 0.0
+                    )
                     exec_future = self.model_executor.execute_model(
                         scheduler_output, non_block=True
                     )
+                    if ds4_timing_enabled:
+                        ds4_submit_ms = (
+                            time.perf_counter() - ds4_submit_started
+                        ) * 1000
 
                 if self.is_pooling_model or not model_executed:
                     # No sampling required (no requests scheduled).
@@ -557,11 +585,15 @@ class EngineCore:
 
         # Block until the next result is available.
         future, scheduler_output, exec_model_fut = batch_queue.pop()
+        ds4_popped_tokens = scheduler_output.total_num_scheduled_tokens
         with (
             self.log_error_detail(scheduler_output),
             self.log_iteration_details(scheduler_output),
         ):
+            ds4_wait_started = time.perf_counter() if ds4_timing_enabled else 0.0
             model_output = future.result()
+            if ds4_timing_enabled:
+                ds4_wait_ms = (time.perf_counter() - ds4_wait_started) * 1000
             if model_output is None:
                 # None from sample_tokens() implies that the original execute_model()
                 # call failed - raise that exception.
@@ -571,9 +603,39 @@ class EngineCore:
         # Before processing the model output, process any aborts that happened
         # during the model execution.
         self._process_aborts_queue()
+        ds4_update_started = time.perf_counter() if ds4_timing_enabled else 0.0
         engine_core_outputs = self.scheduler.update_from_output(
             scheduler_output, model_output
         )
+        if ds4_timing_enabled:
+            ds4_update_ms = (time.perf_counter() - ds4_update_started) * 1000
+            ds4_iter_idx = getattr(self, "_ds4_iteration_timing_index", 0)
+            every = max(1, envs.VLLM_DS4_ITERATION_TIMING_EVERY)
+            if ds4_iter_idx % every == 0:
+                iteration_details = compute_iteration_details(scheduler_output)
+                logger.info(
+                    "DS4 PP iteration timing: iter=%d queue_before=%d "
+                    "queue_after=%d batch_queue_size=%d scheduled_tokens=%d "
+                    "popped_tokens=%d ctx_reqs=%d ctx_tokens=%d gen_reqs=%d "
+                    "gen_tokens=%d schedule_ms=%.3f submit_ms=%.3f "
+                    "future_wait_ms=%.3f update_ms=%.3f total_ms=%.3f",
+                    ds4_iter_idx,
+                    ds4_queue_depth_before,
+                    len(batch_queue),
+                    self.batch_queue_size,
+                    ds4_scheduled_tokens,
+                    ds4_popped_tokens,
+                    iteration_details.num_ctx_requests,
+                    iteration_details.num_ctx_tokens,
+                    iteration_details.num_generation_requests,
+                    iteration_details.num_generation_tokens,
+                    ds4_schedule_ms,
+                    ds4_submit_ms,
+                    ds4_wait_ms,
+                    ds4_update_ms,
+                    (time.perf_counter() - ds4_iter_started) * 1000,
+                )
+            self._ds4_iteration_timing_index = ds4_iter_idx + 1
 
         # NOTE(nick): We can either handle the deferred tasks here or save
         # in a field and do it immediately once step_with_batch_queue is
