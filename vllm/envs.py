@@ -1224,6 +1224,16 @@ environment_variables: dict[str, Callable[[], Any]] = {
         in ("", "0", "none", "None", "NONE", "auto", "AUTO")
         else int(os.environ["VLLM_DS4_PROFILE_RUN_MAX_TOKENS"])
     ),
+    # DS4 explicit-KV service startup still runs profile_run() to compile and
+    # warm the model body, but the dummy sampler can force a large full-vocab
+    # TP logits all-gather that is not needed for KV sizing and can kill weak
+    # Spark TP links before the service is even healthy.
+    "VLLM_DS4_PROFILE_SKIP_DUMMY_SAMPLER": lambda: (
+        os.environ.get("VLLM_DS4_PROFILE_SKIP_DUMMY_SAMPLER", "0")
+        .strip()
+        .lower()
+        in ("1", "true", "yes", "on")
+    ),
     # Optional watchdogs for profile_run stalls. The dump watchdog emits Python
     # stack traces; the abort watchdog fails closed instead of hanging forever.
     "VLLM_DS4_PROFILE_WATCHDOG_SECONDS": lambda: int(

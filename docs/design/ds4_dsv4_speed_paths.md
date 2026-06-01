@@ -45,6 +45,19 @@ link falls below the warning floor.  Do not remove the warning or silently lower
 it; the relaxed fail floor is only to keep model work moving while the cabling
 or crosstalk issue is fixed.
 
+DSV4 launchers skip the profile-only dummy sampler/logits warmup:
+
+```text
+VLLM_DS4_PROFILE_SKIP_DUMMY_SAMPLER=1
+```
+
+This is not a serving-path shortcut.  The model body still runs during
+`profile_run()` so torch compile, PP/TP setup, and native kernels are exercised.
+The skipped part is the startup dummy sampler's full-vocab TP logits all-gather,
+which is not needed when `kv_cache_memory_bytes` is explicit and can kill weak
+TP links before the service becomes healthy.  Real requests still execute the
+normal logits and sampling path.
+
 The PP PyNCCL tensor-dict path remains diagnostic for PP8.  A live test showed
 the current generic tensor-dict PyNCCL path regressed, so PP8 keeps the torch PP
 process-group path by default until the fast path is narrowed to known DSV4
