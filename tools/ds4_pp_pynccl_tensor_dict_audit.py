@@ -12,12 +12,21 @@ checks: list[tuple[str, bool]] = [
         "VLLM_DS4_PP_PYNCCL_TENSOR_DICT" in envs,
     ),
     (
+        "PP PyNCCL tensor-dict striping env exists",
+        "VLLM_DS4_PP_PYNCCL_TENSOR_DICT_STRIPES" in envs,
+    ),
+    (
         "PP tensor-dict fast path has CUDA event handle",
         "class _CudaEventHandle" in parallel and "record_event" in parallel,
     ),
     (
         "PP tensor-dict fast path enqueues PyNCCL P2P",
         "_enqueue_ds4_pynccl_p2p" in parallel and "batch_isend_irecv" in parallel,
+    ),
+    (
+        "PP tensor-dict fast path stripes large CUDA tensors",
+        "_ds4_pynccl_p2p_chunks" in parallel
+        and "VLLM_DS4_PP_PYNCCL_TENSOR_DICT_STRIPES" in parallel,
     ),
     (
         "requested fast path refuses disabled device communicator",
@@ -34,6 +43,10 @@ checks: list[tuple[str, bool]] = [
     (
         "DSV4 launcher enables tensor-dict fast path by default",
         'VLLM_DS4_PP_PYNCCL_TENSOR_DICT:-1' in dsv4,
+    ),
+    (
+        "DSV4 launcher stripes tensor-dict transfers by default",
+        'VLLM_DS4_PP_PYNCCL_TENSOR_DICT_STRIPES:-8' in dsv4,
     ),
 ]
 

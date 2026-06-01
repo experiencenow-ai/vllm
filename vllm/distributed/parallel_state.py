@@ -513,15 +513,43 @@ class GroupCoordinator:
             return None
         p2p_ops = []
         for tensor in cuda_tensors:
-            p2p_op = object.__new__(P2POp)
-            p2p_op.op = op
-            p2p_op.tensor = tensor
-            p2p_op.group_peer = peer
-            p2p_ops.append(p2p_op)
+            for chunk in self._ds4_pynccl_p2p_chunks(tensor):
+                p2p_op = object.__new__(P2POp)
+                p2p_op.op = op
+                p2p_op.tensor = chunk
+                p2p_op.group_peer = peer
+                p2p_ops.append(p2p_op)
         self.device_communicator.batch_isend_irecv(p2p_ops)
         for tensor in cuda_tensors:
             tensor.record_stream(torch.cuda.current_stream(tensor.device))
-        return _CudaEventHandle(cuda_tensors)
+        return _CudaEventHandle([op.tensor for op in p2p_ops])
+
+    def _ds4_pynccl_p2p_chunks(self, tensor: torch.Tensor) -> list[torch.Tensor]:
+        stripes = max(1, int(envs.VLLM_DS4_PP_PYNCCL_TENSOR_DICT_STRIPES))
+        if stripes == 1:
+            return [tensor]
+        if not tensor.is_contiguous():
+            return [tensor]
+        byte_size = tensor.numel() * tensor.element_size()
+        min_bytes = max(
+            0, int(envs.VLLM_DS4_PP_PYNCCL_TENSOR_DICT_STRIPE_MIN_BYTES)
+        )
+        if byte_size < min_bytes:
+            return [tensor]
+        flat = tensor.view(-1)
+        stripes = min(stripes, flat.numel())
+        if stripes <= 1:
+            return [tensor]
+        base = flat.numel() // stripes
+        rem = flat.numel() % stripes
+        chunks: list[torch.Tensor] = []
+        offset = 0
+        for index in range(stripes):
+            length = base + (1 if index < rem else 0)
+            if length > 0:
+                chunks.append(flat.narrow(0, offset, length))
+            offset += length
+        return chunks
 
     @property
     def first_rank(self):
