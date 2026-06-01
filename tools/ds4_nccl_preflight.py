@@ -331,6 +331,13 @@ def main() -> int:
     master_port = _env("MASTER_PORT")
     timeout_s = int(_env("DS4_NCCL_PREFLIGHT_TIMEOUT", "90"))
     backend = _env("DS4_NCCL_PREFLIGHT_BACKEND", "nccl")
+    process_group_backend = (
+        "gloo"
+        if backend == "tp_pair_nccl"
+        else "nccl"
+        if backend == "p2p_nccl"
+        else backend
+    )
     if backend not in {"gloo", "nccl", "tp_pair_nccl", "p2p_nccl"}:
         print(
             "DS4 NCCL preflight failed: "
@@ -353,7 +360,7 @@ def main() -> int:
             torch.cuda.set_device(0)
         print("DS4 NCCL preflight stage: init_process_group begin", file=sys.stderr)
         dist.init_process_group(
-            "gloo" if backend == "tp_pair_nccl" else backend,
+            process_group_backend,
             init_method=f"tcp://{master_addr}:{master_port}",
             rank=rank,
             world_size=world_size,
