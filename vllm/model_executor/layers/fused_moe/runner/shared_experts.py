@@ -160,11 +160,21 @@ class SharedExperts:
         self,
         shared_experts_input: torch.Tensor,
         order: SharedExpertsOrder,
-    ):
+    ) -> torch.Tensor | None:
         experts_order = self._determine_shared_experts_order(shared_experts_input)
 
         if order != experts_order:
             return None
+
+        if order == SharedExpertsOrder.NO_OVERLAP:
+            idx = self._output_idx
+            if self._output[idx] is not None:
+                logger.warning_once(
+                    "Clearing stale MoE shared_experts output before "
+                    "non-overlapped execution."
+                )
+                self._output[idx] = None
+            return self._layer(shared_experts_input)
 
         assert self._output[self._output_idx] is None
 
@@ -176,3 +186,4 @@ class SharedExperts:
             self._output[self._output_idx] = self._layer(shared_experts_input)
 
         assert self._output[self._output_idx] is not None
+        return None
