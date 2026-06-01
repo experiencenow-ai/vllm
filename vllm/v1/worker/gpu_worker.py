@@ -6,6 +6,7 @@ import faulthandler
 import gc
 import os
 import threading
+import time
 from collections.abc import Callable
 from contextlib import AbstractContextManager, contextmanager, nullcontext
 from datetime import timedelta
@@ -75,6 +76,8 @@ from .gpu.warmup import warmup_kernels
 from .utils import request_memory
 
 logger = init_logger(__name__)
+_DS4_PP_COMM_TIMING_INDEX = 0
+_DS4_PP_EXECUTE_TIMING_INDEX = 0
 
 
 def ds4_profile_debug_enabled() -> bool:
@@ -144,8 +147,12 @@ class AsyncIntermediateTensors(IntermediateTensors):
         self._comm_waited = False
 
     def wait_for_comm(self) -> None:
+        global _DS4_PP_COMM_TIMING_INDEX
         if self._comm_waited:
             return
+        ds4_timing_enabled = envs.VLLM_DS4_ITERATION_TIMING
+        ds4_started = time.perf_counter() if ds4_timing_enabled else 0.0
+        handle_count = len(self._comm_handles or [])
         if self._comm_handles:
             for handle in self._comm_handles:
                 handle.wait()
@@ -153,6 +160,23 @@ class AsyncIntermediateTensors(IntermediateTensors):
             for fn in self._comm_postprocess:
                 fn()
         self._comm_waited = True
+        if ds4_timing_enabled:
+            wait_ms = (time.perf_counter() - ds4_started) * 1000
+            idx = _DS4_PP_COMM_TIMING_INDEX
+            every = max(1, envs.VLLM_DS4_ITERATION_TIMING_EVERY)
+            if idx % every == 0 or wait_ms >= 1000:
+                pp = get_pp_group()
+                logger.info(
+                    "DS4 PP recv timing: iter=%d pp_rank=%d handles=%d "
+                    "postprocess=%d wait_ms=%.3f keys=%s",
+                    idx,
+                    pp.rank_in_group,
+                    handle_count,
+                    len(self._comm_postprocess or []),
+                    wait_ms,
+                    ",".join(sorted(self.tensors.keys())),
+                )
+            _DS4_PP_COMM_TIMING_INDEX = idx + 1
 
     def __getattribute__(self, name: str):
         # ensure `.tensors` is ready before use
@@ -956,6 +980,12 @@ class Worker(WorkerBase):
         queue broadcast. Non-last PP ranks execute their local stage and return
         None; the executor still only reads the last PP rank response.
         """
+        iteration_details = compute_iteration_details(scheduler_output)
+        if iteration_details.num_ctx_requests != 0:
+            raise RuntimeError(
+                "DS4 fused execute+sample is decode-only. Refusing to fuse a "
+                f"context batch: {iteration_details}."
+            )
         output = self.execute_model(scheduler_output)
         if output is None:
             return self.sample_tokens(grammar_output)
@@ -965,10 +995,54 @@ class Worker(WorkerBase):
     def execute_model(
         self, scheduler_output: "SchedulerOutput"
     ) -> ModelRunnerOutput | AsyncModelRunnerOutput | None:
+        global _DS4_PP_EXECUTE_TIMING_INDEX
+        ds4_timing_enabled = envs.VLLM_DS4_ITERATION_TIMING
+        ds4_total_started = time.perf_counter() if ds4_timing_enabled else 0.0
+        ds4_prev_send_wait_ms = 0.0
+        ds4_recv_setup_ms = 0.0
+        ds4_forward_ms = 0.0
+        ds4_send_setup_ms = 0.0
+
+        def log_ds4_execute_timing() -> None:
+            global _DS4_PP_EXECUTE_TIMING_INDEX
+            if not ds4_timing_enabled:
+                return
+            ds4_iter_idx = _DS4_PP_EXECUTE_TIMING_INDEX
+            every = max(1, envs.VLLM_DS4_ITERATION_TIMING_EVERY)
+            total_ms = (time.perf_counter() - ds4_total_started) * 1000
+            if ds4_iter_idx % every == 0 or total_ms >= 1000:
+                pp = get_pp_group()
+                iteration_details = compute_iteration_details(scheduler_output)
+                logger.info(
+                    "DS4 PP worker timing: iter=%d pp_rank=%d first=%s last=%s "
+                    "ctx_reqs=%d ctx_tokens=%d gen_reqs=%d gen_tokens=%d "
+                    "prev_send_wait_ms=%.3f recv_setup_ms=%.3f "
+                    "forward_ms=%.3f send_setup_ms=%.3f total_ms=%.3f",
+                    ds4_iter_idx,
+                    pp.rank_in_group,
+                    pp.is_first_rank,
+                    pp.is_last_rank,
+                    iteration_details.num_ctx_requests,
+                    iteration_details.num_ctx_tokens,
+                    iteration_details.num_generation_requests,
+                    iteration_details.num_generation_tokens,
+                    ds4_prev_send_wait_ms,
+                    ds4_recv_setup_ms,
+                    ds4_forward_ms,
+                    ds4_send_setup_ms,
+                    total_ms,
+                )
+            _DS4_PP_EXECUTE_TIMING_INDEX = ds4_iter_idx + 1
+
         # ensure any previous non-blocking PP sends are complete
         if self._pp_send_work:
+            ds4_started = time.perf_counter() if ds4_timing_enabled else 0.0
             for handle in self._pp_send_work:
                 handle.wait()
+            if ds4_timing_enabled:
+                ds4_prev_send_wait_ms = (
+                    time.perf_counter() - ds4_started
+                ) * 1000
             self._pp_send_work = []
 
         intermediate_tensors = None
@@ -1008,12 +1082,15 @@ class Worker(WorkerBase):
             }
 
         if forward_pass and not get_pp_group().is_first_rank:
+            ds4_started = time.perf_counter() if ds4_timing_enabled else 0.0
             tensor_dict, comm_handles, comm_postprocess = (
                 get_pp_group().irecv_tensor_dict(
                     all_gather_group=get_tp_group(),
                     all_gather_tensors=all_gather_tensors,
                 )
             )
+            if ds4_timing_enabled:
+                ds4_recv_setup_ms = (time.perf_counter() - ds4_started) * 1000
             assert tensor_dict is not None
             intermediate_tensors = AsyncIntermediateTensors(
                 tensor_dict,
@@ -1022,9 +1099,12 @@ class Worker(WorkerBase):
             )
 
         with self.annotate_profile(scheduler_output):
+            ds4_started = time.perf_counter() if ds4_timing_enabled else 0.0
             output = self.model_runner.execute_model(
                 scheduler_output, intermediate_tensors
             )
+            if ds4_timing_enabled:
+                ds4_forward_ms = (time.perf_counter() - ds4_started) * 1000
             if (
                 self.use_v2_model_runner
                 and self.model_runner.is_pooling_model
@@ -1034,6 +1114,7 @@ class Worker(WorkerBase):
             if isinstance(
                 output, ModelRunnerOutput | AsyncModelRunnerOutput | NoneType
             ):
+                log_ds4_execute_timing()
                 return output
 
         assert isinstance(output, IntermediateTensors)
@@ -1044,11 +1125,15 @@ class Worker(WorkerBase):
         )
 
         # launch non-blocking send of intermediate tensors
+        ds4_started = time.perf_counter() if ds4_timing_enabled else 0.0
         self._pp_send_work = get_pp_group().isend_tensor_dict(
             output.tensors,
             all_gather_group=get_tp_group(),
             all_gather_tensors=all_gather_tensors,
         )
+        if ds4_timing_enabled:
+            ds4_send_setup_ms = (time.perf_counter() - ds4_started) * 1000
+        log_ds4_execute_timing()
 
         return None
 

@@ -62,6 +62,19 @@ def main() -> int:
         and 'DSV4_FUSED_EXECUTE_SAMPLE:-1' in dsv4,
     )
     failures += check(
+        "DS4 fused execute+sample is decode-only",
+        "iteration_details.num_ctx_requests == 0" in read("vllm/v1/engine/core.py")
+        and "DS4 fused execute+sample is decode-only" in read("vllm/v1/worker/gpu_worker.py"),
+    )
+    failures += check(
+        "DS4 PP worker timing separates recv, forward, and send",
+        "DS4 PP worker timing" in read("vllm/v1/worker/gpu_worker.py")
+        and "DS4 PP recv timing" in read("vllm/v1/worker/gpu_worker.py")
+        and "prev_send_wait_ms" in read("vllm/v1/worker/gpu_worker.py")
+        and "recv_setup_ms" in read("vllm/v1/worker/gpu_worker.py")
+        and "send_setup_ms" in read("vllm/v1/worker/gpu_worker.py"),
+    )
+    failures += check(
         "Qwen PP launcher exposes optional new-request wave cap without forcing it",
         'QWEN27_SCHED_MAX_NEW_REQS_PER_STEP:-0' in qwen,
     )

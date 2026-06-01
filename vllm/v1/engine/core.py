@@ -529,6 +529,12 @@ class EngineCore:
                 and not self.use_spec_decode
             )
             if use_ds4_fused_execute_sample:
+                iteration_details = compute_iteration_details(scheduler_output)
+                use_ds4_fused_execute_sample = (
+                    iteration_details.num_ctx_requests == 0
+                    and iteration_details.num_generation_requests > 0
+                )
+            if use_ds4_fused_execute_sample:
                 grammar_output = self.scheduler.get_grammar_bitmask(scheduler_output)
                 with self.log_error_detail(scheduler_output):
                     ds4_submit_started = (
