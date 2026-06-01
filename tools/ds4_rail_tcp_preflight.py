@@ -206,9 +206,11 @@ def _client_stream(rail: Rail, port: int, bytes_to_send: int, timeout_s: float) 
 
 
 def _preflight_tool() -> str:
-    tool = _env("DS4_RAIL_TCP_PREFLIGHT_TOOL", "iperf3").strip().lower()
-    if tool not in {"iperf3", "nc"}:
-        raise ValueError("DS4_RAIL_TCP_PREFLIGHT_TOOL must be iperf3 or nc")
+    tool = _env("DS4_RAIL_TCP_PREFLIGHT_TOOL", "iperf").strip().lower()
+    if tool not in {"iperf", "iperf3", "nc"}:
+        raise ValueError("DS4_RAIL_TCP_PREFLIGHT_TOOL must be iperf, iperf3, or nc")
+    if tool == "iperf" and shutil.which("iperf") is None:
+        raise RuntimeError("DS4_RAIL_TCP_PREFLIGHT_TOOL=iperf but iperf is not installed")
     if tool == "iperf3" and shutil.which("iperf3") is None:
         raise RuntimeError(
             "DS4_RAIL_TCP_PREFLIGHT_TOOL=iperf3 but iperf3 is not installed"
@@ -216,6 +218,114 @@ def _preflight_tool() -> str:
     if tool == "nc" and shutil.which("nc") is None:
         raise RuntimeError("DS4_RAIL_TCP_PREFLIGHT_TOOL=nc but nc is not installed")
     return tool
+
+
+def _run_iperf_server(pair_index: int, src: int, dst: int) -> int:
+    port_base = int(_env("DS4_RAIL_TCP_PREFLIGHT_PORT_BASE", "49400"))
+    port = port_base + (pair_index * 100)
+    bind_ip = _env("DS4_RAIL_TCP_PREFLIGHT_SERVER_BIND", "0.0.0.0")
+    duration_s = float(_env("DS4_RAIL_TCP_PREFLIGHT_DURATION_S", "5"))
+    timeout_s = duration_s + float(_env("DS4_RAIL_TCP_PREFLIGHT_TIMEOUT", "30"))
+    result = subprocess.run(
+        ["iperf", "-s", "-1", "-B", bind_ip, "-p", str(port), "-f", "g", "-y", "C"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        timeout=timeout_s,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"rail TCP iperf server failed for pair={src}-{dst} "
+            f"port={port}: {result.stderr[-500:] or result.stdout[-500:]}"
+        )
+    print(
+        "DS4 rail TCP preflight iperf server complete: "
+        f"pair={src}-{dst} port={port}",
+        file=sys.stderr,
+    )
+    return 0
+
+
+def _parse_iperf_csv_bits_per_second(stdout: str) -> float:
+    for line in reversed([item.strip() for item in stdout.splitlines() if item.strip()]):
+        fields = [field.strip() for field in line.split(",")]
+        for field in reversed(fields):
+            try:
+                value = float(field)
+            except ValueError:
+                continue
+            if value > 0:
+                return value
+    raise RuntimeError(f"could not parse iperf CSV bandwidth from {stdout!r}")
+
+
+def _run_iperf_client(
+    pair_index: int,
+    src: int,
+    dst: int,
+    destination_ip: str,
+) -> int:
+    streams = max(1, int(_env("DS4_RAIL_TCP_PREFLIGHT_STREAMS", "16")))
+    port_base = int(_env("DS4_RAIL_TCP_PREFLIGHT_PORT_BASE", "49400"))
+    port = port_base + (pair_index * 100)
+    duration_s = float(_env("DS4_RAIL_TCP_PREFLIGHT_DURATION_S", "5"))
+    timeout_s = duration_s + float(_env("DS4_RAIL_TCP_PREFLIGHT_TIMEOUT", "30"))
+    min_gbps = float(
+        _env(
+            "DS4_RAIL_TCP_PREFLIGHT_MIN_GBPS",
+            _env("DS4_NCCL_PREFLIGHT_MIN_P2P_GBPS", "0"),
+        )
+    )
+    rails = _discover_rails(destination_ip)
+    rail = rails[0]
+    time.sleep(float(_env("DS4_RAIL_TCP_PREFLIGHT_CLIENT_DELAY_S", "0.5")))
+    result = subprocess.run(
+        [
+            "iperf",
+            "-c",
+            rail.destination_ip,
+            "-B",
+            rail.source_ip,
+            "-p",
+            str(port),
+            "-P",
+            str(streams),
+            "-t",
+            str(duration_s),
+            "-f",
+            "g",
+            "-y",
+            "C",
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        timeout=timeout_s,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"rail TCP iperf client failed for pair={src}-{dst} "
+            f"{rail.source_ip}->{rail.destination_ip}:{port}: "
+            f"{result.stderr[-500:] or result.stdout[-500:]}"
+        )
+    bits_per_second = _parse_iperf_csv_bits_per_second(result.stdout)
+    gbps = bits_per_second / 8.0 / 1e9
+    rails_text = ",".join(
+        f"{item.source_ip}->{item.destination_ip}/{item.dev}" for item in rails
+    )
+    print(
+        "DS4 rail TCP preflight bandwidth: "
+        f"pair={src}-{dst} role=iperf-client streams={streams} "
+        f"duration_s={duration_s:.3f} rails={rails_text} "
+        f"GBps={gbps:.3f} Gbit_s={(gbps * 8.0):.3f} "
+        f"min_GBps={min_gbps:.3f}",
+        file=sys.stderr,
+    )
+    if min_gbps > 0 and gbps < min_gbps:
+        return 68
+    return 0
 
 
 def _run_iperf3_server(pair_index: int, src: int, dst: int) -> int:
@@ -314,7 +424,10 @@ def _run_iperf3_client(
 
 
 def _run_server(pair_index: int, src: int, dst: int) -> int:
-    if _preflight_tool() == "iperf3":
+    tool = _preflight_tool()
+    if tool == "iperf":
+        return _run_iperf_server(pair_index, src, dst)
+    if tool == "iperf3":
         return _run_iperf3_server(pair_index, src, dst)
     streams = max(1, int(_env("DS4_RAIL_TCP_PREFLIGHT_STREAMS", "16")))
     total_bytes = max(streams, int(_env("DS4_RAIL_TCP_PREFLIGHT_BYTES", "268435456")))
@@ -364,7 +477,10 @@ def _run_server(pair_index: int, src: int, dst: int) -> int:
 
 
 def _run_client(pair_index: int, src: int, dst: int, destination_ip: str) -> int:
-    if _preflight_tool() == "iperf3":
+    tool = _preflight_tool()
+    if tool == "iperf":
+        return _run_iperf_client(pair_index, src, dst, destination_ip)
+    if tool == "iperf3":
         return _run_iperf3_client(pair_index, src, dst, destination_ip)
     streams = max(1, int(_env("DS4_RAIL_TCP_PREFLIGHT_STREAMS", "16")))
     total_bytes = max(streams, int(_env("DS4_RAIL_TCP_PREFLIGHT_BYTES", "268435456")))
