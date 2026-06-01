@@ -72,6 +72,135 @@ TensorMetadataCpuStaged = namedtuple(
     "TensorMetadataCpuStaged", ["target_device", "dtype", "size"]
 )
 
+_DS4_PP_DEVICE_METADATA_MAGIC = 450347701
+_DS4_PP_DEVICE_METADATA_MAX_TENSORS = 8
+_DS4_PP_DEVICE_METADATA_MAX_DIMS = 8
+_DS4_PP_DEVICE_METADATA_RECORD_LEN = 3 + _DS4_PP_DEVICE_METADATA_MAX_DIMS
+_DS4_PP_DEVICE_METADATA_LEN = (
+    2
+    + _DS4_PP_DEVICE_METADATA_MAX_TENSORS
+    * _DS4_PP_DEVICE_METADATA_RECORD_LEN
+)
+_DS4_PP_TENSOR_KEY_TO_ID = {
+    "hidden_states": 1,
+    "residual": 2,
+    "aux_hidden_states": 3,
+}
+_DS4_PP_TENSOR_ID_TO_KEY = {v: k for k, v in _DS4_PP_TENSOR_KEY_TO_ID.items()}
+_DS4_PP_DTYPE_TO_ID = {
+    torch.float32: 1,
+    torch.float16: 2,
+    torch.bfloat16: 3,
+    torch.int64: 4,
+    torch.int32: 5,
+    torch.uint8: 6,
+}
+for _dtype_name, _dtype_id in (
+    ("float8_e4m3fn", 20),
+    ("float8_e5m2", 21),
+    ("float8_e8m0fnu", 22),
+):
+    _dtype = getattr(torch, _dtype_name, None)
+    if _dtype is not None:
+        _DS4_PP_DTYPE_TO_ID[_dtype] = _dtype_id
+_DS4_PP_ID_TO_DTYPE = {v: k for k, v in _DS4_PP_DTYPE_TO_ID.items()}
+
+
+def _encode_ds4_pp_device_metadata(
+    metadata_list: list[tuple[str, Any]],
+    device: torch.device | str,
+) -> torch.Tensor:
+    if len(metadata_list) > _DS4_PP_DEVICE_METADATA_MAX_TENSORS:
+        raise RuntimeError(
+            "DS4 PP device metadata supports at most "
+            f"{_DS4_PP_DEVICE_METADATA_MAX_TENSORS} tensors, got "
+            f"{len(metadata_list)}. Refusing CPU/Gloo metadata fallback."
+        )
+    values = [0] * _DS4_PP_DEVICE_METADATA_LEN
+    values[0] = _DS4_PP_DEVICE_METADATA_MAGIC
+    values[1] = len(metadata_list)
+    for index, (key, value) in enumerate(metadata_list):
+        if not isinstance(key, str):
+            raise RuntimeError(
+                "DS4 PP device metadata only supports string tensor keys. "
+                "Refusing CPU/Gloo metadata fallback."
+            )
+        if not isinstance(value, TensorMetadata):
+            raise RuntimeError(
+                "DS4 PP device metadata only supports CUDA tensor entries. "
+                f"Got key={key!r} value={type(value).__name__}; refusing "
+                "CPU/Gloo metadata fallback."
+            )
+        if value.device != "cuda":
+            raise RuntimeError(
+                "DS4 PP device metadata only supports CUDA tensors. "
+                f"Got key={key!r} device={value.device!r}; refusing "
+                "CPU/Gloo metadata fallback."
+            )
+        key_id = _DS4_PP_TENSOR_KEY_TO_ID.get(key)
+        if key_id is None:
+            raise RuntimeError(
+                f"DS4 PP device metadata does not know tensor key {key!r}. "
+                "Refusing CPU/Gloo metadata fallback."
+            )
+        dtype_id = _DS4_PP_DTYPE_TO_ID.get(value.dtype)
+        if dtype_id is None:
+            raise RuntimeError(
+                f"DS4 PP device metadata does not know dtype {value.dtype}. "
+                "Refusing CPU/Gloo metadata fallback."
+            )
+        shape = tuple(int(dim) for dim in value.size)
+        if len(shape) > _DS4_PP_DEVICE_METADATA_MAX_DIMS:
+            raise RuntimeError(
+                "DS4 PP device metadata supports at most "
+                f"{_DS4_PP_DEVICE_METADATA_MAX_DIMS} dims, got "
+                f"{len(shape)} for key={key!r}. Refusing CPU/Gloo metadata "
+                "fallback."
+            )
+        base = 2 + index * _DS4_PP_DEVICE_METADATA_RECORD_LEN
+        values[base] = key_id
+        values[base + 1] = dtype_id
+        values[base + 2] = len(shape)
+        for dim_index, dim in enumerate(shape):
+            values[base + 3 + dim_index] = dim
+    return torch.tensor(values, dtype=torch.int64, device=device)
+
+
+def _decode_ds4_pp_device_metadata(
+    metadata_tensor: torch.Tensor,
+) -> list[tuple[str, Any]]:
+    values = metadata_tensor.cpu().tolist()
+    if int(values[0]) != _DS4_PP_DEVICE_METADATA_MAGIC:
+        raise RuntimeError(
+            "DS4 PP device metadata magic mismatch. Refusing to decode PP "
+            "tensor dictionary."
+        )
+    count = int(values[1])
+    if count < 0 or count > _DS4_PP_DEVICE_METADATA_MAX_TENSORS:
+        raise RuntimeError(
+            f"DS4 PP device metadata tensor count {count} is invalid."
+        )
+    metadata_list: list[tuple[str, Any]] = []
+    for index in range(count):
+        base = 2 + index * _DS4_PP_DEVICE_METADATA_RECORD_LEN
+        key_id = int(values[base])
+        dtype_id = int(values[base + 1])
+        ndim = int(values[base + 2])
+        key = _DS4_PP_TENSOR_ID_TO_KEY.get(key_id)
+        dtype = _DS4_PP_ID_TO_DTYPE.get(dtype_id)
+        if key is None or dtype is None:
+            raise RuntimeError(
+                "DS4 PP device metadata contains an unknown key or dtype id: "
+                f"key_id={key_id} dtype_id={dtype_id}."
+            )
+        if ndim < 0 or ndim > _DS4_PP_DEVICE_METADATA_MAX_DIMS:
+            raise RuntimeError(
+                f"DS4 PP device metadata ndim {ndim} is invalid for key={key!r}."
+            )
+        shape = tuple(int(values[base + 3 + dim_index]) for dim_index in range(ndim))
+        metadata_list.append((key, TensorMetadata("cuda", dtype, torch.Size(shape))))
+    return metadata_list
+
 
 class Handle(Protocol):
     """Minimal async work handle used by P2P send/recv methods."""
@@ -485,6 +614,46 @@ class GroupCoordinator:
                 f"{self.unique_name} device communicator has no batch_isend_irecv."
             )
         return True
+
+    def _should_use_ds4_pp_device_metadata(self) -> bool:
+        if not envs.VLLM_DS4_PP_DEVICE_TENSOR_DICT_METADATA:
+            return False
+        if "pp" not in self.unique_name:
+            return False
+        if self.world_size <= 1:
+            return False
+        if envs.VLLM_DS4_PP_CPU_STAGED_TENSOR_DICT:
+            raise RuntimeError(
+                "VLLM_DS4_PP_DEVICE_TENSOR_DICT_METADATA cannot be combined "
+                "with VLLM_DS4_PP_CPU_STAGED_TENSOR_DICT. Refusing CPU/Gloo "
+                "metadata fallback."
+            )
+        # The metadata header is only useful if the tensor payloads are also
+        # on the DS4 PP device fast path. This call performs the fail-closed
+        # checks for the PP device communicator and PyNCCL batch P2P support.
+        self._can_use_ds4_pynccl_tensor_dict()
+        return True
+
+    def _send_ds4_pp_device_metadata(
+        self,
+        metadata_list: list[tuple[str, Any]],
+        dst: int,
+    ) -> None:
+        metadata_tensor = _encode_ds4_pp_device_metadata(metadata_list, "cuda")
+        handle = torch.distributed.isend(
+            metadata_tensor, dst=self.ranks[dst], group=self.device_group
+        )
+        handle.wait()
+
+    def _recv_ds4_pp_device_metadata(self, src: int) -> list[tuple[str, Any]]:
+        metadata_tensor = torch.empty(
+            _DS4_PP_DEVICE_METADATA_LEN, dtype=torch.int64, device="cuda"
+        )
+        handle = torch.distributed.irecv(
+            metadata_tensor, src=self.ranks[src], group=self.device_group
+        )
+        handle.wait()
+        return _decode_ds4_pp_device_metadata(metadata_tensor)
 
     def _should_cpu_stage_ds4_pp_tensor_dict(self) -> bool:
         if not envs.VLLM_DS4_PP_CPU_STAGED_TENSOR_DICT:
@@ -1049,7 +1218,10 @@ class GroupCoordinator:
         metadata_list, tensor_list = _split_tensor_dict(
             tensor_dict, cpu_stage_cuda=cpu_stage_cuda
         )
-        self.send_object(metadata_list, dst=dst)
+        if self._should_use_ds4_pp_device_metadata():
+            self._send_ds4_pp_device_metadata(metadata_list, dst)
+        else:
+            self.send_object(metadata_list, dst=dst)
 
         tensor_keys = [k for k, v in tensor_dict.items() if isinstance(v, torch.Tensor)]
         assert len(tensor_keys) == len(tensor_list)
@@ -1157,7 +1329,10 @@ class GroupCoordinator:
         group = self.device_group
         metadata_group = self.cpu_group
 
-        recv_metadata_list = self.recv_object(src=src)
+        if self._should_use_ds4_pp_device_metadata():
+            recv_metadata_list = self._recv_ds4_pp_device_metadata(src)
+        else:
+            recv_metadata_list = self.recv_object(src=src)
         tensor_dict: dict[str, Any] = {}
         handles: list[Handle] = []
         postprocess: list[Callable[[], None]] = []
