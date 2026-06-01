@@ -40,7 +40,7 @@ import torch
 import torch.distributed
 import torch.distributed._functional_collectives as funcol
 import torch.distributed._symmetric_memory
-from torch.distributed import Backend, ProcessGroup, Store
+from torch.distributed import Backend, P2POp, ProcessGroup, Store
 
 import vllm.envs as envs
 from vllm.distributed.device_communicators.base_device_communicator import (
@@ -76,6 +76,22 @@ class Handle(Protocol):
     def is_completed(self) -> bool: ...
 
     def wait(self) -> None: ...
+
+
+class _CudaEventHandle:
+    """Async handle for CUDA P2P work enqueued on the current stream."""
+
+    def __init__(self, tensors: list[torch.Tensor]) -> None:
+        self._tensors = tensors
+        self._event = torch.cuda.Event(blocking=False)
+        torch.cuda.current_stream().record_event(self._event)
+
+    def is_completed(self) -> bool:
+        return bool(self._event.query())
+
+    def wait(self) -> None:
+        self._event.synchronize()
+        self._tensors = []
 
 
 def _split_tensor_dict(
@@ -432,6 +448,57 @@ class GroupCoordinator:
             reader_rank=self.ranks[reader_rank_in_group],
             blocking=blocking,
         )
+
+    def _can_use_ds4_pynccl_tensor_dict(self) -> bool:
+        if not envs.VLLM_DS4_PP_PYNCCL_TENSOR_DICT:
+            return False
+        if "pp" not in self.unique_name:
+            return False
+        if envs.VLLM_DS4_PP_DISABLE_DEVICE_COMMUNICATOR:
+            raise RuntimeError(
+                "DS4 PP PyNCCL tensor-dict fast path was requested while "
+                "VLLM_DS4_PP_DISABLE_DEVICE_COMMUNICATOR is enabled. Refusing "
+                "to fall back to torch ProcessGroup P2P silently."
+            )
+        if self.world_size <= 1:
+            return False
+        if self.device_communicator is None:
+            raise RuntimeError(
+                "DS4 PP PyNCCL tensor-dict fast path was requested, but the "
+                f"{self.unique_name} group has no device communicator. Refusing "
+                "to fall back to torch ProcessGroup P2P silently."
+            )
+        if not hasattr(self.device_communicator, "batch_isend_irecv"):
+            raise RuntimeError(
+                "DS4 PP PyNCCL tensor-dict fast path was requested, but the "
+                f"{self.unique_name} device communicator has no batch_isend_irecv."
+            )
+        return True
+
+    def _enqueue_ds4_pynccl_p2p(
+        self,
+        tensors: list[torch.Tensor],
+        peer: int,
+        op,
+    ) -> Handle | None:
+        cuda_tensors = [
+            tensor for tensor in tensors if tensor.is_cuda and tensor.numel() > 0
+        ]
+        if not cuda_tensors:
+            return None
+        if not self._can_use_ds4_pynccl_tensor_dict():
+            return None
+        p2p_ops = []
+        for tensor in cuda_tensors:
+            p2p_op = object.__new__(P2POp)
+            p2p_op.op = op
+            p2p_op.tensor = tensor
+            p2p_op.group_peer = peer
+            p2p_ops.append(p2p_op)
+        self.device_communicator.batch_isend_irecv(p2p_ops)
+        for tensor in cuda_tensors:
+            tensor.record_stream(torch.cuda.current_stream(tensor.device))
+        return _CudaEventHandle(cuda_tensors)
 
     @property
     def first_rank(self):
@@ -922,6 +989,7 @@ class GroupCoordinator:
         assert len(tensor_keys) == len(tensor_list)
 
         handles: list[Handle] = []
+        cuda_p2p_tensors: list[torch.Tensor] = []
         for key, tensor in zip(tensor_keys, tensor_list):
             if tensor.numel() == 0:
                 continue
@@ -931,6 +999,10 @@ class GroupCoordinator:
             ):
                 tensor = tensor.reshape(all_gather_size, -1)[all_gather_rank]
 
+            if tensor.is_cuda and self._can_use_ds4_pynccl_tensor_dict():
+                cuda_p2p_tensors.append(tensor)
+                continue
+
             comm_group = metadata_group if tensor.is_cpu else group
             handle = torch.distributed.isend(
                 tensor, dst=self.ranks[dst], group=comm_group
@@ -938,6 +1010,12 @@ class GroupCoordinator:
             if tensor.is_cuda:
                 tensor.record_stream(torch.cuda.current_stream(tensor.device))
             handles.append(handle)
+
+        cuda_handle = self._enqueue_ds4_pynccl_p2p(
+            cuda_p2p_tensors, dst, torch.distributed.isend
+        )
+        if cuda_handle is not None:
+            handles.append(cuda_handle)
 
         return handles
 
@@ -1018,6 +1096,7 @@ class GroupCoordinator:
         handles: list[Handle] = []
         postprocess: list[Callable[[], None]] = []
 
+        cuda_p2p_tensors: list[torch.Tensor] = []
         for key, value in recv_metadata_list:
             if isinstance(value, TensorMetadata):
                 full_tensor = torch.empty(
@@ -1034,11 +1113,17 @@ class GroupCoordinator:
                     slice_tensor = full_tensor.reshape(all_gather_size, -1)[
                         all_gather_rank
                     ]
-                    comm_group = metadata_group if slice_tensor.is_cpu else group
-                    handle = torch.distributed.irecv(
-                        slice_tensor, src=self.ranks[src], group=comm_group
-                    )
-                    handles.append(handle)
+                    if (
+                        slice_tensor.is_cuda
+                        and self._can_use_ds4_pynccl_tensor_dict()
+                    ):
+                        cuda_p2p_tensors.append(slice_tensor)
+                    else:
+                        comm_group = metadata_group if slice_tensor.is_cpu else group
+                        handle = torch.distributed.irecv(
+                            slice_tensor, src=self.ranks[src], group=comm_group
+                        )
+                        handles.append(handle)
 
                     def _postprocess(
                         key: str = key,
@@ -1054,14 +1139,23 @@ class GroupCoordinator:
                     postprocess.append(_postprocess)
                     tensor_dict[key] = slice_tensor
                 else:
-                    comm_group = metadata_group if full_tensor.is_cpu else group
-                    handle = torch.distributed.irecv(
-                        full_tensor, src=self.ranks[src], group=comm_group
-                    )
-                    handles.append(handle)
+                    if full_tensor.is_cuda and self._can_use_ds4_pynccl_tensor_dict():
+                        cuda_p2p_tensors.append(full_tensor)
+                    else:
+                        comm_group = metadata_group if full_tensor.is_cpu else group
+                        handle = torch.distributed.irecv(
+                            full_tensor, src=self.ranks[src], group=comm_group
+                        )
+                        handles.append(handle)
                     tensor_dict[key] = full_tensor
             else:
                 tensor_dict[key] = value
+
+        cuda_handle = self._enqueue_ds4_pynccl_p2p(
+            cuda_p2p_tensors, src, torch.distributed.irecv
+        )
+        if cuda_handle is not None:
+            handles.append(cuda_handle)
 
         return tensor_dict, handles, postprocess
 
