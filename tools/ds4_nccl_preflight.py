@@ -41,6 +41,7 @@ def _print_env() -> None:
         "DS4_NCCL_PREFLIGHT_BENCH_BYTES",
         "DS4_NCCL_PREFLIGHT_BENCH_ITERS",
         "DS4_NCCL_PREFLIGHT_MIN_BUSBW_GBPS",
+        "DS4_NCCL_PREFLIGHT_WARN_BUSBW_GBPS",
         "DS4_NCCL_PREFLIGHT_GROUPS",
         "DS4_NCCL_PREFLIGHT_P2P_PAIRS",
         "DS4_NCCL_PREFLIGHT_MIN_P2P_GBPS",
@@ -62,6 +63,7 @@ def _run_bandwidth_probe(
         return 0
     bench_iters = max(1, int(_env("DS4_NCCL_PREFLIGHT_BENCH_ITERS", "3")))
     min_busbw_gbps = float(_env("DS4_NCCL_PREFLIGHT_MIN_BUSBW_GBPS", "0"))
+    warn_busbw_gbps = float(_env("DS4_NCCL_PREFLIGHT_WARN_BUSBW_GBPS", "0"))
     element_size = torch.empty((), dtype=torch.float32).element_size()
     numel = max(1, bench_bytes // element_size)
     actual_bytes = (numel * element_size)
@@ -69,7 +71,8 @@ def _run_bandwidth_probe(
     print(
         "DS4 NCCL preflight bandwidth begin: "
         f"group={label} bytes={actual_bytes} iters={bench_iters} "
-        f"min_busbw_GBps={min_busbw_gbps:.3f}",
+        f"min_busbw_GBps={min_busbw_gbps:.3f} "
+        f"warn_busbw_GBps={warn_busbw_gbps:.3f}",
         file=sys.stderr,
     )
     dist.all_reduce(buf, op=dist.ReduceOp.SUM, group=group)
@@ -87,9 +90,21 @@ def _run_bandwidth_probe(
         f"group={label} bytes={actual_bytes} iters={bench_iters} "
         f"elapsed_s={elapsed_s:.6f} "
         f"algbw_GBps={algbw_gbps:.3f} busbw_GBps={busbw_gbps:.3f} "
-        f"min_busbw_GBps={min_busbw_gbps:.3f}",
+        f"busbw_Gbit_s={(busbw_gbps * 8.0):.3f} "
+        f"min_busbw_GBps={min_busbw_gbps:.3f} "
+        f"warn_busbw_GBps={warn_busbw_gbps:.3f}",
         file=sys.stderr,
     )
+    if warn_busbw_gbps > 0 and busbw_gbps < warn_busbw_gbps:
+        print(
+            "WARNING: DS4 NCCL preflight below warning threshold: "
+            f"group={label} measured {busbw_gbps:.3f} GB/s "
+            f"({(busbw_gbps * 8.0):.3f} Gbit/s) < warning "
+            f"{warn_busbw_gbps:.3f} GB/s "
+            f"({(warn_busbw_gbps * 8.0):.3f} Gbit/s); launch continues unless "
+            "the fail threshold is crossed",
+            file=sys.stderr,
+        )
     if min_busbw_gbps > 0 and busbw_gbps < min_busbw_gbps:
         print(
             "DS4 NCCL preflight failed: "
