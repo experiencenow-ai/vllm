@@ -58,6 +58,11 @@ which is not needed when `kv_cache_memory_bytes` is explicit and can kill weak
 TP links before the service becomes healthy.  Real requests still execute the
 normal logits and sampling path.
 
+TP all-reduce must use the vLLM device communicator for PP4 x TP2 x EP2
+throughput runs.  The torch process-group all-reduce route is a diagnostic
+escape hatch only; a c256 serving run exposed socket-progress failures in that
+path under the real DSV4 attention workload.
+
 The PP PyNCCL tensor-dict path remains diagnostic for PP8.  A live test showed
 the current generic tensor-dict PyNCCL path regressed, so PP8 keeps the torch PP
 process-group path by default until the fast path is narrowed to known DSV4

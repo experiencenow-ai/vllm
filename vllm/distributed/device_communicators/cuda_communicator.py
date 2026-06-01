@@ -239,6 +239,10 @@ class CudaCommunicator(DeviceCommunicatorBase):
         )
 
     def all_reduce(self, input_):
+        require_device_tp = (
+            envs.VLLM_DS4_REQUIRE_DEVICE_TP_ALL_REDUCE
+            and self.unique_name.startswith("tp:")
+        )
         # since currently we perform copy input -> symm_input -> out-of-place AR
         # return symm_output, we don't need to check if input is symmetric
         if self.pynccl_comm is not None and should_nccl_symm_mem_allreduce(
@@ -283,12 +287,24 @@ class CudaCommunicator(DeviceCommunicatorBase):
             return out
         pynccl_comm = self.pynccl_comm
         if pynccl_comm is None or pynccl_comm.disabled:
+            if require_device_tp:
+                raise RuntimeError(
+                    "DS4 TP all-reduce requires a device communicator; "
+                    "refusing torch process-group fallback for TP group "
+                    f"{self.unique_name!r}."
+                )
             out = input_.clone()
             torch.distributed.all_reduce(out, group=self.device_group)
             return out
         assert pynccl_comm is not None
         out = pynccl_comm.all_reduce(input_)
         if out is None:
+            if require_device_tp:
+                raise RuntimeError(
+                    "DS4 TP all-reduce device communicator returned None; "
+                    "refusing torch process-group fallback for TP group "
+                    f"{self.unique_name!r}."
+                )
             # fall back to the default all-reduce using PyTorch.
             # this usually happens during testing.
             # when we run the model, allreduce only happens for the TP
