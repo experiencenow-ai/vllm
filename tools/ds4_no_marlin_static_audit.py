@@ -230,12 +230,14 @@ checks = [
         ),
     ),
     (
-        "DS4 200G guard fail-closes NCCL link-speed fallback",
+        "DS4 200G guard gates routed-loopback NCCL by measured bandwidth",
         "socket_ifname=\"${DS4_200G_SOCKET_IFNAME:-$control_ifname}\"" in guard
         and "ds4_200g_check_or_export NCCL_ALGO \"Ring\"" in guard
         and "DS4_200G_VERIFIED_ROUTED_LOOPBACK_NCCL=1" in guard
+        and "DS4_NCCL_PREFLIGHT_MIN_BUSBW_GBPS" in guard
+        and "DS4 NCCL preflight bandwidth:" in guard
+        and "all-peer routes were verified over 200G interfaces" in guard
         and "NCCL reported a link-speed fallback during preflight; refusing to launch on an ambiguous or slow fabric" in guard
-        and "DS4 200G route guard: NCCL reports dummy iface speed" not in guard,
     ),
     (
         "Qwen NVFP4 cache-primary launcher uses ModelOpt FP4 without MTP by default",
