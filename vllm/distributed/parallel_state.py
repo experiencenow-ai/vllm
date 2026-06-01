@@ -654,6 +654,13 @@ class GroupCoordinator:
             return self._all_reduce_out_place(input_)
 
     def _all_reduce_out_place(self, input_: torch.Tensor) -> torch.Tensor:
+        if (
+            envs.VLLM_DS4_TP_PROCESS_GROUP_ALL_REDUCE
+            and self.unique_name.startswith("tp:")
+        ):
+            output = input_.clone()
+            torch.distributed.all_reduce(output, group=self.device_group)
+            return output
         if self.device_communicator is None:
             raise ValueError("No device communicator found")
         return self.device_communicator.all_reduce(input_)

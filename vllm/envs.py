@@ -146,6 +146,7 @@ if TYPE_CHECKING:
     VLLM_DS4_PP_PYNCCL_TENSOR_DICT_STRIPES: int = 1
     VLLM_DS4_PP_PYNCCL_TENSOR_DICT_STRIPE_MIN_BYTES: int = 1048576
     VLLM_DS4_PP_TENSOR_DICT_TP_ALL_GATHER: bool = True
+    VLLM_DS4_TP_PROCESS_GROUP_ALL_REDUCE: bool = False
     VLLM_DS4_SKIP_PYNCCL_WARMUP_ALLREDUCE: bool = False
     VLLM_DS4_SM12X_MQA_ROWWISE: bool = True
     VLLM_DS4_SM12X_MQA_ROWWISE_MAX_ROWS: int = 4
@@ -1364,6 +1365,15 @@ environment_variables: dict[str, Callable[[], Any]] = {
     ),
     "VLLM_DS4_PP_CPU_STAGED_TENSOR_DICT": lambda: (
         os.environ.get("VLLM_DS4_PP_CPU_STAGED_TENSOR_DICT", "0")
+        .strip()
+        .lower()
+        in ("1", "true", "yes", "on")
+    ),
+    # DS4 PP4xTP2 uses PyNCCL device P2P for PP boundary tensors, but TP
+    # all-reduce is currently more reliable through PyTorch's NCCL process
+    # group on GB10. This is still a CUDA/NCCL collective, not CPU staging.
+    "VLLM_DS4_TP_PROCESS_GROUP_ALL_REDUCE": lambda: (
+        os.environ.get("VLLM_DS4_TP_PROCESS_GROUP_ALL_REDUCE", "0")
         .strip()
         .lower()
         in ("1", "true", "yes", "on")
