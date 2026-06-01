@@ -24,6 +24,7 @@ def _print_env() -> None:
         "WORLD_SIZE",
         "DS4_NCCL_PREFLIGHT_BACKEND",
         "DS4_200G_IFNAME",
+        "DS4_200G_NCCL_IFNAME",
         "NCCL_SOCKET_IFNAME",
         "GLOO_SOCKET_IFNAME",
         "TP_SOCKET_IFNAME",
