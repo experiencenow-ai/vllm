@@ -17,6 +17,7 @@ def check(name: str, ok: bool) -> None:
 pp8 = read("tools/ds4_launch_dsv4_flash_pp8.sh")
 pp4 = read("tools/ds4_launch_dsv4_flash_pp4_tp2_ep.sh")
 relaunch = read("tools/ds4_relaunch_spark_service.py")
+stop = read("tools/ds4_stop_spark_processes.py")
 envs = read("vllm/envs.py")
 ps = read("vllm/distributed/parallel_state.py")
 
@@ -38,3 +39,6 @@ check("PP4xTP2 launcher keeps PP device communicator enabled", "export VLLM_DS4_
 check("PP4xTP2 launcher refuses PP device communicator disable override", "PP4xTP2xEP refuses VLLM_DS4_PP_DISABLE_DEVICE_COMMUNICATOR" in pp4)
 check("relaunch supports PP4xTP2xEP service", "dsv4-pp4-tp2-ep" in relaunch)
 check("relaunch validates PP4xTP2 launcher and speed audit", "ds4_launch_dsv4_flash_pp4_tp2_ep.sh" in relaunch and "ds4_speed_path_audit.py" in relaunch)
+check("stop script catches PP4xTP2 launcher", "pp4_tp2_ep" in stop)
+check("stop script catches stale NCCL preflight processes", "ds4_nccl_preflight" in stop)
+check("relaunch fails early when head startup process exits", "startup-fail-fast-s" in relaunch and "head_service_process_alive" in relaunch)
