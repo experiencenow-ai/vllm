@@ -1428,7 +1428,10 @@ class EngineCoreProc(EngineCore):
             req, request_wave = request
             if self._reject_add_in_shutdown(req):
                 return
-            self.add_request(req, request_wave)
+            try:
+                self.add_request(req, request_wave)
+            except ValueError as e:
+                self._reject_add_validation_error(req, e)
         elif request_type == EngineCoreRequestType.ABORT:
             self.abort_requests(request)
         elif request_type == EngineCoreRequestType.UTILITY:
@@ -1459,6 +1462,27 @@ class EngineCoreProc(EngineCore):
         logger.info("Rejecting request %s (server shutting down)", request.request_id)
         self._send_abort_outputs_to_client([request.request_id], request.client_index)
         return True
+
+    def _reject_add_validation_error(self, request: Request, err: ValueError) -> None:
+        logger.warning(
+            "Rejecting request %s before scheduling: %s", request.request_id, err
+        )
+        output = EngineCoreOutput(
+            request_id=request.request_id,
+            new_token_ids=[],
+            finish_reason=FinishReason.ERROR,
+            stop_reason=str(err),
+            events=request.take_events(),
+            trace_headers=request.trace_headers,
+        )
+        self.output_queue.put_nowait(
+            (
+                request.client_index,
+                EngineCoreOutputs(
+                    outputs=[output], finished_requests={request.request_id}
+                ),
+            )
+        )
 
     def _reject_utility_in_shutdown(
         self, client_idx: int, call_id: int, method_name: str

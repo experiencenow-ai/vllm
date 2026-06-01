@@ -51,6 +51,19 @@ def test_add_requests():
         assert len(scheduler.waiting) == i + 1
 
 
+def test_add_request_connector_error_does_not_enqueue():
+    scheduler = create_scheduler()
+    request = create_requests(num_requests=1)[0]
+    scheduler.connector = Mock()
+    scheduler.connector.on_new_request.side_effect = ValueError("cache miss")
+
+    with pytest.raises(ValueError, match="cache miss"):
+        scheduler.add_request(request)
+
+    assert request.request_id not in scheduler.requests
+    assert len(scheduler.waiting) == 0
+
+
 def test_finish_request():
     scheduler = create_scheduler()
     requests = create_requests(num_requests=10)
