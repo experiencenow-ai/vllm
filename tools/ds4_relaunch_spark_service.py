@@ -21,8 +21,6 @@ import shlex
 import subprocess
 import sys
 import time
-import urllib.error
-import urllib.request
 
 
 DEFAULT_NODES = [f"spark{i}" for i in range(8)]
@@ -58,6 +56,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--stop-timeout-s", type=float, default=15.0)
     parser.add_argument("--health-timeout-s", type=float, default=900.0)
     parser.add_argument("--health-poll-s", type=float, default=5.0)
+    parser.add_argument(
+        "--health-url",
+        default="",
+        help="direct health URL; by default health is checked through ssh head-node",
+    )
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args()
 
@@ -170,7 +173,7 @@ def launch_command(args: argparse.Namespace, rank: int, log_tag: str) -> str:
 
 
 def service_url(args: argparse.Namespace) -> str:
-    return f"http://{args.head_node}:{args.api_port}/v1/models"
+    return args.health_url or f"http://127.0.0.1:{args.api_port}/v1/models"
 
 
 def poll_health(args: argparse.Namespace) -> bool:
@@ -179,11 +182,30 @@ def poll_health(args: argparse.Namespace) -> bool:
     last_error = ""
     while time.monotonic() < deadline:
         try:
-            with urllib.request.urlopen(url, timeout=3.0) as response:
-                data = json.loads(response.read().decode("utf-8"))
+            if args.health_url:
+                result = subprocess.run(
+                    ["curl", "-sS", "--max-time", "3", url],
+                    check=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                )
+            else:
+                result = subprocess.run(
+                    [
+                        "ssh",
+                        args.head_node,
+                        f"curl -sS --max-time 3 {shlex.quote(url)}",
+                    ],
+                    check=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                )
+            data = json.loads(result.stdout)
             print(f"health ok: {data}")
             return True
-        except (OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
+        except (OSError, subprocess.CalledProcessError, json.JSONDecodeError) as exc:
             last_error = str(exc)
             print(f"health waiting: {last_error}")
             time.sleep(args.health_poll_s)
