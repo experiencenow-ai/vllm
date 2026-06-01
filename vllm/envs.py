@@ -139,6 +139,7 @@ if TYPE_CHECKING:
     VLLM_DS4_ITERATION_TIMING_EVERY: int = 1
     VLLM_DS4_PP_ONLY_GLOBAL_BACKEND: str = ""
     VLLM_DS4_PP_DISABLE_DEVICE_COMMUNICATOR: bool = False
+    VLLM_DS4_PP_PYNCCL_TENSOR_DICT: bool = False
     VLLM_DS4_SKIP_PYNCCL_WARMUP_ALLREDUCE: bool = False
     VLLM_DS4_SM12X_MQA_ROWWISE: bool = True
     VLLM_DS4_SM12X_MQA_ROWWISE_MAX_ROWS: int = 4
@@ -1276,6 +1277,17 @@ environment_variables: dict[str, Callable[[], Any]] = {
     ),
     "VLLM_DS4_PP_DISABLE_DEVICE_COMMUNICATOR": lambda: (
         os.environ.get("VLLM_DS4_PP_DISABLE_DEVICE_COMMUNICATOR", "0")
+        .strip()
+        .lower()
+        in ("1", "true", "yes", "on")
+    ),
+    # DS4 PP transport fast path: when the PP device communicator is enabled,
+    # route CUDA tensors in PP tensor dictionaries through PyNCCL P2P instead
+    # of torch ProcessGroup send/recv. If the requested native path cannot be
+    # initialized, the PP group fails closed instead of silently benchmarking a
+    # slower transport path.
+    "VLLM_DS4_PP_PYNCCL_TENSOR_DICT": lambda: (
+        os.environ.get("VLLM_DS4_PP_PYNCCL_TENSOR_DICT", "0")
         .strip()
         .lower()
         in ("1", "true", "yes", "on")
