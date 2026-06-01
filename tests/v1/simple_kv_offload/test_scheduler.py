@@ -1477,6 +1477,30 @@ def test_persistent_store_roundtrip(tmp_path) -> None:
     assert entries[0].hash_hex == hash_hex
 
 
+def test_persistent_store_filters_by_cache_ref(tmp_path) -> None:
+    """DS4 cache ids are real namespaces, not comments on global hashes."""
+    store = PersistentSimpleOffloadStore(
+        root=tmp_path,
+        rank_key="rank0",
+        model_key="model",
+        num_cpu_blocks=4,
+        strict=True,
+        tensor_names=["kv"],
+    )
+    hash_a = "ab" * 32
+    hash_b = "cd" * 32
+    store.save_scheduler_blocks([1], [hash_a], ["cache-a"])
+    store.save_scheduler_blocks([2], [hash_b], ["cache-b"])
+
+    assert store.lookup_block_hashes([hash_a, hash_b], 4, cache_ref="cache-a") == [
+        hash_a
+    ]
+    assert store.lookup_block_hashes([hash_a, hash_b], 4, cache_ref="cache-b") == [
+        hash_b
+    ]
+    assert store.lookup_block_hashes([hash_a, hash_b], 4, cache_ref="missing") == []
+
+
 def test_persistent_store_restores_worker_blocks_lazily(tmp_path) -> None:
     """Persistent worker data is indexed at startup, not copied wholesale."""
     store = PersistentSimpleOffloadStore(

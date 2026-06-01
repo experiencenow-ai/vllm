@@ -34,6 +34,7 @@ class PersistedBlock:
     cpu_block_id: int
     hash_hex: str
     block_hash: bytes
+    cache_refs: tuple[str, ...] = ()
 
 
 class PersistentSimpleOffloadStore:
@@ -132,9 +133,14 @@ class PersistentSimpleOffloadStore:
         )
 
     def save_scheduler_blocks(
-        self, cpu_block_ids: list[int], block_hashes: list[str]
+        self,
+        cpu_block_ids: list[int],
+        block_hashes: list[str],
+        cache_refs: list[str | None] | None = None,
     ) -> None:
-        self._upsert_index(self.scheduler_index, cpu_block_ids, block_hashes)
+        self._upsert_index(
+            self.scheduler_index, cpu_block_ids, block_hashes, cache_refs
+        )
 
     def lookup_block_hashes(
         self,
@@ -147,8 +153,12 @@ class PersistentSimpleOffloadStore:
         available: set[str] = set()
         for path in (self.scheduler_index, self.worker_index):
             data = self._read_json(path)
-            if data:
-                available.update((data.get("blocks") or {}).keys())
+            if not data:
+                continue
+            for hash_hex, raw in (data.get("blocks") or {}).items():
+                if cache_ref is not None and cache_ref not in _entry_cache_refs(raw):
+                    continue
+                available.add(hash_hex)
         hits: list[str] = []
         for hash_hex in block_hashes:
             if hash_hex in available:
@@ -162,9 +172,13 @@ class PersistentSimpleOffloadStore:
         cpu_kv_caches: dict[str, torch.Tensor],
         cpu_block_ids: list[int],
         block_hashes: list[str],
+        cache_refs: list[str | None] | None = None,
     ) -> None:
         self._validate_pairs(cpu_block_ids, block_hashes)
-        for cpu_block_id, hash_hex in zip(cpu_block_ids, block_hashes):
+        refs = cache_refs or [None] * len(cpu_block_ids)
+        for cpu_block_id, hash_hex, cache_ref in zip(
+            cpu_block_ids, block_hashes, refs
+        ):
             try:
                 payload = {
                     "format": "ds4-vllm-simple-cpu-offload-block-v1",
@@ -173,6 +187,7 @@ class PersistentSimpleOffloadStore:
                     "rank": self.rank_key,
                     "cpu_block_id": int(cpu_block_id),
                     "hash": hash_hex,
+                    "cache_ref": cache_ref,
                     "tensors": {
                         name: tensor[int(cpu_block_id)].detach().cpu().clone()
                         for name, tensor in cpu_kv_caches.items()
@@ -183,7 +198,7 @@ class PersistentSimpleOffloadStore:
                 self._fail(
                     f"failed to persist CPU offload block {_short_hash(hash_hex)}", exc
                 )
-        self._upsert_index(self.worker_index, cpu_block_ids, block_hashes)
+        self._upsert_index(self.worker_index, cpu_block_ids, block_hashes, cache_refs)
 
     def ensure_worker_blocks(
         self,
@@ -290,6 +305,7 @@ class PersistentSimpleOffloadStore:
                         cpu_block_id=cpu_block_id,
                         hash_hex=hash_hex,
                         block_hash=bytes.fromhex(hash_hex),
+                        cache_refs=tuple(_entry_cache_refs(raw)),
                     )
                 )
                 seen_cpu_ids.add(cpu_block_id)
@@ -298,13 +314,20 @@ class PersistentSimpleOffloadStore:
         return entries
 
     def _upsert_index(
-        self, path: Path, cpu_block_ids: list[int], block_hashes: list[str]
+        self,
+        path: Path,
+        cpu_block_ids: list[int],
+        block_hashes: list[str],
+        cache_refs: list[str | None] | None = None,
     ) -> None:
         self._validate_pairs(cpu_block_ids, block_hashes)
+        refs = cache_refs or [None] * len(cpu_block_ids)
         data = self._read_json(path) or self._empty_index()
         blocks = data.setdefault("blocks", {})
         stale_block_hashes: list[str] = []
-        for cpu_block_id, hash_hex in zip(cpu_block_ids, block_hashes):
+        for cpu_block_id, hash_hex, cache_ref in zip(
+            cpu_block_ids, block_hashes, refs
+        ):
             cpu_id = int(cpu_block_id)
             for old_hash, old_entry in list(blocks.items()):
                 if (
@@ -313,7 +336,14 @@ class PersistentSimpleOffloadStore:
                 ):
                     blocks.pop(old_hash, None)
                     stale_block_hashes.append(old_hash)
-            blocks[hash_hex] = {"cpu_block_id": cpu_id, "updated_at": time.time()}
+            existing_refs = set(_entry_cache_refs(blocks.get(hash_hex)))
+            if cache_ref:
+                existing_refs.add(str(cache_ref))
+            blocks[hash_hex] = {
+                "cpu_block_id": cpu_id,
+                "updated_at": time.time(),
+                "cache_refs": sorted(existing_refs),
+            }
         data["updated_at"] = time.time()
         self._write_json_atomic(path, data)
         if path == self.worker_index:
@@ -410,6 +440,18 @@ def _model_key(vllm_config: Any) -> str:
 
 def _safe_key(value: str) -> str:
     return "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in value)
+
+
+def _entry_cache_refs(raw: Any) -> list[str]:
+    if not isinstance(raw, dict):
+        return []
+    refs = raw.get("cache_refs")
+    if isinstance(refs, list):
+        return [str(ref) for ref in refs if isinstance(ref, str) and ref]
+    ref = raw.get("cache_ref")
+    if isinstance(ref, str) and ref:
+        return [ref]
+    return []
 
 
 def _env_bool(name: str, default: bool) -> bool:

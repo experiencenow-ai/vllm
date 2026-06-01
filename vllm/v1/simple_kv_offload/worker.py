@@ -68,7 +68,9 @@ class SimpleCPUOffloadWorker:
         self._completed_store_events: dict[int, int] = {}
         self._persistent_store: PersistentSimpleOffloadStore | None = None
         self._persistent_known: dict[int, str] = {}
-        self._pending_store_persist: dict[int, tuple[list[int], list[str]]] = {}
+        self._pending_store_persist: dict[
+            int, tuple[list[int], list[str], list[str | None]]
+        ] = {}
         self._pin_memory: bool = False
 
     def register_kv_caches(
@@ -314,6 +316,7 @@ class SimpleCPUOffloadWorker:
                 self._pending_store_persist[metadata.store_event] = (
                     list(metadata.store_cpu_blocks),
                     list(metadata.store_block_hashes),
+                    list(metadata.store_cache_refs),
                 )
 
     def clear_connector_metadata(self) -> None:
@@ -387,9 +390,9 @@ class SimpleCPUOffloadWorker:
                 persist = self._pending_store_persist.pop(j, None)
                 if persist is not None and self._persistent_store is not None:
                     assert self.cpu_kv_caches is not None
-                    cpu_ids, hashes = persist
+                    cpu_ids, hashes, cache_refs = persist
                     self._persistent_store.persist_worker_blocks(
-                        self.cpu_kv_caches, cpu_ids, hashes
+                        self.cpu_kv_caches, cpu_ids, hashes, cache_refs
                     )
                     for cpu_id, hash_hex in zip(cpu_ids, hashes):
                         self._persistent_known[int(cpu_id)] = hash_hex
