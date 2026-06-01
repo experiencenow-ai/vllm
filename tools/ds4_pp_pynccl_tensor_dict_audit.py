@@ -32,8 +32,8 @@ checks: list[tuple[str, bool]] = [
         "VLLM_DS4_PP_PYNCCL_TENSOR_DICT" in dsv4,
     ),
     (
-        "DSV4 launcher keeps tensor-dict path opt-in",
-        'VLLM_DS4_PP_PYNCCL_TENSOR_DICT:-0' in dsv4,
+        "DSV4 launcher enables tensor-dict fast path by default",
+        'VLLM_DS4_PP_PYNCCL_TENSOR_DICT:-1' in dsv4,
     ),
 ]
 

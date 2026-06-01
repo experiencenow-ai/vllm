@@ -230,13 +230,12 @@ checks = [
         ),
     ),
     (
-        "DS4 200G guard gates routed-loopback NCCL by measured bandwidth",
-        "socket_ifname=\"${DS4_200G_SOCKET_IFNAME:-$control_ifname}\"" in guard
+        "DS4 200G guard binds NCCL socket to real 200G NICs and hardfails speed fallback",
+        "socket_ifname=\"${DS4_200G_SOCKET_IFNAME:-$ifnames_csv}\"" in guard
+        and "ds4_200g_require_link_200g \"$ifname\" \"NCCL socket\"" in guard
         and "ds4_200g_check_or_export NCCL_ALGO \"Ring\"" in guard
-        and "DS4_200G_VERIFIED_ROUTED_LOOPBACK_NCCL=1" in guard
-        and "DS4_NCCL_PREFLIGHT_MIN_BUSBW_GBPS" in guard
-        and "DS4 NCCL preflight bandwidth:" in guard
-        and "all-peer routes were verified over 200G interfaces" in guard
+        and "DS4_200G_VERIFIED_ROUTED_LOOPBACK_NCCL" not in guard
+        and "all-peer routes were verified over 200G interfaces" not in guard
         and "NCCL reported a link-speed fallback during preflight; refusing to launch on an ambiguous or slow fabric" in guard
     ),
     (
