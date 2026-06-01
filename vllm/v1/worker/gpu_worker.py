@@ -821,21 +821,32 @@ class Worker(WorkerBase):
             # fragmentation issue.
             # NOTE: This is called after `capture_model` on purpose to prevent
             # memory buffers from being cleared by `torch.accelerator.empty_cache`.
-            max_num_reqs = min(
-                self.scheduler_config.max_num_seqs,
-                self.scheduler_config.max_num_batched_tokens,
-            )
-
-            # We skip EPLB here since we don't want to record dummy metrics
-            hidden_states, last_hidden_states = self.model_runner._dummy_run(
-                num_tokens=max_num_reqs,
-                skip_eplb=True,
-                cudagraph_runtime_mode=CUDAGraphMode.NONE,
-            )
-            if self.model_runner.is_pooling_model:
-                self.model_runner._dummy_pooler_run(hidden_states)
+            if envs.VLLM_DS4_SKIP_LAST_RANK_SAMPLER_WARMUP:
+                logger.warning(
+                    "Skipping last-rank sampler warmup because "
+                    "VLLM_DS4_SKIP_LAST_RANK_SAMPLER_WARMUP=1. DS4 PP+TP "
+                    "services avoid startup-only dummy model forwards on the "
+                    "final PP stage; real requests still exercise the normal "
+                    "sampler path."
+                )
             else:
-                self.model_runner._dummy_sampler_run(hidden_states=last_hidden_states)
+                max_num_reqs = min(
+                    self.scheduler_config.max_num_seqs,
+                    self.scheduler_config.max_num_batched_tokens,
+                )
+
+                # We skip EPLB here since we don't want to record dummy metrics
+                hidden_states, last_hidden_states = self.model_runner._dummy_run(
+                    num_tokens=max_num_reqs,
+                    skip_eplb=True,
+                    cudagraph_runtime_mode=CUDAGraphMode.NONE,
+                )
+                if self.model_runner.is_pooling_model:
+                    self.model_runner._dummy_pooler_run(hidden_states)
+                else:
+                    self.model_runner._dummy_sampler_run(
+                        hidden_states=last_hidden_states
+                    )
 
         # Reset the seed to ensure that the random state is not affected by
         # the model initialization and profiling.
