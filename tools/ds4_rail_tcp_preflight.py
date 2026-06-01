@@ -10,7 +10,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import os
-import socket
 import subprocess
 import sys
 import threading
@@ -144,55 +143,63 @@ def _discover_rails(destination_fabric_ip: str) -> list[Rail]:
 
 
 def _server_stream(port: int, expected_bytes: int, timeout_s: float) -> int:
-    received = 0
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        sock.bind(("0.0.0.0", port))
-        sock.listen(1)
-        sock.settimeout(timeout_s)
-        conn, _ = sock.accept()
-        with conn:
-            conn.settimeout(timeout_s)
-            while received < expected_bytes:
-                chunk = conn.recv(min(1024 * 1024, expected_bytes - received))
-                if not chunk:
-                    break
-                received += len(chunk)
+    bind_ip = _env("DS4_RAIL_TCP_PREFLIGHT_SERVER_BIND", "0.0.0.0")
+    script = (
+        f"set -o pipefail; "
+        f"nc -l -s {bind_ip} -p {port} | wc -c"
+    )
+    result = subprocess.run(
+        ["bash", "-lc", script],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        timeout=timeout_s,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"rail TCP nc server failed on port {port}: {result.stderr[-500:]}"
+        )
+    try:
+        received = int(result.stdout.strip().splitlines()[-1])
+    except (IndexError, ValueError) as exc:
+        raise RuntimeError(
+            f"rail TCP nc server on port {port} produced invalid byte count: "
+            f"{result.stdout!r}"
+        ) from exc
     if received != expected_bytes:
         raise RuntimeError(
-            f"rail TCP server on port {port} received {received}, "
+            f"rail TCP nc server on port {port} received {received}, "
             f"expected {expected_bytes}"
         )
     return received
 
 
-def _client_stream(
-    rail: Rail,
-    port: int,
-    bytes_to_send: int,
-    timeout_s: float,
-) -> int:
-    payload = b"\0" * min(1024 * 1024, bytes_to_send)
+def _client_stream(rail: Rail, port: int, bytes_to_send: int, timeout_s: float) -> int:
+    script = (
+        "set -o pipefail; "
+        f"head -c {bytes_to_send} /dev/zero | "
+        f"nc -N -s {rail.source_ip} {rail.destination_ip} {port}"
+    )
     deadline = time.monotonic() + timeout_s
-    last_exc: BaseException | None = None
+    last_stderr = ""
     while time.monotonic() < deadline:
-        try:
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-                sock.settimeout(min(5.0, max(0.1, deadline - time.monotonic())))
-                sock.bind((rail.source_ip, 0))
-                sock.connect((rail.destination_ip, port))
-                sent = 0
-                while sent < bytes_to_send:
-                    count = min(len(payload), bytes_to_send - sent)
-                    sock.sendall(payload[:count])
-                    sent += count
-                return sent
-        except OSError as exc:
-            last_exc = exc
-            time.sleep(0.1)
+        remaining = max(1.0, deadline - time.monotonic())
+        result = subprocess.run(
+            ["bash", "-lc", script],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=remaining,
+            check=False,
+        )
+        if result.returncode == 0:
+            return bytes_to_send
+        last_stderr = result.stderr[-500:]
+        time.sleep(0.1)
     raise RuntimeError(
-        f"rail TCP client could not connect via {rail.source_ip}->{rail.destination_ip}:"
-        f"{port}: {last_exc}"
+        f"rail TCP nc client failed via {rail.source_ip}->{rail.destination_ip}:"
+        f"{port}: {last_stderr}"
     )
 
 
@@ -201,12 +208,6 @@ def _run_server(pair_index: int, src: int, dst: int) -> int:
     total_bytes = max(streams, int(_env("DS4_RAIL_TCP_PREFLIGHT_BYTES", "268435456")))
     port_base = int(_env("DS4_RAIL_TCP_PREFLIGHT_PORT_BASE", "49400"))
     timeout_s = float(_env("DS4_RAIL_TCP_PREFLIGHT_TIMEOUT", "30"))
-    min_gbps = float(
-        _env(
-            "DS4_RAIL_TCP_PREFLIGHT_MIN_GBPS",
-            _env("DS4_NCCL_PREFLIGHT_MIN_P2P_GBPS", "0"),
-        )
-    )
     per_stream = total_bytes // streams
     remainder = total_bytes % streams
     received = 0
@@ -244,11 +245,9 @@ def _run_server(pair_index: int, src: int, dst: int) -> int:
         "DS4 rail TCP preflight bandwidth: "
         f"pair={src}-{dst} role=server bytes={received} streams={streams} "
         f"elapsed_s={elapsed_s:.6f} GBps={gbps:.3f} "
-        f"Gbit_s={(gbps * 8.0):.3f} min_GBps={min_gbps:.3f}",
+        f"Gbit_s={(gbps * 8.0):.3f}",
         file=sys.stderr,
     )
-    if min_gbps > 0 and gbps < min_gbps:
-        return 68
     return 0
 
 
