@@ -89,6 +89,33 @@ class WorkspaceManager:
         """Check if workspace is locked."""
         return self._locked
 
+    def reserve_bytes(self, required_bytes: int) -> None:
+        """Reserve at least required_bytes for every ubatch workspace."""
+        if required_bytes <= 0:
+            return
+        if self._locked:
+            raise AssertionError(
+                "Cannot reserve workspace bytes after workspace is locked."
+            )
+        for ubatch_id, current_workspace in enumerate(self._current_workspaces):
+            current_size = self._workspace_size_bytes(current_workspace)
+            if current_size >= required_bytes:
+                continue
+            self._current_workspaces[ubatch_id] = None
+            del current_workspace
+            torch.accelerator.empty_cache()
+            self._current_workspaces[ubatch_id] = torch.empty(
+                (required_bytes,), dtype=torch.uint8, device=self._device
+            )
+            if envs.VLLM_DEBUG_WORKSPACE:
+                logger.info(
+                    "[WORKSPACE DEBUG] Preallocated workspace: %.2f MB -> "
+                    "%.2f MB (ubatch %d)",
+                    current_size / _MB,
+                    required_bytes / _MB,
+                    ubatch_id,
+                )
+
     def get_simultaneous(
         self, *shapes_and_dtypes: tuple[tuple[int, ...], torch.dtype]
     ) -> list[torch.Tensor]:
@@ -255,7 +282,9 @@ def lock_workspace() -> None:
 
         # Now all get_workspace calls must fit in pre-allocated size
     """
-    current_workspace_manager().lock()
+    workspace_manager = current_workspace_manager()
+    workspace_manager.reserve_bytes(envs.VLLM_WORKSPACE_PREALLOC_BYTES)
+    workspace_manager.lock()
 
 
 def unlock_workspace() -> None:
