@@ -747,7 +747,7 @@ def _run_bandwidth_preflight(
         if servers and client_phase_passed:
             duration_s = float(_env("DS4_RAIL_TCP_PREFLIGHT_DURATION_S", "5"))
             hold_extra_s = float(
-                _env("DS4_RAIL_TCP_PREFLIGHT_SERVER_HOLD_EXTRA_S", "1.0")
+                _env("DS4_RAIL_TCP_PREFLIGHT_SERVER_HOLD_EXTRA_S", "10.0")
             )
             hold_until = server_started_at + duration_s + hold_extra_s
             remaining_s = hold_until - time.monotonic()
