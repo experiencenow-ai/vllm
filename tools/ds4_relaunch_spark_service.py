@@ -28,7 +28,11 @@ DEFAULT_NODES = [f"spark{i}" for i in range(8)]
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--service", choices=("dsv4-pp8",), default="dsv4-pp8")
+    parser.add_argument(
+        "--service",
+        choices=("dsv4-pp8", "dsv4-pp4-tp2-ep"),
+        default="dsv4-pp8",
+    )
     parser.add_argument("--nodes", default=os.getenv("DS4_SPARK_NODES", ",".join(DEFAULT_NODES)))
     parser.add_argument("--head-node", default=os.getenv("DS4_HEAD_NODE", "spark0"))
     parser.add_argument("--head-addr", default=os.getenv("HEAD_ADDR", "10.10.100.10"))
@@ -41,7 +45,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--profile",
         default=os.getenv("DS4_DSV4_PIPELINE_RAM_PROFILE", "max-throughput"),
-        help="DS4_DSV4_PIPELINE_RAM_PROFILE for dsv4-pp8",
+        help="DS4_DSV4_PIPELINE_RAM_PROFILE for the selected DSV4 service",
     )
     parser.add_argument("--nnodes", type=int, default=int(os.getenv("NNODES", "8")))
     parser.add_argument("--log-tag", default="")
@@ -127,10 +131,12 @@ def build_command(args: argparse.Namespace) -> str:
         "vllm/v1/worker/workspace.py "
         "tools/ds4_stop_spark_processes.py tools/ds4_relaunch_spark_service.py "
         "tools/ds4_workspace_prealloc_audit.py "
-        "tools/ds4_pp_wave_admission_audit.py && "
+        "tools/ds4_pp_wave_admission_audit.py tools/ds4_speed_path_audit.py && "
         "bash -n tools/ds4_launch_dsv4_flash_pp8.sh && "
+        "bash -n tools/ds4_launch_dsv4_flash_pp4_tp2_ep.sh && "
         f"{py} tools/ds4_workspace_prealloc_audit.py && "
         f"{py} tools/ds4_pp_wave_admission_audit.py && "
+        f"{py} tools/ds4_speed_path_audit.py && "
         f"{py} tools/ds4_no_marlin_static_audit.py; "
         "fi",
     )
@@ -181,11 +187,17 @@ def launch_command(args: argparse.Namespace, rank: int, log_tag: str) -> str:
         f"{shlex.quote(key)}={shlex.quote(value)}"
         for key, value in launch_env(args, rank).items()
     )
-    log = f"~/ds4_logs/dsv4_pp8_{log_tag}-rank{rank}.log"
+    if args.service == "dsv4-pp4-tp2-ep":
+        launch_script = "tools/ds4_launch_dsv4_flash_pp4_tp2_ep.sh"
+        log_prefix = "dsv4_pp4_tp2_ep"
+    else:
+        launch_script = "tools/ds4_launch_dsv4_flash_pp8.sh"
+        log_prefix = "dsv4_pp8"
+    log = f"~/ds4_logs/{log_prefix}_{log_tag}-rank{rank}.log"
     return repo_command(
         args,
         "mkdir -p ~/ds4_logs && "
-        f"setsid -f env {env} tools/ds4_launch_dsv4_flash_pp8.sh "
+        f"setsid -f env {env} {launch_script} "
         f"> {log} 2>&1 < /dev/null && "
         f"echo started rank={rank} log={log}",
     )
