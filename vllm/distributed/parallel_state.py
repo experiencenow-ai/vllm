@@ -226,6 +226,33 @@ class _CudaEventHandle:
         self._tensors = []
 
 
+class _Ds4CudaStreamHandle:
+    """Async handle for DS4 PP P2P work enqueued on a comm stream."""
+
+    def __init__(
+        self,
+        tensors: list[torch.Tensor],
+        stream: torch.cuda.Stream,
+        *,
+        synchronize_on_wait: bool,
+    ) -> None:
+        self._tensors = tensors
+        self._event = torch.cuda.Event(blocking=False)
+        self._stream = stream
+        self._synchronize_on_wait = synchronize_on_wait
+        stream.record_event(self._event)
+
+    def is_completed(self) -> bool:
+        return bool(self._event.query())
+
+    def wait(self) -> None:
+        if self._synchronize_on_wait:
+            self._event.synchronize()
+        else:
+            torch.cuda.current_stream().wait_event(self._event)
+        self._tensors = []
+
+
 def _split_tensor_dict(
     tensor_dict: dict[str, torch.Tensor | Any],
     *,
@@ -639,9 +666,15 @@ class GroupCoordinator:
         metadata_list: list[tuple[str, Any]],
         dst: int,
     ) -> None:
-        metadata_tensor = _encode_ds4_pp_device_metadata(metadata_list, "cuda")
+        comm_stream = self._get_ds4_pp_pynccl_stream()
+        with torch.cuda.stream(comm_stream):
+            metadata_tensor = _encode_ds4_pp_device_metadata(metadata_list, "cuda")
         handle = self._enqueue_ds4_pynccl_p2p(
-            [metadata_tensor], dst, torch.distributed.isend
+            [metadata_tensor],
+            dst,
+            torch.distributed.isend,
+            synchronize_on_wait=True,
+            wait_for_producer=False,
         )
         if handle is None:
             raise RuntimeError(
@@ -651,11 +684,17 @@ class GroupCoordinator:
         handle.wait()
 
     def _recv_ds4_pp_device_metadata(self, src: int) -> list[tuple[str, Any]]:
-        metadata_tensor = torch.empty(
-            _DS4_PP_DEVICE_METADATA_LEN, dtype=torch.int64, device="cuda"
-        )
+        comm_stream = self._get_ds4_pp_pynccl_stream()
+        with torch.cuda.stream(comm_stream):
+            metadata_tensor = torch.empty(
+                _DS4_PP_DEVICE_METADATA_LEN, dtype=torch.int64, device="cuda"
+            )
         handle = self._enqueue_ds4_pynccl_p2p(
-            [metadata_tensor], src, torch.distributed.irecv
+            [metadata_tensor],
+            src,
+            torch.distributed.irecv,
+            synchronize_on_wait=True,
+            wait_for_producer=False,
         )
         if handle is None:
             raise RuntimeError(
@@ -664,6 +703,13 @@ class GroupCoordinator:
             )
         handle.wait()
         return _decode_ds4_pp_device_metadata(metadata_tensor)
+
+    def _get_ds4_pp_pynccl_stream(self) -> torch.cuda.Stream:
+        stream = getattr(self, "_ds4_pp_pynccl_stream", None)
+        if stream is None:
+            stream = torch.cuda.Stream()
+            self._ds4_pp_pynccl_stream = stream
+        return stream
 
     def _should_cpu_stage_ds4_pp_tensor_dict(self) -> bool:
         if not envs.VLLM_DS4_PP_CPU_STAGED_TENSOR_DICT:
@@ -682,6 +728,9 @@ class GroupCoordinator:
         tensors: list[torch.Tensor],
         peer: int,
         op,
+        *,
+        synchronize_on_wait: bool = False,
+        wait_for_producer: bool = True,
     ) -> Handle | None:
         cuda_tensors = [
             tensor for tensor in tensors if tensor.is_cuda and tensor.numel() > 0
@@ -690,18 +739,29 @@ class GroupCoordinator:
             return None
         if not self._can_use_ds4_pynccl_tensor_dict():
             return None
+        current_stream = torch.cuda.current_stream(cuda_tensors[0].device)
+        comm_stream = self._get_ds4_pp_pynccl_stream()
+        if wait_for_producer:
+            producer_event = torch.cuda.Event(blocking=False)
+            current_stream.record_event(producer_event)
+            comm_stream.wait_event(producer_event)
         p2p_ops = []
-        for tensor in cuda_tensors:
-            for chunk in self._ds4_pynccl_p2p_chunks(tensor):
-                p2p_op = object.__new__(P2POp)
-                p2p_op.op = op
-                p2p_op.tensor = chunk
-                p2p_op.group_peer = peer
-                p2p_ops.append(p2p_op)
-        self.device_communicator.batch_isend_irecv(p2p_ops)
-        for tensor in cuda_tensors:
-            tensor.record_stream(torch.cuda.current_stream(tensor.device))
-        return _CudaEventHandle([op.tensor for op in p2p_ops])
+        with torch.cuda.stream(comm_stream):
+            for tensor in cuda_tensors:
+                for chunk in self._ds4_pynccl_p2p_chunks(tensor):
+                    p2p_op = object.__new__(P2POp)
+                    p2p_op.op = op
+                    p2p_op.tensor = chunk
+                    p2p_op.group_peer = peer
+                    p2p_ops.append(p2p_op)
+            self.device_communicator.batch_isend_irecv(p2p_ops)
+            for tensor in cuda_tensors:
+                tensor.record_stream(comm_stream)
+            return _Ds4CudaStreamHandle(
+                [op.tensor for op in p2p_ops],
+                comm_stream,
+                synchronize_on_wait=synchronize_on_wait,
+            )
 
     def _ds4_pynccl_p2p_chunks(self, tensor: torch.Tensor) -> list[torch.Tensor]:
         stripes = max(1, int(envs.VLLM_DS4_PP_PYNCCL_TENSOR_DICT_STRIPES))
@@ -1421,7 +1481,10 @@ class GroupCoordinator:
                 tensor_dict[key] = value
 
         cuda_handle = self._enqueue_ds4_pynccl_p2p(
-            cuda_p2p_tensors, src, torch.distributed.irecv
+            cuda_p2p_tensors,
+            src,
+            torch.distributed.irecv,
+            wait_for_producer=False,
         )
         if cuda_handle is not None:
             handles.append(cuda_handle)
