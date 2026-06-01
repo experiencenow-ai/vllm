@@ -32,5 +32,7 @@ check("PP4xTP2 launcher preserves bounded prefill waves", "VLLM_DS4_SCHED_MAX_NE
 check("PP4xTP2 launcher preserves final-only nonstreaming output", "VLLM_DS4_FINAL_ONLY_NONSTREAMING" in pp4)
 check("PP4xTP2 launcher preserves fused execute/sample default", "VLLM_DS4_FUSED_EXECUTE_SAMPLE" in pp4)
 check("PP4xTP2 launcher serves existing DS4 DSV4 API model by default", 'DSV4_SERVED_MODEL_NAME:-deepseek-v4-flash-pp8' in pp4)
+check("PP4xTP2 launcher does not set PP-only global backend", 'export VLLM_DS4_PP_ONLY_GLOBAL_BACKEND=' not in pp4)
+check("PP4xTP2 launcher fails early if PP-only global backend leaks in", "PP4xTP2xEP refuses VLLM_DS4_PP_ONLY_GLOBAL_BACKEND" in pp4)
 check("relaunch supports PP4xTP2xEP service", "dsv4-pp4-tp2-ep" in relaunch)
 check("relaunch validates PP4xTP2 launcher and speed audit", "ds4_launch_dsv4_flash_pp4_tp2_ep.sh" in relaunch and "ds4_speed_path_audit.py" in relaunch)
