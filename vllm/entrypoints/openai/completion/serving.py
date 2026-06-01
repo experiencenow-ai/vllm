@@ -342,13 +342,18 @@ class OpenAIServingCompletion(OpenAIServing):
             )
 
         collectors: list[Any] = []
+        if not envs.VLLM_DS4_COHORT_PAUSE_DURING_ADMISSION:
+            raise RuntimeError(
+                "DS4 cohort admission requires "
+                "VLLM_DS4_COHORT_PAUSE_DURING_ADMISSION=1. Letting the "
+                "scheduler run while a large PP cohort is still being added "
+                "fragments prefill/decode waves and invalidates throughput."
+            )
+
         paused = False
         try:
-            if envs.VLLM_DS4_COHORT_PAUSE_DURING_ADMISSION:
-                await self.engine_client.pause_generation(
-                    mode="keep", clear_cache=False
-                )
-                paused = True
+            await self.engine_client.pause_generation(mode="keep", clear_cache=False)
+            paused = True
             for request_id_item, engine_input, sampling_params, trace_headers in items:
                 collector = await add_request(
                     request_id_item,
@@ -367,9 +372,6 @@ class OpenAIServingCompletion(OpenAIServing):
         finally:
             if paused:
                 await self._ds4_wake_completion_cohort()
-
-        if not paused:
-            await self._ds4_wake_completion_cohort()
 
         logger.info(
             "DS4 admitted completion cohort: prompts=%d priority=%s pause=%s",
