@@ -640,18 +640,28 @@ class GroupCoordinator:
         dst: int,
     ) -> None:
         metadata_tensor = _encode_ds4_pp_device_metadata(metadata_list, "cuda")
-        handle = torch.distributed.isend(
-            metadata_tensor, dst=self.ranks[dst], group=self.device_group
+        handle = self._enqueue_ds4_pynccl_p2p(
+            [metadata_tensor], dst, torch.distributed.isend
         )
+        if handle is None:
+            raise RuntimeError(
+                "DS4 PP device metadata fast path could not enqueue PyNCCL "
+                "send. Refusing torch ProcessGroup metadata fallback."
+            )
         handle.wait()
 
     def _recv_ds4_pp_device_metadata(self, src: int) -> list[tuple[str, Any]]:
         metadata_tensor = torch.empty(
             _DS4_PP_DEVICE_METADATA_LEN, dtype=torch.int64, device="cuda"
         )
-        handle = torch.distributed.irecv(
-            metadata_tensor, src=self.ranks[src], group=self.device_group
+        handle = self._enqueue_ds4_pynccl_p2p(
+            [metadata_tensor], src, torch.distributed.irecv
         )
+        if handle is None:
+            raise RuntimeError(
+                "DS4 PP device metadata fast path could not enqueue PyNCCL "
+                "recv. Refusing torch ProcessGroup metadata fallback."
+            )
         handle.wait()
         return _decode_ds4_pp_device_metadata(metadata_tensor)
 
