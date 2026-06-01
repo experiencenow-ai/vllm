@@ -26,6 +26,7 @@ NAMESPACE_ENV = "VLLM_SIMPLE_KV_OFFLOAD_PERSIST_NAMESPACE"
 API_URL_ENV = "VLLM_SIMPLE_KV_OFFLOAD_PERSIST_API_URL"
 API_TOKEN_ENV = "VLLM_SIMPLE_KV_OFFLOAD_PERSIST_API_TOKEN"
 API_TIMEOUT_ENV = "VLLM_SIMPLE_KV_OFFLOAD_PERSIST_API_TIMEOUT"
+BUNDLES_ENV = "VLLM_DS4_SIMPLE_KV_BUNDLES"
 FORMAT_VERSION = 1
 
 
@@ -56,11 +57,14 @@ class PersistentSimpleOffloadStore:
         self.tensor_names = tensor_names or []
         self.worker_dir = self.root / "workers" / self.rank_key
         self.blocks_dir = self.worker_dir / "blocks"
+        self.bundles_dir = self.worker_dir / "cache_ref_bundles"
         self.scheduler_index = self.root / "scheduler_index.json"
         self.worker_index = self.worker_dir / "worker_index.json"
+        self.bundle_index = self.worker_dir / "cache_ref_bundle_index.json"
         self.root.mkdir(parents=True, exist_ok=True)
         self.worker_dir.mkdir(parents=True, exist_ok=True)
         self.blocks_dir.mkdir(parents=True, exist_ok=True)
+        self.bundles_dir.mkdir(parents=True, exist_ok=True)
 
     @classmethod
     def from_env(
@@ -199,6 +203,9 @@ class PersistentSimpleOffloadStore:
                     f"failed to persist CPU offload block {_short_hash(hash_hex)}", exc
                 )
         self._upsert_index(self.worker_index, cpu_block_ids, block_hashes, cache_refs)
+        self._persist_cache_ref_bundles(
+            cpu_kv_caches, cpu_block_ids, block_hashes, refs
+        )
 
     def ensure_worker_blocks(
         self,
@@ -210,8 +217,17 @@ class PersistentSimpleOffloadStore:
     ) -> dict[int, str]:
         restored: dict[int, str] = {}
         self._validate_pairs(cpu_block_ids, block_hashes)
+        refs = cache_refs or [None] * len(cpu_block_ids)
+        if _bundle_enabled():
+            restored.update(
+                self._restore_worker_blocks_from_bundles(
+                    cpu_kv_caches, cpu_block_ids, block_hashes, refs, known_by_cpu_id
+                )
+            )
         for cpu_block_id, hash_hex in zip(cpu_block_ids, block_hashes):
             cpu_id = int(cpu_block_id)
+            if restored.get(cpu_id) == hash_hex:
+                continue
             if known_by_cpu_id.get(cpu_id) == hash_hex:
                 continue
             path = self._block_path(hash_hex)
@@ -230,6 +246,176 @@ class PersistentSimpleOffloadStore:
                     exc,
                 )
         return restored
+
+    def _persist_cache_ref_bundles(
+        self,
+        cpu_kv_caches: dict[str, torch.Tensor],
+        cpu_block_ids: list[int],
+        block_hashes: list[str],
+        cache_refs: list[str | None],
+    ) -> None:
+        if not _bundle_enabled():
+            return
+        by_ref: dict[str, list[int]] = {}
+        for idx, cache_ref in enumerate(cache_refs):
+            if not cache_ref:
+                continue
+            by_ref.setdefault(str(cache_ref), []).append(idx)
+        if not by_ref:
+            return
+
+        index = self._read_json(self.bundle_index) or self._empty_bundle_index()
+        refs = index.setdefault("refs", {})
+        for cache_ref, positions in by_ref.items():
+            safe_ref = _safe_key(cache_ref)
+            ref_dir = self.bundles_dir / safe_ref
+            ref_dir.mkdir(parents=True, exist_ok=True)
+            bundle_name = f"{time.time_ns()}-{os.getpid()}.pt"
+            bundle_path = ref_dir / bundle_name
+            ids = [int(cpu_block_ids[pos]) for pos in positions]
+            hashes = [block_hashes[pos] for pos in positions]
+            try:
+                payload = {
+                    "format": "ds4-vllm-simple-cpu-offload-bundle-v1",
+                    "version": FORMAT_VERSION,
+                    "model": self.model_key,
+                    "rank": self.rank_key,
+                    "cache_ref": cache_ref,
+                    "hashes": hashes,
+                    "tensors": {
+                        name: tensor[ids].detach().cpu().clone()
+                        for name, tensor in cpu_kv_caches.items()
+                    },
+                }
+                self._torch_save_atomic(bundle_path, payload)
+                rel = str(bundle_path.relative_to(self.worker_dir))
+                ref_entry = refs.setdefault(
+                    safe_ref,
+                    {
+                        "cache_ref": cache_ref,
+                        "blocks": {},
+                    },
+                )
+                ref_entry["cache_ref"] = cache_ref
+                blocks = ref_entry.setdefault("blocks", {})
+                for row, hash_hex in enumerate(hashes):
+                    blocks[hash_hex] = {
+                        "bundle": rel,
+                        "row": row,
+                        "updated_at": time.time(),
+                    }
+            except Exception as exc:
+                self._fail(
+                    f"failed to persist CPU offload bundle for cache_ref={cache_ref!r}",
+                    exc,
+                )
+        index["updated_at"] = time.time()
+        self._write_json_atomic(self.bundle_index, index)
+
+    def _restore_worker_blocks_from_bundles(
+        self,
+        cpu_kv_caches: dict[str, torch.Tensor],
+        cpu_block_ids: list[int],
+        block_hashes: list[str],
+        cache_refs: list[str | None],
+        known_by_cpu_id: dict[int, str],
+    ) -> dict[int, str]:
+        index = self._read_json(self.bundle_index)
+        if not index:
+            return {}
+        restored: dict[int, str] = {}
+        loads: dict[tuple[str, str], list[tuple[int, str, int]]] = {}
+        refs = index.get("refs")
+        if not isinstance(refs, dict):
+            return {}
+        for cpu_block_id, hash_hex, cache_ref in zip(
+            cpu_block_ids, block_hashes, cache_refs
+        ):
+            cpu_id = int(cpu_block_id)
+            if known_by_cpu_id.get(cpu_id) == hash_hex:
+                continue
+            if not cache_ref:
+                continue
+            ref_entry = refs.get(_safe_key(str(cache_ref)))
+            if not isinstance(ref_entry, dict):
+                continue
+            if ref_entry.get("cache_ref") != str(cache_ref):
+                continue
+            blocks = ref_entry.get("blocks")
+            if not isinstance(blocks, dict):
+                continue
+            block_entry = blocks.get(hash_hex)
+            if not isinstance(block_entry, dict):
+                continue
+            bundle_rel = block_entry.get("bundle")
+            row = block_entry.get("row")
+            if not isinstance(bundle_rel, str) or not isinstance(row, int):
+                continue
+            loads.setdefault((str(cache_ref), bundle_rel), []).append(
+                (cpu_id, hash_hex, row)
+            )
+
+        for (cache_ref, bundle_rel), rows in loads.items():
+            path = self.worker_dir / bundle_rel
+            try:
+                payload = self._torch_load(path)
+                self._restore_bundle_rows(cpu_kv_caches, cache_ref, path, payload, rows)
+                for cpu_id, hash_hex, _ in rows:
+                    restored[cpu_id] = hash_hex
+            except Exception as exc:
+                self._fail(
+                    f"failed to restore CPU offload bundle {path} "
+                    f"for cache_ref={cache_ref!r}",
+                    exc,
+                )
+        if restored:
+            logger.info(
+                "DS4 persistent SimpleCPUOffload restored %d blocks from "
+                "%d cache-ref bundle files",
+                len(restored),
+                len(loads),
+            )
+        return restored
+
+    def _restore_bundle_rows(
+        self,
+        cpu_kv_caches: dict[str, torch.Tensor],
+        cache_ref: str,
+        path: Path,
+        payload: dict[str, Any],
+        rows: list[tuple[int, str, int]],
+    ) -> None:
+        if payload.get("format") != "ds4-vllm-simple-cpu-offload-bundle-v1":
+            raise ValueError("bundle payload format mismatch")
+        if int(payload.get("version", 0)) != FORMAT_VERSION:
+            raise ValueError("bundle payload version mismatch")
+        if payload.get("model") != self.model_key:
+            raise ValueError("bundle payload model mismatch")
+        if payload.get("rank") != self.rank_key:
+            raise ValueError("bundle payload rank mismatch")
+        if payload.get("cache_ref") != cache_ref:
+            raise ValueError("bundle payload cache_ref mismatch")
+        hashes = payload.get("hashes")
+        tensors = payload.get("tensors")
+        if not isinstance(hashes, list) or not isinstance(tensors, dict):
+            raise ValueError("bundle payload missing hashes/tensors")
+        for name, dst in cpu_kv_caches.items():
+            src_rows = tensors.get(name)
+            if src_rows is None:
+                raise ValueError(f"bundle {path} missing tensor {name}")
+            for cpu_id, hash_hex, row in rows:
+                if row < 0 or row >= len(hashes):
+                    raise ValueError(f"bundle row out of range: {row}")
+                if hashes[row] != hash_hex:
+                    raise ValueError("bundle row hash mismatch")
+                src = src_rows[row]
+                target = dst[cpu_id]
+                if tuple(src.shape) != tuple(target.shape):
+                    raise ValueError(
+                        f"tensor {name} shape mismatch "
+                        f"{tuple(src.shape)} != {tuple(target.shape)}"
+                    )
+                target.copy_(src)
 
     def _restore_worker_block(
         self,
@@ -380,6 +566,17 @@ class PersistentSimpleOffloadStore:
             "blocks": {},
         }
 
+    def _empty_bundle_index(self) -> dict[str, Any]:
+        return {
+            "format": "ds4-vllm-simple-cpu-offload-bundle-index-v1",
+            "version": FORMAT_VERSION,
+            "model": self.model_key,
+            "rank": self.rank_key,
+            "created_at": time.time(),
+            "updated_at": time.time(),
+            "refs": {},
+        }
+
     def _block_path(self, hash_hex: str) -> Path:
         digest = hashlib.sha256(hash_hex.encode("ascii")).hexdigest()
         return self.blocks_dir / f"{digest}.pt"
@@ -459,6 +656,10 @@ def _env_bool(name: str, default: bool) -> bool:
     if value is None:
         return default
     return value.strip().lower() not in ("0", "false", "no", "off")
+
+
+def _bundle_enabled() -> bool:
+    return _env_bool(BUNDLES_ENV, True)
 
 
 def _short_hash(value: str | None) -> str:

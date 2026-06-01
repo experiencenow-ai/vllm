@@ -1501,6 +1501,45 @@ def test_persistent_store_filters_by_cache_ref(tmp_path) -> None:
     assert store.lookup_block_hashes([hash_a, hash_b], 4, cache_ref="missing") == []
 
 
+def test_persistent_store_restores_cache_ref_bundle_without_block_files(tmp_path) -> None:
+    """Warm-load should read a cache-ref shard bundle, not many tiny block files."""
+    store = PersistentSimpleOffloadStore(
+        root=tmp_path,
+        rank_key="rank0",
+        model_key="model",
+        num_cpu_blocks=4,
+        strict=True,
+        tensor_names=["kv"],
+    )
+    cpu_kv_caches = {"kv": torch.zeros((4, 2), dtype=torch.float16)}
+    hash_a = "ab" * 32
+    hash_b = "cd" * 32
+    cpu_kv_caches["kv"][1] = torch.tensor([1, 2], dtype=torch.float16)
+    cpu_kv_caches["kv"][2] = torch.tensor([7, 8], dtype=torch.float16)
+
+    store.persist_worker_blocks(
+        cpu_kv_caches,
+        [1, 2],
+        [hash_a, hash_b],
+        ["cache-a", "cache-a"],
+    )
+    assert store.bundle_index.exists()
+    for path in store.blocks_dir.glob("*.pt"):
+        path.unlink()
+    cpu_kv_caches["kv"].zero_()
+
+    restored = store.ensure_worker_blocks(
+        cpu_kv_caches,
+        [1, 2],
+        [hash_a, hash_b],
+        {},
+        ["cache-a", "cache-a"],
+    )
+    assert restored == {1: hash_a, 2: hash_b}
+    assert cpu_kv_caches["kv"][1].tolist() == [1.0, 2.0]
+    assert cpu_kv_caches["kv"][2].tolist() == [7.0, 8.0]
+
+
 def test_persistent_store_restores_worker_blocks_lazily(tmp_path) -> None:
     """Persistent worker data is indexed at startup, not copied wholesale."""
     store = PersistentSimpleOffloadStore(

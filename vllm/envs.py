@@ -323,9 +323,13 @@ if TYPE_CHECKING:
     VLLM_SIMPLE_KV_OFFLOAD_PERSIST_ROOT: str | None = None
     VLLM_SIMPLE_KV_OFFLOAD_PERSIST_STRICT: bool = True
     VLLM_SIMPLE_KV_OFFLOAD_PERSIST_RANK: str | None = None
+    VLLM_SIMPLE_KV_OFFLOAD_PERSIST_NAMESPACE: str | None = None
     VLLM_SIMPLE_KV_OFFLOAD_PERSIST_API_URL: str | None = None
     VLLM_SIMPLE_KV_OFFLOAD_PERSIST_API_TOKEN: str | None = None
     VLLM_SIMPLE_KV_OFFLOAD_PERSIST_API_TIMEOUT: float = 5.0
+    VLLM_DS4_SIMPLE_KV_BUNDLES: bool = True
+    VLLM_DS4_SIMPLE_KV_STARTUP_RESTORE: bool = True
+    VLLM_DS4_SIMPLE_KV_STORE_UNMARKED: bool = True
     VLLM_LORA_ENABLE_DUAL_STREAM: bool = False
 
 
@@ -2259,6 +2263,10 @@ environment_variables: dict[str, Callable[[], Any]] = {
     "VLLM_SIMPLE_KV_OFFLOAD_PERSIST_RANK": lambda: os.getenv(
         "VLLM_SIMPLE_KV_OFFLOAD_PERSIST_RANK", None
     ),
+    # Optional namespace for persistent SimpleCPUOffload model key separation.
+    "VLLM_SIMPLE_KV_OFFLOAD_PERSIST_NAMESPACE": lambda: os.getenv(
+        "VLLM_SIMPLE_KV_OFFLOAD_PERSIST_NAMESPACE", None
+    ),
     # Optional node-local cache service URL for persistent SimpleCPUOffload.
     "VLLM_SIMPLE_KV_OFFLOAD_PERSIST_API_URL": lambda: os.getenv(
         "VLLM_SIMPLE_KV_OFFLOAD_PERSIST_API_URL", None
@@ -2270,6 +2278,21 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # Persistent SimpleCPUOffload cache service request timeout in seconds.
     "VLLM_SIMPLE_KV_OFFLOAD_PERSIST_API_TIMEOUT": lambda: float(
         os.getenv("VLLM_SIMPLE_KV_OFFLOAD_PERSIST_API_TIMEOUT", "5.0")
+    ),
+    # Store cache-ref scoped SimpleCPUOffload bundles for fast warm loads.
+    "VLLM_DS4_SIMPLE_KV_BUNDLES": lambda: (
+        os.getenv("VLLM_DS4_SIMPLE_KV_BUNDLES", "1").strip().lower()
+        not in ("0", "false", "no", "off")
+    ),
+    # If disabled, persistent blocks are seeded on demand by cache_ref.
+    "VLLM_DS4_SIMPLE_KV_STARTUP_RESTORE": lambda: (
+        os.getenv("VLLM_DS4_SIMPLE_KV_STARTUP_RESTORE", "1").strip().lower()
+        not in ("0", "false", "no", "off")
+    ),
+    # If disabled, only explicitly marked DS4 KV requests populate persistence.
+    "VLLM_DS4_SIMPLE_KV_STORE_UNMARKED": lambda: (
+        os.getenv("VLLM_DS4_SIMPLE_KV_STORE_UNMARKED", "1").strip().lower()
+        not in ("0", "false", "no", "off")
     ),
     # Whether to enable dual cuda streams for LoRA computation
     # (used by both BaseLinearLayerWithLoRA and FusedMoEWithLoRA to

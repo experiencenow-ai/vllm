@@ -63,6 +63,16 @@ def main() -> None:
         ["cache_refs", "_entry_cache_refs", "cache_ref not in _entry_cache_refs"],
     )
     _require(
+        "persistent offload writes cache-ref bundles for warm loads",
+        "vllm/v1/simple_kv_offload/persistent_disk.py",
+        [
+            "cache_ref_bundles",
+            "_persist_cache_ref_bundles",
+            "_restore_worker_blocks_from_bundles",
+            "DS4 persistent SimpleCPUOffload restored",
+        ],
+    )
+    _require(
         "scheduler only stores DS4-marked cache requests",
         "vllm/v1/simple_kv_offload/manager.py",
         [
@@ -103,6 +113,7 @@ def main() -> None:
                 "part_${DSV4_OFFLOAD_PARTITION_KEY}",
                 "VLLM_DS4_SIMPLE_KV_STARTUP_RESTORE",
                 "VLLM_DS4_SIMPLE_KV_STORE_UNMARKED",
+                "VLLM_DS4_SIMPLE_KV_BUNDLES",
             ],
         )
 
