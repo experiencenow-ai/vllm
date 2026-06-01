@@ -959,6 +959,11 @@ class GroupCoordinator:
     ) -> bool:
         if all_gather_group is None:
             return False
+        if (
+            self.unique_name.startswith("pp")
+            and not envs.VLLM_DS4_PP_TENSOR_DICT_TP_ALL_GATHER
+        ):
+            return False
         use_all_gather = numel % all_gather_group.world_size == 0
         if all_gather_tensors is not None:
             use_all_gather = all_gather_tensors.get(key, use_all_gather)
