@@ -651,12 +651,15 @@ def _run_bandwidth_preflight(
     tool: str,
 ) -> int:
     servers: list[tuple[int, int, int, subprocess.Popen[str]]] = []
+    server_started_at = time.monotonic()
+    client_phase_passed = False
     try:
         for pair_index, (src, dst) in enumerate(pairs):
             if rank == dst:
                 servers.append(
                     (pair_index, src, dst, _start_bandwidth_server(tool, pair_index, src, dst))
                 )
+        server_started_at = time.monotonic()
         if servers:
             time.sleep(float(_env("DS4_RAIL_TCP_PREFLIGHT_SERVER_READY_S", "1.0")))
             _check_background_servers(servers)
@@ -666,8 +669,18 @@ def _run_bandwidth_preflight(
                 if status != 0:
                     return status
                 _check_background_servers(servers)
+        client_phase_passed = True
         return 0
     finally:
+        if servers and client_phase_passed:
+            duration_s = float(_env("DS4_RAIL_TCP_PREFLIGHT_DURATION_S", "5"))
+            hold_extra_s = float(
+                _env("DS4_RAIL_TCP_PREFLIGHT_SERVER_HOLD_EXTRA_S", "1.0")
+            )
+            hold_until = server_started_at + duration_s + hold_extra_s
+            remaining_s = hold_until - time.monotonic()
+            if remaining_s > 0:
+                time.sleep(remaining_s)
         _stop_background_servers(servers)
 
 
