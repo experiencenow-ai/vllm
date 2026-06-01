@@ -237,11 +237,7 @@ ds4_require_200g_fabric()
   case "$nccl_transport" in
     socket)
       export DS4_200G_NCCL_TRANSPORT="socket"
-      if [[ "${DS4_200G_ADVERTISE_LOOPBACK:-0}" =~ ^(1|true|TRUE|yes|YES|on|ON)$ ]]; then
-        socket_ifname="${DS4_200G_SOCKET_IFNAME:-$control_ifname}"
-      else
-        socket_ifname="${DS4_200G_SOCKET_IFNAME:-$ifnames_csv}"
-      fi
+      socket_ifname="${DS4_200G_SOCKET_IFNAME:-$ifnames_csv}"
       IFS=',' read -r -a socket_ifnames <<< "$socket_ifname"
       for ifname in "${socket_ifnames[@]}"; do
         [[ -n "$ifname" ]] || ds4_200g_die "DS4_200G_SOCKET_IFNAME contains an empty interface"
