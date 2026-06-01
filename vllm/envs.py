@@ -1282,6 +1282,9 @@ environment_variables: dict[str, Callable[[], Any]] = {
     "VLLM_DS4_PP_ONLY_GLOBAL_BACKEND": lambda: os.environ.get(
         "VLLM_DS4_PP_ONLY_GLOBAL_BACKEND", ""
     ),
+    "VLLM_DS4_DISTRIBUTED_BACKEND": lambda: os.environ.get(
+        "VLLM_DS4_DISTRIBUTED_BACKEND", ""
+    ),
     "VLLM_DS4_PP_DISABLE_DEVICE_COMMUNICATOR": lambda: (
         os.environ.get("VLLM_DS4_PP_DISABLE_DEVICE_COMMUNICATOR", "0")
         .strip()
@@ -1295,6 +1298,12 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # slower transport path.
     "VLLM_DS4_PP_PYNCCL_TENSOR_DICT": lambda: (
         os.environ.get("VLLM_DS4_PP_PYNCCL_TENSOR_DICT", "0")
+        .strip()
+        .lower()
+        in ("1", "true", "yes", "on")
+    ),
+    "VLLM_DS4_PP_CPU_STAGED_TENSOR_DICT": lambda: (
+        os.environ.get("VLLM_DS4_PP_CPU_STAGED_TENSOR_DICT", "0")
         .strip()
         .lower()
         in ("1", "true", "yes", "on")

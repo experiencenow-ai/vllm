@@ -184,19 +184,34 @@ export VLLM_DISABLED_KERNELS="${VLLM_DISABLED_KERNELS:-MarlinNvFp4LinearKernel,E
 export DS4_200G_IFNAME="${DS4_200G_IFNAME:-enP2p1s0f0np0,enP2p1s0f1np1}"
 export DS4_CONTROL_IFNAME="${DS4_CONTROL_IFNAME:-ds4ring0}"
 export DS4_200G_ADVERTISE_LOOPBACK="${DS4_200G_ADVERTISE_LOOPBACK:-1}"
-export DS4_200G_NCCL_TRANSPORT="${DS4_200G_NCCL_TRANSPORT:-socket}"
+export DS4_200G_NCCL_TRANSPORT="${DS4_200G_NCCL_TRANSPORT:-ib}"
+export VLLM_DS4_DISTRIBUTED_BACKEND="${VLLM_DS4_DISTRIBUTED_BACKEND:-gloo}"
+if [[ "$VLLM_DS4_DISTRIBUTED_BACKEND" != "gloo" ]]; then
+  echo "DSV4 PP4xTP2xEP requires VLLM_DS4_DISTRIBUTED_BACKEND=gloo. All-8 NCCL/IB is invalid on the routed Spark ring; adjacent TP/EP device collectives are preflighted separately." >&2
+  exit 64
+fi
 if [[ -n "${VLLM_DS4_PP_ONLY_GLOBAL_BACKEND:-}" ]]; then
-  echo "DSV4 PP4xTP2xEP refuses VLLM_DS4_PP_ONLY_GLOBAL_BACKEND=$VLLM_DS4_PP_ONLY_GLOBAL_BACKEND; this override is only valid for TP=1 PP-only services." >&2
+  echo "DSV4 PP4xTP2xEP refuses VLLM_DS4_PP_ONLY_GLOBAL_BACKEND=$VLLM_DS4_PP_ONLY_GLOBAL_BACKEND; use VLLM_DS4_DISTRIBUTED_BACKEND=gloo for this topology." >&2
   exit 64
 fi
-if [[ "${VLLM_DS4_PP_DISABLE_DEVICE_COMMUNICATOR:-0}" =~ ^(1|true|TRUE|yes|YES|on|ON)$ ]]; then
-  echo "DSV4 PP4xTP2xEP refuses VLLM_DS4_PP_DISABLE_DEVICE_COMMUNICATOR=$VLLM_DS4_PP_DISABLE_DEVICE_COMMUNICATOR; TP2/EP requires the normal PP device communicator path." >&2
+export VLLM_DS4_PP_DISABLE_DEVICE_COMMUNICATOR="${VLLM_DS4_PP_DISABLE_DEVICE_COMMUNICATOR:-1}"
+if [[ ! "$VLLM_DS4_PP_DISABLE_DEVICE_COMMUNICATOR" =~ ^(1|true|TRUE|yes|YES|on|ON)$ ]]; then
+  echo "DSV4 PP4xTP2xEP requires VLLM_DS4_PP_DISABLE_DEVICE_COMMUNICATOR=1. Non-adjacent PP RoCE QPs are not valid on the Spark ring." >&2
   exit 64
 fi
-export VLLM_DS4_PP_DISABLE_DEVICE_COMMUNICATOR=0
+export VLLM_DS4_PP_CPU_STAGED_TENSOR_DICT="${VLLM_DS4_PP_CPU_STAGED_TENSOR_DICT:-1}"
+if [[ ! "$VLLM_DS4_PP_CPU_STAGED_TENSOR_DICT" =~ ^(1|true|TRUE|yes|YES|on|ON)$ ]]; then
+  echo "DSV4 PP4xTP2xEP requires VLLM_DS4_PP_CPU_STAGED_TENSOR_DICT=1 when the PP device communicator is disabled." >&2
+  exit 64
+fi
 export VLLM_DS4_PP_PYNCCL_TENSOR_DICT="${VLLM_DS4_PP_PYNCCL_TENSOR_DICT:-0}"
+if [[ "$VLLM_DS4_PP_PYNCCL_TENSOR_DICT" =~ ^(1|true|TRUE|yes|YES|on|ON)$ ]]; then
+  echo "DSV4 PP4xTP2xEP refuses VLLM_DS4_PP_PYNCCL_TENSOR_DICT=1. PyNCCL PP P2P tries non-adjacent RoCE links on this topology." >&2
+  exit 64
+fi
 export VLLM_DS4_SKIP_PYNCCL_WARMUP_ALLREDUCE="${VLLM_DS4_SKIP_PYNCCL_WARMUP_ALLREDUCE:-1}"
-export DS4_NCCL_PREFLIGHT_MODE="${DS4_NCCL_PREFLIGHT_MODE:-nccl}"
+export DS4_NCCL_PREFLIGHT_MODE="${DS4_NCCL_PREFLIGHT_MODE:-tp_pair_nccl}"
+export DS4_NCCL_PREFLIGHT_GROUPS="${DS4_NCCL_PREFLIGHT_GROUPS:-0,1;2,3;4,5;6,7}"
 if [[ "$NODE_RANK" == "0" ]]; then
   export DS4_200G_ALLOW_LOOPBACK_HEAD="${DS4_200G_ALLOW_LOOPBACK_HEAD:-1}"
 fi
@@ -251,7 +266,7 @@ else
   unset VLLM_PP_LAYER_PARTITION
 fi
 
-echo "DSV4 PP${PP_SIZE}xTP${TP_SIZE}xEP profile=$DS4_DSV4_PIPELINE_RAM_PROFILE max_model_len=$DSV4_MAX_MODEL_LEN max_num_seqs=$DSV4_MAX_NUM_SEQS max_num_batched_tokens=$DSV4_MAX_NUM_BATCHED_TOKENS kv_cache_memory_bytes=$DSV4_KV_CACHE_MEMORY_BYTES kv_offloading_size=$DSV4_KV_OFFLOADING_SIZE gpu_memory_utilization=$DSV4_GPU_MEMORY_UTILIZATION workspace_prealloc_bytes=$VLLM_WORKSPACE_PREALLOC_BYTES mq_max_chunks=$VLLM_MQ_MAX_CHUNKS pp_layer_partition=${DSV4_FLASH_PP_LAYER_PARTITION:-auto}" >&2
+echo "DSV4 PP${PP_SIZE}xTP${TP_SIZE}xEP profile=$DS4_DSV4_PIPELINE_RAM_PROFILE max_model_len=$DSV4_MAX_MODEL_LEN max_num_seqs=$DSV4_MAX_NUM_SEQS max_num_batched_tokens=$DSV4_MAX_NUM_BATCHED_TOKENS kv_cache_memory_bytes=$DSV4_KV_CACHE_MEMORY_BYTES kv_offloading_size=$DSV4_KV_OFFLOADING_SIZE gpu_memory_utilization=$DSV4_GPU_MEMORY_UTILIZATION workspace_prealloc_bytes=$VLLM_WORKSPACE_PREALLOC_BYTES mq_max_chunks=$VLLM_MQ_MAX_CHUNKS pp_layer_partition=${DSV4_FLASH_PP_LAYER_PARTITION:-auto} global_backend=$VLLM_DS4_DISTRIBUTED_BACKEND nccl_preflight=$DS4_NCCL_PREFLIGHT_MODE nccl_groups=$DS4_NCCL_PREFLIGHT_GROUPS pp_cpu_staged=$VLLM_DS4_PP_CPU_STAGED_TENSOR_DICT" >&2
 
 KV_CACHE_MEMORY_ARGS=()
 case "$DSV4_KV_CACHE_MEMORY_BYTES" in

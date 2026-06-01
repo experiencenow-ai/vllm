@@ -68,6 +68,9 @@ class GraphCaptureContext:
 
 
 TensorMetadata = namedtuple("TensorMetadata", ["device", "dtype", "size"])
+TensorMetadataCpuStaged = namedtuple(
+    "TensorMetadataCpuStaged", ["target_device", "dtype", "size"]
+)
 
 
 class Handle(Protocol):
@@ -96,6 +99,8 @@ class _CudaEventHandle:
 
 def _split_tensor_dict(
     tensor_dict: dict[str, torch.Tensor | Any],
+    *,
+    cpu_stage_cuda: bool = False,
 ) -> tuple[list[tuple[str, Any]], list[torch.Tensor]]:
     """Split the tensor dictionary into two parts:
     1. A list of (key, value) pairs. If the value is a tensor, it is replaced
@@ -111,10 +116,16 @@ def _split_tensor_dict(
             # index (e.g. "cuda:0"). We only need the device type.
             # receiving side will set the device index.
             device = value.device.type
-            metadata_list.append(
-                (key, TensorMetadata(device, value.dtype, value.size()))
-            )
-            tensor_list.append(value)
+            if cpu_stage_cuda and value.is_cuda:
+                metadata_list.append(
+                    (key, TensorMetadataCpuStaged(device, value.dtype, value.size()))
+                )
+                tensor_list.append(value.detach().to("cpu").contiguous())
+            else:
+                metadata_list.append(
+                    (key, TensorMetadata(device, value.dtype, value.size()))
+                )
+                tensor_list.append(value)
         else:
             metadata_list.append((key, value))
     return metadata_list, tensor_list
@@ -474,6 +485,18 @@ class GroupCoordinator:
                 f"{self.unique_name} device communicator has no batch_isend_irecv."
             )
         return True
+
+    def _should_cpu_stage_ds4_pp_tensor_dict(self) -> bool:
+        if not envs.VLLM_DS4_PP_CPU_STAGED_TENSOR_DICT:
+            return False
+        if "pp" not in self.unique_name:
+            return False
+        if envs.VLLM_DS4_PP_PYNCCL_TENSOR_DICT:
+            raise RuntimeError(
+                "VLLM_DS4_PP_CPU_STAGED_TENSOR_DICT and "
+                "VLLM_DS4_PP_PYNCCL_TENSOR_DICT cannot both be enabled."
+            )
+        return self.world_size > 1
 
     def _enqueue_ds4_pynccl_p2p(
         self,
@@ -982,7 +1005,10 @@ class GroupCoordinator:
         group = self.device_group
         metadata_group = self.cpu_group
 
-        metadata_list, tensor_list = _split_tensor_dict(tensor_dict)
+        cpu_stage_cuda = self._should_cpu_stage_ds4_pp_tensor_dict()
+        metadata_list, tensor_list = _split_tensor_dict(
+            tensor_dict, cpu_stage_cuda=cpu_stage_cuda
+        )
         self.send_object(metadata_list, dst=dst)
 
         tensor_keys = [k for k, v in tensor_dict.items() if isinstance(v, torch.Tensor)]
@@ -1098,12 +1124,18 @@ class GroupCoordinator:
 
         cuda_p2p_tensors: list[torch.Tensor] = []
         for key, value in recv_metadata_list:
-            if isinstance(value, TensorMetadata):
+            if isinstance(value, (TensorMetadata, TensorMetadataCpuStaged)):
+                cpu_staged = isinstance(value, TensorMetadataCpuStaged)
+                recv_device = "cpu" if cpu_staged else value.device
+                target_device = getattr(value, "target_device", recv_device)
                 full_tensor = torch.empty(
-                    value.size, dtype=value.dtype, device=value.device
+                    value.size, dtype=value.dtype, device=recv_device
                 )
                 if full_tensor.numel() == 0:
-                    tensor_dict[key] = full_tensor
+                    if cpu_staged and target_device != "cpu":
+                        tensor_dict[key] = full_tensor.to(target_device)
+                    else:
+                        tensor_dict[key] = full_tensor
                     continue
 
                 if self._should_use_all_gather(
@@ -1130,11 +1162,14 @@ class GroupCoordinator:
                         slice_tensor: torch.Tensor = slice_tensor,
                         orig_shape: tuple[int, ...] = tuple(orig_shape),
                         all_gather_group=all_gather_group,
+                        cpu_staged: bool = cpu_staged,
+                        target_device: str = target_device,
                     ) -> None:
                         assert all_gather_group is not None
-                        tensor_dict[key] = all_gather_group.all_gather(
-                            slice_tensor, dim=0
-                        ).reshape(orig_shape)
+                        if cpu_staged and target_device != "cpu":
+                            slice_tensor = slice_tensor.to(target_device)
+                        gathered = all_gather_group.all_gather(slice_tensor, dim=0)
+                        tensor_dict[key] = gathered.reshape(orig_shape)
 
                     postprocess.append(_postprocess)
                     tensor_dict[key] = slice_tensor
@@ -1147,6 +1182,15 @@ class GroupCoordinator:
                             full_tensor, src=self.ranks[src], group=comm_group
                         )
                         handles.append(handle)
+                    if cpu_staged and target_device != "cpu":
+                        def _postprocess_cpu_staged(
+                            key: str = key,
+                            full_tensor: torch.Tensor = full_tensor,
+                            target_device: str = target_device,
+                        ) -> None:
+                            tensor_dict[key] = full_tensor.to(target_device)
+
+                        postprocess.append(_postprocess_cpu_staged)
                     tensor_dict[key] = full_tensor
             else:
                 tensor_dict[key] = value
@@ -1770,10 +1814,16 @@ def initialize_model_parallel(
         group_ranks = [x.tolist() for x in group_ranks]
     pp_use_device_communicator = True
     if envs.VLLM_DS4_PP_DISABLE_DEVICE_COMMUNICATOR:
-        if tensor_model_parallel_size != 1 or pipeline_model_parallel_size <= 1:
+        if pipeline_model_parallel_size <= 1:
             raise RuntimeError(
                 "VLLM_DS4_PP_DISABLE_DEVICE_COMMUNICATOR is only valid for "
-                "pipeline-only deployments with TP=1 and PP>1."
+                "pipeline deployments with PP>1."
+            )
+        if tensor_model_parallel_size != 1 and not envs.VLLM_DS4_PP_CPU_STAGED_TENSOR_DICT:
+            raise RuntimeError(
+                "VLLM_DS4_PP_DISABLE_DEVICE_COMMUNICATOR with TP>1 requires "
+                "VLLM_DS4_PP_CPU_STAGED_TENSOR_DICT=1 so PP CUDA tensors do "
+                "not silently fall through to an invalid torch P2P backend."
             )
         pp_use_device_communicator = False
         logger.info(
