@@ -449,10 +449,18 @@ class Worker(WorkerBase):
             by adjusting the `gpu_memory_utilization` parameter.
         """
         if kv_cache_memory_bytes := self.cache_config.kv_cache_memory_bytes:
-            # still need a profile run which compiles the model for the bounded
-            # DS4 profile token shape.
-            with ds4_profile_watchdog_context("explicit-kv-cache profile_run"):
-                self.model_runner.profile_run()
+            if envs.VLLM_DS4_SKIP_EXPLICIT_KV_PROFILE_RUN:
+                logger.warning(
+                    "Skipping explicit-KV profile_run because "
+                    "VLLM_DS4_SKIP_EXPLICIT_KV_PROFILE_RUN=1. KV cache memory "
+                    "is manually pinned, and DS4 will use the normal "
+                    "post-allocation warmup/capture path instead."
+                )
+            else:
+                # Still need a profile run which compiles the model for the
+                # bounded DS4 profile token shape.
+                with ds4_profile_watchdog_context("explicit-kv-cache profile_run"):
+                    self.model_runner.profile_run()
 
             msg = (
                 f"Initial free memory {format_gib(self.init_snapshot.free_memory)} "
