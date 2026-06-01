@@ -87,7 +87,10 @@ class PersistentSimpleOffloadAPIClient:
         return [hash_hex for hash_hex in hits if hash_hex in wanted][:limit]
 
     def save_scheduler_blocks(
-        self, cpu_block_ids: list[int], block_hashes: list[str]
+        self,
+        cpu_block_ids: list[int],
+        block_hashes: list[str],
+        cache_refs: list[str | None] | None = None,
     ) -> None:
         if not cpu_block_ids:
             return
@@ -95,7 +98,7 @@ class PersistentSimpleOffloadAPIClient:
             "/v1/kv/scheduler/commit",
             {
                 **self._base_payload(),
-                "blocks": _block_records(cpu_block_ids, block_hashes),
+                "blocks": _block_records(cpu_block_ids, block_hashes, cache_refs),
             },
         )
 
@@ -155,17 +158,21 @@ class PersistentSimpleOffloadAPIClient:
         cpu_kv_caches: dict[str, torch.Tensor],
         cpu_block_ids: list[int],
         block_hashes: list[str],
+        cache_refs: list[str | None] | None = None,
     ) -> None:
         if not cpu_block_ids:
             return
-        blocks = _block_records(cpu_block_ids, block_hashes)
+        blocks = _block_records(cpu_block_ids, block_hashes, cache_refs)
         response = self._post_json(
             "/v1/kv/store/prepare",
             {**self._base_payload(), "blocks": blocks},
         )
         payload_paths = _parse_payload_paths(response)
         committed: list[dict[str, Any]] = []
-        for cpu_block_id, hash_hex in zip(cpu_block_ids, block_hashes):
+        refs = cache_refs or [None] * len(cpu_block_ids)
+        for cpu_block_id, hash_hex, cache_ref in zip(
+            cpu_block_ids, block_hashes, refs
+        ):
             path = payload_paths.get(hash_hex)
             if path is None:
                 self._fail(
@@ -181,6 +188,7 @@ class PersistentSimpleOffloadAPIClient:
                     "rank": self.rank_key,
                     "cpu_block_id": int(cpu_block_id),
                     "hash": hash_hex,
+                    "cache_ref": cache_ref,
                     "tensors": {
                         name: tensor[int(cpu_block_id)].detach().cpu().clone()
                         for name, tensor in cpu_kv_caches.items()
@@ -192,6 +200,7 @@ class PersistentSimpleOffloadAPIClient:
                         "cpu_block_id": int(cpu_block_id),
                         "hash": hash_hex,
                         "path": str(path),
+                        "cache_ref": cache_ref,
                     }
                 )
             except Exception as exc:
@@ -297,11 +306,16 @@ class PersistentSimpleOffloadAPIClient:
 
 
 def _block_records(
-    cpu_block_ids: list[int], block_hashes: list[str]
+    cpu_block_ids: list[int],
+    block_hashes: list[str],
+    cache_refs: list[str | None] | None = None,
 ) -> list[dict[str, Any]]:
+    refs = cache_refs or [None] * len(cpu_block_ids)
     return [
-        _block_record(int(cpu_block_id), hash_hex)
-        for cpu_block_id, hash_hex in zip(cpu_block_ids, block_hashes)
+        _block_record(int(cpu_block_id), hash_hex, cache_ref)
+        for cpu_block_id, hash_hex, cache_ref in zip(
+            cpu_block_ids, block_hashes, refs
+        )
     ]
 
 

@@ -57,6 +57,26 @@ def main() -> None:
         "vllm/v1/simple_kv_offload/persistent_disk.py",
         ["VLLM_SIMPLE_KV_OFFLOAD_PERSIST_NAMESPACE", "__{namespace}"],
     )
+    _require(
+        "persistent offload stores cache refs with block indexes",
+        "vllm/v1/simple_kv_offload/persistent_disk.py",
+        ["cache_refs", "_entry_cache_refs", "cache_ref not in _entry_cache_refs"],
+    )
+    _require(
+        "scheduler only stores DS4-marked cache requests",
+        "vllm/v1/simple_kv_offload/manager.py",
+        ["_request_wants_store", "and _request_wants_store(request)"],
+    )
+    _require(
+        "store metadata carries cache refs to workers",
+        "vllm/v1/simple_kv_offload/metadata.py",
+        ["store_cache_refs"],
+    )
+    _require(
+        "worker persists cache refs with tensor payloads",
+        "vllm/v1/simple_kv_offload/worker.py",
+        ["metadata.store_cache_refs", "persist_worker_blocks("],
+    )
     for rel in (
         "tools/ds4_launch_dsv4_flash_pp8.sh",
         "tools/ds4_launch_dsv4_flash_pp4_tp2_ep.sh",
