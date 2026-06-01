@@ -11,6 +11,7 @@ from vllm.config import VllmConfig
 from vllm.logger import init_logger
 from vllm.utils.mem_utils import trim_process_memory
 from vllm.utils.platform_utils import is_pin_memory_available
+from vllm.v1.simple_kv_offload.capacity import derive_logical_cpu_block_count
 from vllm.v1.simple_kv_offload.copy_backend import DmaCopyBackend
 from vllm.v1.simple_kv_offload.cuda_mem_ops import pin_tensor, unpin_tensor
 from vllm.v1.simple_kv_offload.metadata import (
@@ -152,15 +153,33 @@ class SimpleCPUOffloadWorker:
             t.stride(0) * t.element_size() for t in self.gpu_kv_caches.values()
         ]
         total_bytes_per_block = sum(per_tensor_bpb)
-        self.num_cpu_blocks = max(1, self.cpu_capacity_bytes // total_bytes_per_block)
+        physical_capacity_blocks = max(
+            1, self.cpu_capacity_bytes // total_bytes_per_block
+        )
+        assert self.kv_cache_config is not None
+        self.num_cpu_blocks = derive_logical_cpu_block_count(
+            self.kv_cache_config, self.cpu_capacity_bytes
+        )
+        allocated_cpu_bytes = self.num_cpu_blocks * total_bytes_per_block
 
         logger.info(
             "SimpleCPUOffloadWorker: %d unique GPU KV tensors, "
-            "allocating %d CPU blocks (%.2f GB)",
+            "allocating %d logical CPU blocks (%.2f GB, physical-capacity=%d)",
             len(self.gpu_kv_caches),
             self.num_cpu_blocks,
-            (self.num_cpu_blocks * total_bytes_per_block) / (1024**3),
+            allocated_cpu_bytes / (1024**3),
+            physical_capacity_blocks,
         )
+        if self.num_cpu_blocks > physical_capacity_blocks:
+            logger.warning(
+                "SimpleCPUOffloadWorker: logical CPU block id space (%d) exceeds "
+                "this rank's nominal per-rank capacity (%d blocks, %.2f GB). "
+                "Allocating the shared logical id space so scheduler-emitted "
+                "block ids are valid on every PP/TP worker.",
+                self.num_cpu_blocks,
+                physical_capacity_blocks,
+                self.cpu_capacity_bytes / (1024**3),
+            )
 
         self._pin_memory = is_pin_memory_available()
         if not self._pin_memory:
