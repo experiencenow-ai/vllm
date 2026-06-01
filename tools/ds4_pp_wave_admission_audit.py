@@ -37,14 +37,22 @@ def main() -> int:
         and "ds4_new_reqs_scheduled_this_step" in scheduler,
     )
     failures += check(
+        "scheduler caps new prefill tokens separately from decode capacity",
+        "VLLM_DS4_SCHED_MAX_NEW_PREFILL_TOKENS_PER_STEP" in envs
+        and "envs.VLLM_DS4_SCHED_MAX_NEW_PREFILL_TOKENS_PER_STEP" in scheduler
+        and "ds4_new_prefill_tokens_scheduled_this_step" in scheduler
+        and "remaining_prefill_tokens" in scheduler,
+    )
+    failures += check(
         "scheduler increments new request wave count after admission",
         "self.running.append(request)" in scheduler
         and "ds4_new_reqs_scheduled_this_step += 1" in scheduler,
     )
     failures += check(
-        "DSV4 PP launcher defaults to atomic cohort admission and 32-request waves",
+        "DSV4 PP launcher defaults to atomic cohort admission and bounded prefill waves",
         'VLLM_DS4_COHORT_PAUSE_DURING_ADMISSION="${VLLM_DS4_COHORT_PAUSE_DURING_ADMISSION:-1}"' in dsv4
-        and 'DSV4_SCHED_MAX_NEW_REQS_PER_STEP:-32' in dsv4,
+        and 'DSV4_SCHED_MAX_NEW_REQS_PER_STEP:-32' in dsv4
+        and 'DSV4_SCHED_MAX_NEW_PREFILL_TOKENS_PER_STEP:-16384' in dsv4,
     )
     failures += check(
         "DS4 fused execute+sample fast path is wired",

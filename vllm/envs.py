@@ -133,6 +133,7 @@ if TYPE_CHECKING:
     VLLM_DS4_COHORT_ADMISSION_MIN_PROMPTS: int = 2
     VLLM_DS4_COHORT_PAUSE_DURING_ADMISSION: bool = False
     VLLM_DS4_SCHED_MAX_NEW_REQS_PER_STEP: int = 0
+    VLLM_DS4_SCHED_MAX_NEW_PREFILL_TOKENS_PER_STEP: int = 0
     VLLM_DS4_FUSED_EXECUTE_SAMPLE: bool = False
     VLLM_DS4_FINAL_ONLY_NONSTREAMING: bool = False
     VLLM_DS4_ITERATION_TIMING: bool = False
@@ -1249,6 +1250,12 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # 0 keeps upstream behavior.
     "VLLM_DS4_SCHED_MAX_NEW_REQS_PER_STEP": lambda: int(
         os.environ.get("VLLM_DS4_SCHED_MAX_NEW_REQS_PER_STEP", "0")
+    ),
+    # DS4 PP prefill shaping: cap newly admitted context tokens per scheduler
+    # step so long-prompt cohorts enter the pipeline as micro-waves instead of
+    # one giant prompt slab that serializes across PP stages.
+    "VLLM_DS4_SCHED_MAX_NEW_PREFILL_TOKENS_PER_STEP": lambda: int(
+        os.environ.get("VLLM_DS4_SCHED_MAX_NEW_PREFILL_TOKENS_PER_STEP", "0")
     ),
     # DS4 PP sync scheduler fast path: fuse execute_model + sample_tokens into
     # one worker RPC for simple generation batches. This removes one global
