@@ -149,6 +149,25 @@ def find_matches(
     return matches
 
 
+def add_orphan_vllm_workers(
+    processes: list[ProcessInfo],
+    matches: dict[int, ProcessInfo],
+) -> dict[int, ProcessInfo]:
+    """Catch worker processes left behind after their vLLM parent dies.
+
+    Multiprocessing workers rewrite argv to names such as ``VLLM::Worker_PP0``.
+    Once the parent API/EngineCore process is gone, there is no model path left
+    in argv for the normal service regex to match.  Restrict this to ppid=1 so
+    an active, healthy service with live children is not collected by accident.
+    """
+
+    orphan_pattern = re.compile(r"^VLLM::(?:Worker|EngineCore)\b")
+    for proc in processes:
+        if proc.ppid == 1 and orphan_pattern.search(proc.command):
+            matches[proc.pid] = proc
+    return matches
+
+
 def add_descendants(
     processes: list[ProcessInfo], matches: dict[int, ProcessInfo]
 ) -> dict[int, ProcessInfo]:
@@ -197,7 +216,9 @@ def kill_pids(pids: list[int], sig: signal.Signals) -> None:
 
 def run_local(args: argparse.Namespace) -> int:
     processes = process_table()
-    matches = add_descendants(processes, find_matches(processes, selected_patterns(args)))
+    matches = find_matches(processes, selected_patterns(args))
+    matches = add_orphan_vllm_workers(processes, matches)
+    matches = add_descendants(processes, matches)
     host = socket.gethostname()
     if not matches:
         print(f"{host}: no matching {args.service} processes")
