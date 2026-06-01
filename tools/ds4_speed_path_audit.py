@@ -37,6 +37,7 @@ check("PP4xTP2 launcher enables expert parallel", "--enable-expert-parallel" in 
 check("PP4xTP2 launcher has 43-layer partition", 'DSV4_FLASH_PP_LAYER_PARTITION="7,11,14,11"' in pp4)
 check("PP4xTP2 launcher admits throughput-profile request waves", 'DSV4_SCHED_MAX_NEW_REQS_PER_STEP:-$DSV4_MAX_NUM_SEQS' in pp4)
 check("PP4xTP2 launcher admits throughput-profile prefill token waves", 'DSV4_SCHED_MAX_NEW_PREFILL_TOKENS_PER_STEP:-$DSV4_MAX_NUM_BATCHED_TOKENS' in pp4)
+check("DSV4 launchers skip profile-only dummy sampler logits gather", "VLLM_DS4_PROFILE_SKIP_DUMMY_SAMPLER" in envs and 'VLLM_DS4_PROFILE_SKIP_DUMMY_SAMPLER:-1' in pp8 and 'VLLM_DS4_PROFILE_SKIP_DUMMY_SAMPLER:-1' in pp4)
 check("PP4xTP2 launcher preserves final-only nonstreaming output", "VLLM_DS4_FINAL_ONLY_NONSTREAMING" in pp4)
 check("PP4xTP2 launcher preserves fused execute/sample default", "VLLM_DS4_FUSED_EXECUTE_SAMPLE" in pp4)
 check("PP4xTP2 launcher serves existing DS4 DSV4 API model by default", 'DSV4_SERVED_MODEL_NAME:-deepseek-v4-flash-pp8' in pp4)

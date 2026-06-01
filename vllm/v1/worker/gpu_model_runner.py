@@ -6158,7 +6158,7 @@ class GPUModelRunner(
         max_task = max(output_size.items(), key=lambda x: x[1])[0]
         return self._dummy_pooler_run_task(hidden_states, max_task)
 
-    def profile_run(self) -> None:
+    def profile_run(self, *, skip_dummy_sampler: bool = False) -> None:
         # Profile with multimodal encoder & encoder cache.
         if self.supports_mm_inputs:
             mm_config = self.model_config.multimodal_config
@@ -6243,11 +6243,20 @@ class GPUModelRunner(
         )
         if ds4_profile_debug_enabled():
             logger.info("DS4 profile trace: profile_run dummy_run finished")
+        skip_dummy_sampler = (
+            skip_dummy_sampler or envs.VLLM_DS4_PROFILE_SKIP_DUMMY_SAMPLER
+        )
         if get_pp_group().is_last_rank:
             if self.is_pooling_model:
                 if ds4_profile_debug_enabled():
                     logger.info("DS4 profile trace: profile_run pooler start")
                 output = self._dummy_pooler_run(hidden_states)
+            elif skip_dummy_sampler:
+                output = torch.tensor([], device=self.device)
+                logger.info(
+                    "DS4 profile trace: skipped dummy sampler/logits output "
+                    "during profile_run"
+                )
             else:
                 if ds4_profile_debug_enabled():
                     logger.info("DS4 profile trace: profile_run sampler start")
