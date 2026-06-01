@@ -34,9 +34,9 @@ ring links are investigated:
 ```text
 rail TCP fail floor:     10 Gbit/s
 rail TCP warning floor:  64 Gbit/s
-NCCL collective fail:    1.25 GB/s  (10 Gbit/s)
+NCCL collective fail:    disabled during cable debug
 NCCL collective warning: 8 GB/s     (64 Gbit/s)
-PP4 NCCL P2P fail floor: 1.25 GB/s  (10 Gbit/s)
+PP4 NCCL P2P fail floor: disabled during cable debug
 PP4 NCCL P2P warning:    8 GB/s     (64 Gbit/s)
 ```
 
