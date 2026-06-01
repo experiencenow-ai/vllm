@@ -28,6 +28,21 @@ FlashInfer autotune disabled by default
 bounded prefill waves
 ```
 
+The physical rail TCP guard is temporarily relaxed while the weak back-half
+ring links are investigated:
+
+```text
+rail TCP fail floor:     40 Gbit/s
+rail TCP warning floor:  64 Gbit/s
+PP4 NCCL P2P fail floor: 5 GB/s
+PP4 NCCL P2P warning:    8 GB/s
+```
+
+Each restart still prints the measured rail result and emits a warning when a
+link falls below the warning floor.  Do not remove the warning or silently lower
+it; the relaxed fail floor is only to keep model work moving while the cabling
+or crosstalk issue is fixed.
+
 The PP PyNCCL tensor-dict path remains diagnostic for PP8.  A live test showed
 the current generic tensor-dict PyNCCL path regressed, so PP8 keeps the torch PP
 process-group path by default until the fast path is narrowed to known DSV4

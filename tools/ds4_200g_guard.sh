@@ -330,7 +330,12 @@ ds4_run_rail_tcp_preflight()
   fi
   local timeout_s="${DS4_RAIL_TCP_PREFLIGHT_TIMEOUT:-30}"
   local port_base="${DS4_RAIL_TCP_PREFLIGHT_PORT_BASE:-$((MASTER_PORT + 2000))}"
-  echo "DS4 200G rail TCP preflight: rank=$NODE_RANK/$world_size pairs=${DS4_RAIL_TCP_PREFLIGHT_PAIRS:-${DS4_NCCL_PREFLIGHT_P2P_PAIRS:-adjacent}} streams=${DS4_RAIL_TCP_PREFLIGHT_STREAMS:-16} bytes=${DS4_RAIL_TCP_PREFLIGHT_BYTES:-268435456} min_GBps=${DS4_RAIL_TCP_PREFLIGHT_MIN_GBPS:-${DS4_NCCL_PREFLIGHT_MIN_P2P_GBPS:-0}} port_base=$port_base" >&2
+  local fail_threshold="${DS4_RAIL_TCP_PREFLIGHT_MIN_GBIT_S:-}"
+  local warn_threshold="${DS4_RAIL_TCP_PREFLIGHT_WARN_GBIT_S:-${DS4_RAIL_TCP_PREFLIGHT_WARN_GBPS:-0}}"
+  if [[ -z "$fail_threshold" ]]; then
+    fail_threshold="legacy:${DS4_RAIL_TCP_PREFLIGHT_MIN_GBPS:-${DS4_NCCL_PREFLIGHT_MIN_P2P_GBPS:-0}}GBps"
+  fi
+  echo "DS4 200G rail TCP preflight: rank=$NODE_RANK/$world_size pairs=${DS4_RAIL_TCP_PREFLIGHT_PAIRS:-${DS4_NCCL_PREFLIGHT_P2P_PAIRS:-adjacent}} streams=${DS4_RAIL_TCP_PREFLIGHT_STREAMS:-16} bytes=${DS4_RAIL_TCP_PREFLIGHT_BYTES:-268435456} fail_Gbit_s=$fail_threshold warn_Gbit_s=$warn_threshold port_base=$port_base" >&2
   if command -v timeout >/dev/null 2>&1; then
     ds4_run_preflight_checked env RANK="$NODE_RANK" WORLD_SIZE="$world_size" DS4_RAIL_TCP_PREFLIGHT_PORT_BASE="$port_base" timeout --kill-after=5s "$((timeout_s + 20))s" "$RUNTIME_PYTHON" "$SCRIPT_DIR/ds4_rail_tcp_preflight.py"
   else

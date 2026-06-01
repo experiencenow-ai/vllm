@@ -221,6 +221,77 @@ def _preflight_tool() -> str:
     return tool
 
 
+def _gbit_threshold(primary: str, legacy_gbytes: str, default: str = "0") -> float:
+    raw = _env(primary, "")
+    if raw:
+        return float(raw)
+    raw = _env(legacy_gbytes, "")
+    if raw:
+        return (float(raw) * 8.0)
+    return float(default)
+
+
+def _fail_gbit_s() -> float:
+    raw = _env("DS4_RAIL_TCP_PREFLIGHT_MIN_GBIT_S", "")
+    if raw:
+        return float(raw)
+    raw = _env("DS4_RAIL_TCP_PREFLIGHT_MIN_GBPS", "")
+    if raw:
+        return (float(raw) * 8.0)
+    raw = _env("DS4_NCCL_PREFLIGHT_MIN_P2P_GBPS", "")
+    if raw:
+        return (float(raw) * 8.0)
+    return 0.0
+
+
+def _warn_gbit_s() -> float:
+    return _gbit_threshold(
+        "DS4_RAIL_TCP_PREFLIGHT_WARN_GBIT_S",
+        "DS4_RAIL_TCP_PREFLIGHT_WARN_GBPS",
+    )
+
+
+def _report_client_bandwidth(
+    *,
+    pair: str,
+    role: str,
+    streams: int,
+    duration_s: float | None,
+    rails_text: str,
+    gbps: float,
+    extra: str = "",
+) -> int:
+    measured_gbit_s = (gbps * 8.0)
+    fail_gbit_s = _fail_gbit_s()
+    warn_gbit_s = _warn_gbit_s()
+    duration_text = "" if duration_s is None else f"duration_s={duration_s:.3f} "
+    print(
+        "DS4 rail TCP preflight bandwidth: "
+        f"pair={pair} role={role} streams={streams} "
+        f"{duration_text}rails={rails_text} {extra}"
+        f"GBps={gbps:.3f} Gbit_s={measured_gbit_s:.3f} "
+        f"fail_Gbit_s={fail_gbit_s:.3f} warn_Gbit_s={warn_gbit_s:.3f}",
+        file=sys.stderr,
+    )
+    if warn_gbit_s > 0 and measured_gbit_s < warn_gbit_s:
+        print(
+            "WARNING: DS4 rail TCP preflight below warning threshold: "
+            f"pair={pair} measured_Gbit_s={measured_gbit_s:.3f} "
+            f"warn_Gbit_s={warn_gbit_s:.3f} fail_Gbit_s={fail_gbit_s:.3f} "
+            "launch continues unless the fail threshold is crossed",
+            file=sys.stderr,
+        )
+    if fail_gbit_s > 0 and measured_gbit_s < fail_gbit_s:
+        print(
+            "DS4 rail TCP preflight failed: "
+            f"pair={pair} measured_Gbit_s={measured_gbit_s:.3f} "
+            f"< required {fail_gbit_s:.3f} Gbit/s",
+            file=sys.stderr,
+        )
+        return 68
+    return 0
+
+
 def _run_iperf_server(pair_index: int, src: int, dst: int) -> int:
     port_base = int(_env("DS4_RAIL_TCP_PREFLIGHT_PORT_BASE", "49400"))
     port = port_base + (pair_index * 100)
@@ -299,12 +370,6 @@ def _run_iperf_client(
     port = port_base + (pair_index * 100)
     duration_s = float(_env("DS4_RAIL_TCP_PREFLIGHT_DURATION_S", "5"))
     timeout_s = duration_s + float(_env("DS4_RAIL_TCP_PREFLIGHT_TIMEOUT", "30"))
-    min_gbps = float(
-        _env(
-            "DS4_RAIL_TCP_PREFLIGHT_MIN_GBPS",
-            _env("DS4_NCCL_PREFLIGHT_MIN_P2P_GBPS", "0"),
-        )
-    )
     rails = _discover_rails(destination_ip)
     rail = rails[0]
     time.sleep(float(_env("DS4_RAIL_TCP_PREFLIGHT_CLIENT_DELAY_S", "0.5")))
@@ -355,17 +420,14 @@ def _run_iperf_client(
     rails_text = ",".join(
         f"{item.source_ip}->{item.destination_ip}/{item.dev}" for item in rails
     )
-    print(
-        "DS4 rail TCP preflight bandwidth: "
-        f"pair={src}-{dst} role=iperf-client streams={streams} "
-        f"duration_s={duration_s:.3f} rails={rails_text} "
-        f"GBps={gbps:.3f} Gbit_s={(gbps * 8.0):.3f} "
-        f"min_GBps={min_gbps:.3f}",
-        file=sys.stderr,
+    return _report_client_bandwidth(
+        pair=f"{src}-{dst}",
+        role="iperf-client",
+        streams=streams,
+        duration_s=duration_s,
+        rails_text=rails_text,
+        gbps=gbps,
     )
-    if min_gbps > 0 and gbps < min_gbps:
-        return 68
-    return 0
 
 
 def _run_iperf3_server(pair_index: int, src: int, dst: int) -> int:
@@ -413,12 +475,6 @@ def _run_iperf3_client(
     port = port_base + (pair_index * 100)
     duration_s = float(_env("DS4_RAIL_TCP_PREFLIGHT_DURATION_S", "5"))
     timeout_s = duration_s + float(_env("DS4_RAIL_TCP_PREFLIGHT_TIMEOUT", "30"))
-    min_gbps = float(
-        _env(
-            "DS4_RAIL_TCP_PREFLIGHT_MIN_GBPS",
-            _env("DS4_NCCL_PREFLIGHT_MIN_P2P_GBPS", "0"),
-        )
-    )
     rails = _discover_rails(destination_ip)
     rail = rails[0]
     time.sleep(float(_env("DS4_RAIL_TCP_PREFLIGHT_CLIENT_DELAY_S", "0.5")))
@@ -471,17 +527,14 @@ def _run_iperf3_client(
     rails_text = ",".join(
         f"{item.source_ip}->{item.destination_ip}/{item.dev}" for item in rails
     )
-    print(
-        "DS4 rail TCP preflight bandwidth: "
-        f"pair={src}-{dst} role=iperf3-client streams={streams} "
-        f"duration_s={duration_s:.3f} rails={rails_text} "
-        f"GBps={gbps:.3f} Gbit_s={(gbps * 8.0):.3f} "
-        f"min_GBps={min_gbps:.3f}",
-        file=sys.stderr,
+    return _report_client_bandwidth(
+        pair=f"{src}-{dst}",
+        role="iperf3-client",
+        streams=streams,
+        duration_s=duration_s,
+        rails_text=rails_text,
+        gbps=gbps,
     )
-    if min_gbps > 0 and gbps < min_gbps:
-        return 68
-    return 0
 
 
 def _run_server(pair_index: int, src: int, dst: int) -> int:
@@ -547,12 +600,6 @@ def _run_client(pair_index: int, src: int, dst: int, destination_ip: str) -> int
     total_bytes = max(streams, int(_env("DS4_RAIL_TCP_PREFLIGHT_BYTES", "268435456")))
     port_base = int(_env("DS4_RAIL_TCP_PREFLIGHT_PORT_BASE", "49400"))
     timeout_s = float(_env("DS4_RAIL_TCP_PREFLIGHT_TIMEOUT", "30"))
-    min_gbps = float(
-        _env(
-            "DS4_RAIL_TCP_PREFLIGHT_MIN_GBPS",
-            _env("DS4_NCCL_PREFLIGHT_MIN_P2P_GBPS", "0"),
-        )
-    )
     rails = _discover_rails(destination_ip)
     per_stream = total_bytes // streams
     remainder = total_bytes % streams
@@ -593,16 +640,15 @@ def _run_client(pair_index: int, src: int, dst: int, destination_ip: str) -> int
     rails_text = ",".join(
         f"{rail.source_ip}->{rail.destination_ip}/{rail.dev}" for rail in rails
     )
-    print(
-        "DS4 rail TCP preflight bandwidth: "
-        f"pair={src}-{dst} role=client bytes={sent} streams={streams} "
-        f"rails={rails_text} elapsed_s={elapsed_s:.6f} GBps={gbps:.3f} "
-        f"Gbit_s={(gbps * 8.0):.3f} min_GBps={min_gbps:.3f}",
-        file=sys.stderr,
+    return _report_client_bandwidth(
+        pair=f"{src}-{dst}",
+        role="client",
+        streams=streams,
+        duration_s=None,
+        rails_text=rails_text,
+        gbps=gbps,
+        extra=f"bytes={sent} elapsed_s={elapsed_s:.6f} ",
     )
-    if min_gbps > 0 and gbps < min_gbps:
-        return 68
-    return 0
 
 
 def _start_bandwidth_server(tool: str, pair_index: int, src: int, dst: int) -> subprocess.Popen[str]:
