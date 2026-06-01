@@ -159,6 +159,12 @@ def _run_p2p_pair_probe(rank: int, src: int, dst: int) -> int:
         return 0
     bench_iters = max(1, int(_env("DS4_NCCL_PREFLIGHT_BENCH_ITERS", "3")))
     stripes = max(1, int(_env("DS4_NCCL_PREFLIGHT_P2P_STRIPES", "1")))
+    direction = _env("DS4_NCCL_PREFLIGHT_P2P_DIRECTION", "unidirectional").lower()
+    if direction not in {"unidirectional", "oneway", "bidirectional", "bidir"}:
+        raise ValueError(
+            "DS4_NCCL_PREFLIGHT_P2P_DIRECTION must be unidirectional or bidirectional"
+        )
+    bidirectional = direction in {"bidirectional", "bidir"}
     min_p2p_gbps = float(
         _env(
             "DS4_NCCL_PREFLIGHT_MIN_P2P_GBPS",
@@ -178,14 +184,20 @@ def _run_p2p_pair_probe(rank: int, src: int, dst: int) -> int:
 
     def exchange() -> None:
         ops = []
-        if rank == src:
+        if bidirectional and rank == src:
             for send_chunk, recv_chunk in zip(send_chunks, recv_chunks):
                 ops.append(dist.P2POp(dist.isend, send_chunk, dst))
                 ops.append(dist.P2POp(dist.irecv, recv_chunk, dst))
-        else:
+        elif bidirectional:
             for send_chunk, recv_chunk in zip(send_chunks, recv_chunks):
                 ops.append(dist.P2POp(dist.irecv, recv_chunk, src))
                 ops.append(dist.P2POp(dist.isend, send_chunk, src))
+        elif rank == src:
+            for send_chunk in send_chunks:
+                ops.append(dist.P2POp(dist.isend, send_chunk, dst))
+        else:
+            for recv_chunk in recv_chunks:
+                ops.append(dist.P2POp(dist.irecv, recv_chunk, src))
         reqs = dist.batch_isend_irecv(ops)
         for req in reqs:
             req.wait()
@@ -194,14 +206,19 @@ def _run_p2p_pair_probe(rank: int, src: int, dst: int) -> int:
         "DS4 NCCL P2P preflight bandwidth begin: "
         f"pair={src}-{dst} local_rank={rank} peer={peer} "
         f"bytes={actual_bytes} iters={bench_iters} stripes={len(send_chunks)} "
+        f"direction={'bidirectional' if bidirectional else 'unidirectional'} "
         f"min_p2p_GBps={min_p2p_gbps:.3f}",
         file=sys.stderr,
     )
     exchange()
     torch.cuda.synchronize()
     expected = float(peer + 1)
-    actual = float(recv[0].item())
-    actual_tail = float(recv[-1].item())
+    if rank == dst or bidirectional:
+        actual = float(recv[0].item())
+        actual_tail = float(recv[-1].item())
+    else:
+        actual = expected
+        actual_tail = expected
     if actual != expected or actual_tail != expected:
         print(
             "DS4 NCCL P2P preflight failed: "
@@ -215,21 +232,23 @@ def _run_p2p_pair_probe(rank: int, src: int, dst: int) -> int:
         exchange()
     torch.cuda.synchronize()
     elapsed_s = max(time.perf_counter() - start, 1e-9)
-    bidirectional_gbps = ((actual_bytes * 2 * bench_iters) / elapsed_s) / 1e9
+    direction_factor = 2 if bidirectional else 1
+    measured_gbps = ((actual_bytes * direction_factor * bench_iters) / elapsed_s) / 1e9
     print(
         "DS4 NCCL P2P preflight bandwidth: "
         f"pair={src}-{dst} local_rank={rank} bytes={actual_bytes} "
         f"iters={bench_iters} stripes={len(send_chunks)} "
+        f"direction={'bidirectional' if bidirectional else 'unidirectional'} "
         f"elapsed_s={elapsed_s:.6f} "
-        f"bidirectional_GBps={bidirectional_gbps:.3f} "
+        f"p2p_GBps={measured_gbps:.3f} "
         f"min_p2p_GBps={min_p2p_gbps:.3f}",
         file=sys.stderr,
     )
-    if min_p2p_gbps > 0 and bidirectional_gbps < min_p2p_gbps:
+    if min_p2p_gbps > 0 and measured_gbps < min_p2p_gbps:
         print(
             "DS4 NCCL P2P preflight failed: "
             f"pair={src}-{dst} rank={rank} measured "
-            f"{bidirectional_gbps:.3f} GB/s < required {min_p2p_gbps:.3f} GB/s",
+            f"{measured_gbps:.3f} GB/s < required {min_p2p_gbps:.3f} GB/s",
             file=sys.stderr,
         )
         return 68
@@ -274,6 +293,19 @@ def _run_p2p_nccl_preflight(rank: int, world_size: int) -> int:
             file=sys.stderr,
         )
         return 66
+    rank_groups = _env("DS4_NCCL_PREFLIGHT_GROUPS", "")
+    if rank_groups and rank_groups != "<unused>":
+        print(
+            "DS4 NCCL P2P preflight stage: pairwise NCCL group probes begin",
+            file=sys.stderr,
+        )
+        status = _run_pairwise_nccl_preflight(rank, world_size)
+        if status != 0:
+            return status
+        print(
+            "DS4 NCCL P2P preflight stage: pairwise NCCL group probes complete",
+            file=sys.stderr,
+        )
     for src, dst in pairs:
         dist.barrier()
         status = _run_p2p_pair_probe(rank, src, dst)
