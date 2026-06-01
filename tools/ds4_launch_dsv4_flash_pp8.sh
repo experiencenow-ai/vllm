@@ -16,6 +16,12 @@ DEFAULT_SPECULATIVE_CONFIG="{\"model\":\"$MODEL\",\"num_speculative_tokens\":2,\
 DSV4_LINEAR_BACKEND="${DSV4_LINEAR_BACKEND:-auto}"
 DSV4_MOE_BACKEND="${DSV4_MOE_BACKEND:-auto}"
 DSV4_MTP_MODE="${DSV4_MTP_MODE:-off}"
+ds4_default_pp8_partition()
+{
+  if [[ "$NNODES" == "8" && -z "${DSV4_FLASH_PP_LAYER_PARTITION:-}" ]]; then
+    DSV4_FLASH_PP_LAYER_PARTITION="${DSV4_FLASH_PP_LAYER_PARTITION_DEFAULT:-7,7,7,6,6,4,4,4}"
+  fi
+}
 case "$DS4_DSV4_PIPELINE_RAM_PROFILE" in
   resident3|compact|COMPACT)
     : "${DSV4_MAX_MODEL_LEN:=65536}"
@@ -27,9 +33,7 @@ case "$DS4_DSV4_PIPELINE_RAM_PROFILE" in
     : "${DSV4_WORKSPACE_PREALLOC_BYTES:=268435456}"
     : "${DSV4_CUDAGRAPH_CAPTURE_SIZES:=1,2,4,8}"
     : "${DSV4_MAX_CUDAGRAPH_CAPTURE_SIZE:=8}"
-    if [[ "$NNODES" == "8" && -z "${DSV4_FLASH_PP_LAYER_PARTITION:-}" ]]; then
-      DSV4_FLASH_PP_LAYER_PARTITION="3,4,5,6,7,7,6,5"
-    fi
+    ds4_default_pp8_partition
     ;;
   tight|TIGHT|resident3-tight)
     : "${DSV4_MAX_MODEL_LEN:=32768}"
@@ -41,9 +45,7 @@ case "$DS4_DSV4_PIPELINE_RAM_PROFILE" in
     : "${DSV4_WORKSPACE_PREALLOC_BYTES:=134217728}"
     : "${DSV4_CUDAGRAPH_CAPTURE_SIZES:=1,2,4}"
     : "${DSV4_MAX_CUDAGRAPH_CAPTURE_SIZE:=4}"
-    if [[ "$NNODES" == "8" && -z "${DSV4_FLASH_PP_LAYER_PARTITION:-}" ]]; then
-      DSV4_FLASH_PP_LAYER_PARTITION="3,4,5,6,7,7,6,5"
-    fi
+    ds4_default_pp8_partition
     ;;
   balanced|BALANCED|perf|PERF|performance|PERFORMANCE)
     : "${DSV4_MAX_MODEL_LEN:=65536}"
@@ -55,6 +57,7 @@ case "$DS4_DSV4_PIPELINE_RAM_PROFILE" in
     : "${DSV4_WORKSPACE_PREALLOC_BYTES:=536870912}"
     : "${DSV4_CUDAGRAPH_CAPTURE_SIZES:=1,2,4,8}"
     : "${DSV4_MAX_CUDAGRAPH_CAPTURE_SIZE:=8}"
+    ds4_default_pp8_partition
     ;;
   throughput|THROUGHPUT|api-throughput|API-THROUGHPUT)
     : "${DSV4_MAX_MODEL_LEN:=65536}"
@@ -66,6 +69,7 @@ case "$DS4_DSV4_PIPELINE_RAM_PROFILE" in
     : "${DSV4_WORKSPACE_PREALLOC_BYTES:=805306368}"
     : "${DSV4_CUDAGRAPH_CAPTURE_SIZES:=1,2,4,8,16,32,64,128}"
     : "${DSV4_MAX_CUDAGRAPH_CAPTURE_SIZE:=128}"
+    ds4_default_pp8_partition
     ;;
   max-throughput|MAX-THROUGHPUT|batch512|BATCH512)
     : "${DSV4_MAX_MODEL_LEN:=65536}"
@@ -77,6 +81,7 @@ case "$DS4_DSV4_PIPELINE_RAM_PROFILE" in
     : "${DSV4_WORKSPACE_PREALLOC_BYTES:=1073741824}"
     : "${DSV4_CUDAGRAPH_CAPTURE_SIZES:=1,2,4,8,16,32,64,128,256,512}"
     : "${DSV4_MAX_CUDAGRAPH_CAPTURE_SIZE:=512}"
+    ds4_default_pp8_partition
     ;;
   *)
     echo "Unsupported DS4_DSV4_PIPELINE_RAM_PROFILE=$DS4_DSV4_PIPELINE_RAM_PROFILE; expected resident3, tight, balanced, perf, throughput, or max-throughput" >&2
