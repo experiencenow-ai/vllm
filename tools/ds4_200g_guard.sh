@@ -284,11 +284,7 @@ ds4_run_preflight_checked()
   set -e
   printf "%s\n" "$output" >&2
   if [[ "$output" == *"Could not get speed from"* || "$output" == *"Defaulting to 10 Gbps"* ]]; then
-    if [[ "${DS4_200G_VERIFIED_ROUTED_LOOPBACK_NCCL:-0}" == "1" && "${NCCL_ALGO:-}" == "Ring" && "${NCCL_SOCKET_IFNAME:-}" == "${DS4_CONTROL_IFNAME:-}" ]]; then
-      echo "DS4 200G route guard: NCCL reports dummy iface speed for routed loopback, but all peer loopback routes were verified over 200G and NCCL_ALGO=Ring is forced" >&2
-    else
-      ds4_200g_die "NCCL reported a link-speed fallback during preflight; refusing to launch on an ambiguous or slow fabric"
-    fi
+    ds4_200g_die "NCCL reported a link-speed fallback during preflight; refusing to launch on an ambiguous or slow fabric"
   fi
   if [[ "$status" != "0" ]]; then
     ds4_200g_die "preflight command failed with status $status"
