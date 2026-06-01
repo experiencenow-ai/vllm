@@ -42,6 +42,8 @@ def _print_env() -> None:
         "DS4_NCCL_PREFLIGHT_BENCH_ITERS",
         "DS4_NCCL_PREFLIGHT_MIN_BUSBW_GBPS",
         "DS4_NCCL_PREFLIGHT_GROUPS",
+        "DS4_NCCL_PREFLIGHT_P2P_PAIRS",
+        "DS4_NCCL_PREFLIGHT_MIN_P2P_GBPS",
     ]
     for name in names:
         print(f"{name}={_env(name, '<unset>')}", file=sys.stderr)
@@ -121,6 +123,145 @@ def _parse_rank_groups(world_size: int) -> list[list[int]]:
     return groups
 
 
+def _parse_p2p_pairs(world_size: int) -> list[tuple[int, int]]:
+    raw = _env("DS4_NCCL_PREFLIGHT_P2P_PAIRS", "")
+    if not raw:
+        return [(rank, rank + 1) for rank in range(world_size - 1)]
+    pairs: list[tuple[int, int]] = []
+    for item in raw.split(";"):
+        text = item.strip()
+        if not text:
+            continue
+        if "-" in text:
+            left, right = text.split("-", 1)
+        elif ":" in text:
+            left, right = text.split(":", 1)
+        elif "," in text:
+            left, right = text.split(",", 1)
+        else:
+            raise ValueError(f"invalid P2P pair {item!r}")
+        src = int(left.strip())
+        dst = int(right.strip())
+        if src == dst:
+            raise ValueError(f"invalid self P2P pair {item!r}")
+        for rank in (src, dst):
+            if rank < 0 or rank >= world_size:
+                raise ValueError(f"rank {rank} outside WORLD_SIZE={world_size}")
+        pairs.append((src, dst))
+    if not pairs:
+        raise ValueError("DS4_NCCL_PREFLIGHT_P2P_PAIRS did not contain any pairs")
+    return pairs
+
+
+def _run_p2p_pair_probe(rank: int, src: int, dst: int) -> int:
+    bench_bytes = int(_env("DS4_NCCL_PREFLIGHT_BENCH_BYTES", "0"))
+    if bench_bytes <= 0:
+        return 0
+    bench_iters = max(1, int(_env("DS4_NCCL_PREFLIGHT_BENCH_ITERS", "3")))
+    min_p2p_gbps = float(
+        _env(
+            "DS4_NCCL_PREFLIGHT_MIN_P2P_GBPS",
+            _env("DS4_NCCL_PREFLIGHT_MIN_BUSBW_GBPS", "0"),
+        )
+    )
+    element_size = torch.empty((), dtype=torch.float32).element_size()
+    numel = max(1, bench_bytes // element_size)
+    actual_bytes = (numel * element_size)
+    if rank not in {src, dst}:
+        return 0
+    peer = dst if rank == src else src
+    send = torch.full((numel,), float(rank + 1), dtype=torch.float32, device="cuda")
+    recv = torch.empty_like(send)
+
+    def exchange() -> None:
+        if rank == src:
+            ops = [
+                dist.P2POp(dist.isend, send, dst),
+                dist.P2POp(dist.irecv, recv, dst),
+            ]
+        else:
+            ops = [
+                dist.P2POp(dist.irecv, recv, src),
+                dist.P2POp(dist.isend, send, src),
+            ]
+        reqs = dist.batch_isend_irecv(ops)
+        for req in reqs:
+            req.wait()
+
+    print(
+        "DS4 NCCL P2P preflight bandwidth begin: "
+        f"pair={src}-{dst} local_rank={rank} peer={peer} "
+        f"bytes={actual_bytes} iters={bench_iters} min_p2p_GBps={min_p2p_gbps:.3f}",
+        file=sys.stderr,
+    )
+    exchange()
+    torch.cuda.synchronize()
+    expected = float(peer + 1)
+    actual = float(recv[0].item())
+    if actual != expected:
+        print(
+            "DS4 NCCL P2P preflight failed: "
+            f"pair={src}-{dst} rank={rank} recv {actual} != expected {expected}",
+            file=sys.stderr,
+        )
+        return 66
+    start = time.perf_counter()
+    for _ in range(bench_iters):
+        exchange()
+    torch.cuda.synchronize()
+    elapsed_s = max(time.perf_counter() - start, 1e-9)
+    bidirectional_gbps = ((actual_bytes * 2 * bench_iters) / elapsed_s) / 1e9
+    print(
+        "DS4 NCCL P2P preflight bandwidth: "
+        f"pair={src}-{dst} local_rank={rank} bytes={actual_bytes} "
+        f"iters={bench_iters} elapsed_s={elapsed_s:.6f} "
+        f"bidirectional_GBps={bidirectional_gbps:.3f} "
+        f"min_p2p_GBps={min_p2p_gbps:.3f}",
+        file=sys.stderr,
+    )
+    if min_p2p_gbps > 0 and bidirectional_gbps < min_p2p_gbps:
+        print(
+            "DS4 NCCL P2P preflight failed: "
+            f"pair={src}-{dst} rank={rank} measured "
+            f"{bidirectional_gbps:.3f} GB/s < required {min_p2p_gbps:.3f} GB/s",
+            file=sys.stderr,
+        )
+        return 68
+    return 0
+
+
+def _run_p2p_nccl_preflight(rank: int, world_size: int) -> int:
+    pairs = _parse_p2p_pairs(world_size)
+    torch.cuda.set_device(0)
+    print(
+        "DS4 NCCL P2P preflight pairs: "
+        + ";".join(f"{src}-{dst}" for src, dst in pairs),
+        file=sys.stderr,
+    )
+    value = torch.tensor([rank + 1], dtype=torch.float32, device="cuda")
+    print("DS4 NCCL P2P preflight stage: communicator all_reduce begin", file=sys.stderr)
+    dist.all_reduce(value, op=dist.ReduceOp.SUM)
+    torch.cuda.synchronize()
+    print("DS4 NCCL P2P preflight stage: communicator all_reduce complete", file=sys.stderr)
+    expected = float((world_size * (world_size + 1)) // 2)
+    actual = float(value.item())
+    if actual != expected:
+        print(
+            "DS4 NCCL P2P preflight failed: "
+            f"all_reduce sum {actual} != expected {expected}",
+            file=sys.stderr,
+        )
+        return 66
+    for src, dst in pairs:
+        dist.barrier()
+        status = _run_p2p_pair_probe(rank, src, dst)
+        dist.barrier()
+        if status != 0:
+            return status
+    print(f"DS4 NCCL P2P preflight passed on rank {rank}", file=sys.stderr)
+    return 0
+
+
 def _run_pairwise_nccl_preflight(rank: int, world_size: int) -> int:
     groups = _parse_rank_groups(world_size)
     torch.cuda.set_device(0)
@@ -190,7 +331,7 @@ def main() -> int:
     master_port = _env("MASTER_PORT")
     timeout_s = int(_env("DS4_NCCL_PREFLIGHT_TIMEOUT", "90"))
     backend = _env("DS4_NCCL_PREFLIGHT_BACKEND", "nccl")
-    if backend not in {"gloo", "nccl", "tp_pair_nccl"}:
+    if backend not in {"gloo", "nccl", "tp_pair_nccl", "p2p_nccl"}:
         print(
             "DS4 NCCL preflight failed: "
             f"unsupported DS4_NCCL_PREFLIGHT_BACKEND={backend}",
@@ -204,11 +345,11 @@ def main() -> int:
         file=sys.stderr,
     )
     _print_env()
-    if backend in {"nccl", "tp_pair_nccl"} and not torch.cuda.is_available():
+    if backend in {"nccl", "tp_pair_nccl", "p2p_nccl"} and not torch.cuda.is_available():
         print("DS4 NCCL preflight failed: CUDA is not available", file=sys.stderr)
         return 65
     try:
-        if backend in {"nccl", "tp_pair_nccl"}:
+        if backend in {"nccl", "tp_pair_nccl", "p2p_nccl"}:
             torch.cuda.set_device(0)
         print("DS4 NCCL preflight stage: init_process_group begin", file=sys.stderr)
         dist.init_process_group(
@@ -221,6 +362,8 @@ def main() -> int:
         print("DS4 NCCL preflight stage: init_process_group complete", file=sys.stderr)
         if backend == "tp_pair_nccl":
             return _run_pairwise_nccl_preflight(rank, world_size)
+        if backend == "p2p_nccl":
+            return _run_p2p_nccl_preflight(rank, world_size)
         device = "cuda" if backend == "nccl" else "cpu"
         value = torch.tensor([rank + 1], dtype=torch.float32, device=device)
         print("DS4 NCCL preflight stage: all_reduce begin", file=sys.stderr)
