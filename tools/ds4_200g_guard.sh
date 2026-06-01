@@ -238,14 +238,21 @@ ds4_require_200g_fabric()
     socket)
       export DS4_200G_NCCL_TRANSPORT="socket"
       if [[ "${DS4_200G_ADVERTISE_LOOPBACK:-0}" =~ ^(1|true|TRUE|yes|YES|on|ON)$ ]]; then
-        socket_ifname="${DS4_200G_SOCKET_IFNAME:-$ifnames_csv}"
+        socket_ifname="${DS4_200G_SOCKET_IFNAME:-$control_ifname}"
       else
         socket_ifname="${DS4_200G_SOCKET_IFNAME:-$ifnames_csv}"
       fi
       IFS=',' read -r -a socket_ifnames <<< "$socket_ifname"
       for ifname in "${socket_ifnames[@]}"; do
         [[ -n "$ifname" ]] || ds4_200g_die "DS4_200G_SOCKET_IFNAME contains an empty interface"
-        ds4_200g_require_link_200g "$ifname" "NCCL socket"
+        if ds4_200g_csv_contains "$ifnames_csv" "$ifname"; then
+          ds4_200g_require_link_200g "$ifname" "NCCL socket"
+        elif [[ "${DS4_200G_ADVERTISE_LOOPBACK:-0}" =~ ^(1|true|TRUE|yes|YES|on|ON)$ ]] && ds4_200g_csv_contains "$control_ifname" "$ifname"; then
+          [[ -d "/sys/class/net/$ifname" ]] || ds4_200g_die "NCCL routed socket interface '$ifname' does not exist"
+          echo "WARNING: DS4 NCCL socket transport is bound to routed interface '$ifname'; physical 200G rails are validated separately and NCCL may report this virtual interface as 10Gbps." >&2
+        else
+          ds4_200g_die "NCCL socket interface '$ifname' is neither a route-verified 200G interface nor routed control interface '$control_ifname'"
+        fi
       done
       ds4_200g_check_or_export NCCL_SOCKET_IFNAME "$socket_ifname"
       ds4_200g_check_or_export TP_SOCKET_IFNAME "$socket_ifname"
