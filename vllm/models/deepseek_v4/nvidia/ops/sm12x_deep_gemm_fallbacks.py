@@ -71,8 +71,9 @@ def _ds4_gather_values_i32_indices_kernel(
         other=0,
     )
     valid_idx = (idx >= 0) & (idx < source_cols)
+    safe_idx = tl.where(valid_idx, idx, 0)
     vals = tl.load(
-        values_ptr + row * values_stride_row + idx * values_stride_col,
+        values_ptr + row * values_stride_row + safe_idx * values_stride_col,
         mask=mask & valid_idx,
         other=float("-inf"),
     )
@@ -114,17 +115,18 @@ def _ds4_gather_values_and_indices_i32_kernel(
         other=0,
     )
     valid_selected = (selected >= 0) & (selected < candidate_cols)
+    safe_selected = tl.where(valid_selected, selected, 0)
     vals = tl.load(
         candidate_values_ptr
         + row * candidate_values_stride_row
-        + selected * candidate_values_stride_col,
+        + safe_selected * candidate_values_stride_col,
         mask=mask & valid_selected,
         other=float("-inf"),
     )
     idx = tl.load(
         candidate_indices_ptr
         + row * candidate_indices_stride_row
-        + selected * candidate_indices_stride_col,
+        + safe_selected * candidate_indices_stride_col,
         mask=mask & valid_selected,
         other=-1,
     )

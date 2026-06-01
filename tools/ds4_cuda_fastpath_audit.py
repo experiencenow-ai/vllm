@@ -35,6 +35,8 @@ require(
     "chunk_logits,",
     "_gather_values_and_indices_i32(",
     "logits_out=chunk_logits_buf",
+    "safe_idx = tl.where(valid_idx, idx, 0)",
+    "safe_selected = tl.where(valid_selected, selected, 0)",
 )
 
 require(
