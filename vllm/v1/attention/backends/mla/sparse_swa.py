@@ -200,7 +200,11 @@ class DeepseekSparseSWAMetadataBuilder(AttentionMetadataBuilder):
 
     # Base threshold: query_len <= 1 is decode
     reorder_batch_threshold: int = 1
-    _cudagraph_support: ClassVar[AttentionCGSupport] = AttentionCGSupport.UNIFORM_BATCH
+    # Sparse SWA shares the dynamic DeepSeek-V4 sparse prefill metadata path;
+    # only single-token decode batches are CUDA graph safe.
+    _cudagraph_support: ClassVar[AttentionCGSupport] = (
+        AttentionCGSupport.UNIFORM_SINGLE_TOKEN_DECODE
+    )
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)

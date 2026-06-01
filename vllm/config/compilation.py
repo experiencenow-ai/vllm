@@ -1386,6 +1386,29 @@ class CompilationConfig:
                 cudagraph_mode = CUDAGraphMode.NONE
             logger.warning(msg)
 
+        # PIECEWISE captures mixed/prefill execution. Backends that only
+        # support uniform single-token decode must not retain a piecewise graph
+        # mode; otherwise dynamic prefill metadata can be replayed unsafely.
+        if (
+            cudagraph_mode.mixed_mode() == CUDAGraphMode.PIECEWISE
+            and min_cg_support.value < AttentionCGSupport.UNIFORM_BATCH.value
+        ):
+            msg = (
+                f"CUDAGraphMode.{cudagraph_mode.name} is not supported "
+                f"with mixed/prefill batches for attention backend "
+                f"{min_cg_attn_backend} (support: {min_cg_support})"
+            )
+            if (
+                cudagraph_mode.decode_mode() == CUDAGraphMode.FULL
+                and min_cg_support != AttentionCGSupport.NEVER
+            ):
+                msg += "; setting cudagraph_mode=FULL_DECODE_ONLY"
+                cudagraph_mode = CUDAGraphMode.FULL_DECODE_ONLY
+            else:
+                msg += "; setting cudagraph_mode=NONE"
+                cudagraph_mode = CUDAGraphMode.NONE
+            logger.warning(msg)
+
         # check that if we are doing spec-decode + decode full-cudagraphs it is
         # supported
         if (

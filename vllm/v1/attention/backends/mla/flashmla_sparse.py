@@ -242,7 +242,11 @@ def get_prefill_workspace_size(max_model_len: int):
 
 
 class FlashMLASparseMetadataBuilder(AttentionMetadataBuilder[FlashMLASparseMetadata]):
-    _cudagraph_support: ClassVar[AttentionCGSupport] = AttentionCGSupport.UNIFORM_BATCH
+    # Sparse MLA prefill builds dynamic indexer/MQA metadata that is not safe to
+    # capture in piecewise CUDA graphs on SM12x. Decode remains graph-safe.
+    _cudagraph_support: ClassVar[AttentionCGSupport] = (
+        AttentionCGSupport.UNIFORM_SINGLE_TOKEN_DECODE
+    )
 
     def __init__(
         self,
