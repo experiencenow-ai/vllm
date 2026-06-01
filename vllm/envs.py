@@ -143,6 +143,7 @@ if TYPE_CHECKING:
     VLLM_DS4_PP_PYNCCL_TENSOR_DICT: bool = False
     VLLM_DS4_PP_PYNCCL_TENSOR_DICT_STRIPES: int = 1
     VLLM_DS4_PP_PYNCCL_TENSOR_DICT_STRIPE_MIN_BYTES: int = 1048576
+    VLLM_DS4_PP_TENSOR_DICT_TP_ALL_GATHER: bool = True
     VLLM_DS4_SKIP_PYNCCL_WARMUP_ALLREDUCE: bool = False
     VLLM_DS4_SM12X_MQA_ROWWISE: bool = True
     VLLM_DS4_SM12X_MQA_ROWWISE_MAX_ROWS: int = 4
@@ -1326,6 +1327,17 @@ environment_variables: dict[str, Callable[[], Any]] = {
             "VLLM_DS4_PP_PYNCCL_TENSOR_DICT_STRIPE_MIN_BYTES",
             str(1024 * 1024),
         )
+    ),
+    # DS4 PP tensor-dict transport can optionally slice replicated tensors and
+    # reconstruct them with a TP all-gather on the receiving stage. The PP4xTP2
+    # DSV4 path disables that optimization by default because it can put a
+    # giant cross-node TP all-gather on the PP boundary critical path; direct
+    # PyNCCL PP tensor transfer is the required performance path there.
+    "VLLM_DS4_PP_TENSOR_DICT_TP_ALL_GATHER": lambda: (
+        os.environ.get("VLLM_DS4_PP_TENSOR_DICT_TP_ALL_GATHER", "1")
+        .strip()
+        .lower()
+        in ("1", "true", "yes", "on")
     ),
     "VLLM_DS4_PP_CPU_STAGED_TENSOR_DICT": lambda: (
         os.environ.get("VLLM_DS4_PP_CPU_STAGED_TENSOR_DICT", "0")
