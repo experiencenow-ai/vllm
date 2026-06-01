@@ -547,6 +547,12 @@ class Scheduler(SchedulerInterface):
                 ds4_max_new_reqs_this_step = max(
                     0, envs.VLLM_DS4_SCHED_MAX_NEW_REQS_PER_STEP
                 )
+            ds4_new_prefill_token_budget = 0
+            if self.use_pp:
+                ds4_new_prefill_token_budget = max(
+                    0, envs.VLLM_DS4_SCHED_MAX_NEW_PREFILL_TOKENS_PER_STEP
+                )
+            ds4_new_prefill_tokens_scheduled_this_step = 0
             ds4_new_reqs_scheduled_this_step = 0
 
             while (self.waiting or self.skipped_waiting) and token_budget > 0:
@@ -558,6 +564,16 @@ class Scheduler(SchedulerInterface):
                     logger.debug(
                         "DS4 PP new-request wave cap reached: %d requests",
                         ds4_new_reqs_scheduled_this_step,
+                    )
+                    break
+                if (
+                    ds4_new_prefill_token_budget > 0
+                    and ds4_new_prefill_tokens_scheduled_this_step
+                    >= ds4_new_prefill_token_budget
+                ):
+                    logger.debug(
+                        "DS4 PP new-prefill-token wave cap reached: %d tokens",
+                        ds4_new_prefill_tokens_scheduled_this_step,
                     )
                     break
                 if len(self.running) == self.max_num_running_reqs:
@@ -680,6 +696,15 @@ class Scheduler(SchedulerInterface):
                         # we can stop the scheduling here.
                         break
 
+                    if ds4_new_prefill_token_budget > 0:
+                        remaining_prefill_tokens = (
+                            ds4_new_prefill_token_budget
+                            - ds4_new_prefill_tokens_scheduled_this_step
+                        )
+                        if remaining_prefill_tokens <= 0:
+                            break
+                        num_new_tokens = min(num_new_tokens, remaining_prefill_tokens)
+
                     num_new_tokens = min(num_new_tokens, token_budget)
                     assert num_new_tokens > 0
 
@@ -798,6 +823,13 @@ class Scheduler(SchedulerInterface):
 
                 self.running.append(request)
                 ds4_new_reqs_scheduled_this_step += 1
+                if ds4_new_prefill_token_budget > 0:
+                    remaining_prompt_tokens = max(
+                        0, request.num_prompt_tokens - num_computed_tokens
+                    )
+                    ds4_new_prefill_tokens_scheduled_this_step += min(
+                        num_new_tokens, remaining_prompt_tokens
+                    )
                 if self.log_stats:
                     request.record_event(
                         EngineCoreEventType.SCHEDULED, scheduled_timestamp
