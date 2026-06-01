@@ -256,16 +256,23 @@ def _iperf_server_command(pair_index: int) -> list[str]:
 
 
 def _parse_iperf_csv_bits_per_second(stdout: str) -> float:
+    summary: float | None = None
     for line in reversed([item.strip() for item in stdout.splitlines() if item.strip()]):
         fields = [field.strip() for field in line.split(",")]
-        for field in reversed(fields):
-            try:
-                value = float(field)
-            except ValueError:
-                continue
-            if value > 0:
-                return value
-    raise RuntimeError(f"could not parse iperf CSV bandwidth from {stdout!r}")
+        if len(fields) < 9:
+            continue
+        if fields[5] != "-1":
+            continue
+        try:
+            summary = float(fields[-1])
+        except ValueError:
+            continue
+        if summary > 0:
+            return summary
+    raise RuntimeError(
+        "could not parse iperf CSV summary bandwidth from -1 row: "
+        f"{stdout!r}"
+    )
 
 
 def _run_iperf_client(

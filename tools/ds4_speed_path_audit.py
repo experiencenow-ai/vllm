@@ -58,6 +58,7 @@ check("NCCL preflight separates directional PP P2P from TP pair collectives", "D
 check("rail TCP preflight script exists", "ds4_transfer.fast_copy data-plane shape" in rail_tcp)
 check("rail TCP preflight discovers route rails like fast_copy", "ip\", \"route\", \"show\"" in rail_tcp and "destination_ip=dst_ip" in rail_tcp)
 check("rail TCP preflight uses iperf for the launch speed gate", "DS4_RAIL_TCP_PREFLIGHT_TOOL" in rail_tcp and "iperf" in rail_tcp and "--reportstyle C" not in rail_tcp and "-y" in rail_tcp)
+check("rail TCP iperf parser uses the aggregate summary row", 'fields[5] != "-1"' in rail_tcp)
 check("rail TCP preflight binds explicit client source rail IPs", "nc -N -s {rail.source_ip}" in rail_tcp)
 check("rail TCP preflight uses many unencrypted streams per edge", "DS4_RAIL_TCP_PREFLIGHT_STREAMS" in rail_tcp and "threading.Thread" in rail_tcp)
 check("200G guard can run rail TCP preflight before NCCL", "ds4_run_rail_tcp_preflight" in guard and "ds4_rail_tcp_preflight.py" in guard)
