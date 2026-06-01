@@ -3,6 +3,7 @@
 """Scheduler-side manager for SimpleCPUOffloadConnector."""
 
 import contextlib
+import os
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -145,7 +146,7 @@ class SimpleCPUOffloadScheduler:
             num_cpu_blocks=self.num_cpu_blocks,
         )
         self._cache_refs_by_block_hash: dict[bytes, set[str]] = {}
-        if self._persistent_store is not None:
+        if self._persistent_store is not None and _startup_restore_enabled():
             restored = 0
             for entry in self._persistent_store.load_scheduler_entries(
                 self.num_cpu_blocks
@@ -163,6 +164,11 @@ class SimpleCPUOffloadScheduler:
             logger.info(
                 "SimpleCPUOffloadScheduler: restored %d persistent CPU blocks",
                 restored,
+            )
+        elif self._persistent_store is not None:
+            logger.info(
+                "SimpleCPUOffloadScheduler: persistent startup restore disabled; "
+                "cache blocks will be seeded on demand by request cache_ref"
             )
 
         # GPU block pool reference - bound after scheduler builds kv_cache_manager
@@ -1123,11 +1129,21 @@ def _request_requires_strict_load(request: "Request") -> bool:
 def _request_wants_store(request: "Request") -> bool:
     params = request.kv_transfer_params
     if not isinstance(params, dict):
-        return False
+        return _store_unmarked_requests_enabled()
     plan = params.get("ds4_kv_cache")
     if not isinstance(plan, dict):
-        return False
+        return _store_unmarked_requests_enabled()
     store = plan.get("store")
     if not isinstance(store, dict):
         return False
     return store.get("mode") not in (None, "skip")
+
+
+def _store_unmarked_requests_enabled() -> bool:
+    value = os.getenv("VLLM_DS4_SIMPLE_KV_STORE_UNMARKED", "1")
+    return value.strip().lower() not in ("0", "false", "no", "off")
+
+
+def _startup_restore_enabled() -> bool:
+    value = os.getenv("VLLM_DS4_SIMPLE_KV_STARTUP_RESTORE", "1")
+    return value.strip().lower() not in ("0", "false", "no", "off")
