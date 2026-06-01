@@ -263,10 +263,10 @@ def poll_health(args: argparse.Namespace) -> bool:
 
 def head_service_process_alive(args: argparse.Namespace) -> bool:
     pattern = (
-        "vllm.entrypoints.cli.main serve|"
-        "VLLM::|"
-        "ds4_launch_dsv4_flash_|"
-        "ds4_nccl_preflight.py"
+        "[v]llm.entrypoints.cli.main serve|"
+        "[V]LLM::|"
+        "[d]s4_launch_dsv4_flash_|"
+        "[d]s4_nccl_preflight.py"
     )
     command = f"pgrep -af {shlex.quote(pattern)} >/dev/null"
     try:
@@ -279,7 +279,7 @@ def head_service_process_alive(args: argparse.Namespace) -> bool:
 def print_head_diagnostics(args: argparse.Namespace) -> None:
     command = (
         "printf 'processes:\\n'; "
-        "pgrep -af 'vllm.entrypoints.cli.main serve|VLLM::|ds4_launch_dsv4_flash_|ds4_nccl_preflight.py' || true; "
+        "pgrep -af '[v]llm.entrypoints.cli.main serve|[V]LLM::|[d]s4_launch_dsv4_flash_|[d]s4_nccl_preflight.py' || true; "
         "printf '\\nrecent dsv4 logs:\\n'; "
         "ls -td ~/ds4_logs/dsv4_pp*_rank0.log ~/ds4_logs/dsv4_pp*-rank0.log 2>/dev/null | head -3 | "
         "xargs -r -I{} sh -c 'echo ==== {}; tail -80 {}'"
