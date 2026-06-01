@@ -57,7 +57,7 @@ check("PP4xTP2 launcher declares directional PP boundary P2P pairs", "0-2;1-3;2-
 check("PP4xTP2 launcher uses unidirectional PP P2P preflight", 'DS4_NCCL_PREFLIGHT_P2P_DIRECTION="${DS4_NCCL_PREFLIGHT_P2P_DIRECTION:-unidirectional}"' in pp4)
 check("PP4xTP2 launcher refuses pair-local NCCL view", "refuses DS4_200G_PAIR_LOCAL_NCCL=1" in pp4)
 check("200G guard separates route validation IFNAME from NCCL IFNAME", "DS4_200G_NCCL_IFNAME" in guard and "nccl_ifnames_csv" in guard and "NCCL interface" in guard)
-check("200G guard binds NCCL socket to routed control interface when advertising loopbacks", 'socket_ifname="${DS4_200G_SOCKET_IFNAME:-$control_ifname}"' in guard and "NCCL routed socket interface" in guard)
+check("200G guard defaults NCCL socket transport to physical rail interfaces", 'socket_ifname="${DS4_200G_SOCKET_IFNAME:-$ifnames_csv}"' in guard and "NCCL routed socket interface" in guard)
 check("200G guard pins IB HCA from NCCL IFNAME, not the full route list", 'ds4_200g_check_or_export NCCL_IB_HCA "$nccl_hcas_csv"' in guard)
 check("NCCL preflight prints NCCL interface override", '"DS4_200G_NCCL_IFNAME"' in preflight)
 check("NCCL preflight has P2P bandwidth mode", "def _run_p2p_nccl_preflight(" in preflight and "DS4_NCCL_PREFLIGHT_P2P_PAIRS" in preflight)
