@@ -130,6 +130,7 @@ if TYPE_CHECKING:
     VLLM_DS4_SKIP_EXPLICIT_KV_PROFILE_RUN: bool = False
     VLLM_DS4_PROFILE_WATCHDOG_SECONDS: int = 0
     VLLM_DS4_PROFILE_ABORT_SECONDS: int = 0
+    VLLM_DS4_SKIP_LAST_RANK_SAMPLER_WARMUP: bool = False
     VLLM_DS4_COHORT_ADMISSION: bool = False
     VLLM_DS4_COHORT_ADMISSION_MIN_PROMPTS: int = 2
     VLLM_DS4_COHORT_PAUSE_DURING_ADMISSION: bool = False
@@ -1253,6 +1254,17 @@ environment_variables: dict[str, Callable[[], Any]] = {
     ),
     "VLLM_DS4_PROFILE_ABORT_SECONDS": lambda: int(
         os.environ.get("VLLM_DS4_PROFILE_ABORT_SECONDS", "0")
+    ),
+    # vLLM V1 warms sampler buffers after CUDA graph capture by running a
+    # dummy model pass only on the last PP rank. In PP+TP DSV4 this can issue
+    # model-body TP collectives without matching work on earlier PP stages.
+    # DS4 launchers skip this startup-only warmup; real requests still use the
+    # normal sampler path.
+    "VLLM_DS4_SKIP_LAST_RANK_SAMPLER_WARMUP": lambda: (
+        os.environ.get("VLLM_DS4_SKIP_LAST_RANK_SAMPLER_WARMUP", "0")
+        .strip()
+        .lower()
+        in ("1", "true", "yes", "on")
     ),
     # DS4 file-driven API benchmark/cohort mode. OpenAI completions may carry
     # hundreds of prompts in one request; admit them through direct add_request
