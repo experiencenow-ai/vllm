@@ -332,8 +332,21 @@ class Worker(WorkerBase):
             # memory snapshot
             # This ensures NCCL buffers are allocated before we measure
             # available memory
-            dist_backend = os.getenv("VLLM_DS4_PP_ONLY_GLOBAL_BACKEND", "")
+            dist_backend = os.getenv("VLLM_DS4_DISTRIBUTED_BACKEND", "")
             if dist_backend:
+                if dist_backend not in ("gloo", "nccl"):
+                    raise RuntimeError(
+                        "VLLM_DS4_DISTRIBUTED_BACKEND must be 'gloo' or 'nccl', "
+                        f"got {dist_backend!r}."
+                    )
+                logger.warning(
+                    "DS4 overriding torch distributed backend to %s. Device "
+                    "collectives still use vLLM device communicators when enabled.",
+                    dist_backend,
+                )
+            else:
+                dist_backend = os.getenv("VLLM_DS4_PP_ONLY_GLOBAL_BACKEND", "")
+            if dist_backend and not os.getenv("VLLM_DS4_DISTRIBUTED_BACKEND", ""):
                 if (
                     self.parallel_config.tensor_parallel_size != 1
                     or self.parallel_config.pipeline_parallel_size <= 1
