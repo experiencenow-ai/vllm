@@ -161,7 +161,7 @@ def add_orphan_vllm_workers(
     an active, healthy service with live children is not collected by accident.
     """
 
-    orphan_pattern = re.compile(r"^VLLM::(?:Worker|EngineCore)\b")
+    orphan_pattern = re.compile(r"^VLLM::(?:Worker(?:_|\b)|EngineCore\b)")
     for proc in processes:
         if proc.ppid == 1 and orphan_pattern.search(proc.command):
             matches[proc.pid] = proc
