@@ -31,6 +31,7 @@ from vllm.entrypoints.openai.engine.protocol import (
     ToolCall,
     UsageInfo,
 )
+from vllm.entrypoints.openai.ds4_kv_cache import lift_ds4_kv_cache_request
 from vllm.exceptions import VLLMValidationError
 from vllm.logger import init_logger
 from vllm.logprobs import Logprob
@@ -634,6 +635,11 @@ class ChatCompletionRequest(OpenAIBaseModel):
             skip_clone=True,  # Created fresh per request, safe to skip clone
             repetition_detection=self.repetition_detection,
         )
+
+    @model_validator(mode="before")
+    @classmethod
+    def lift_ds4_kv_cache(cls, data):
+        return lift_ds4_kv_cache_request(data)
 
     @model_validator(mode="before")
     @classmethod

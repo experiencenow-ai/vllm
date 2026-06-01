@@ -19,6 +19,7 @@ from vllm.entrypoints.openai.engine.protocol import (
     StructuralTagResponseFormat,
     UsageInfo,
 )
+from vllm.entrypoints.openai.ds4_kv_cache import lift_ds4_kv_cache_request
 from vllm.exceptions import VLLMValidationError
 from vllm.logger import init_logger
 from vllm.logprobs import Logprob
@@ -343,6 +344,11 @@ class CompletionRequest(OpenAIBaseModel):
             repetition_detection=self.repetition_detection,
             thinking_token_budget=self.thinking_token_budget,
         )
+
+    @model_validator(mode="before")
+    @classmethod
+    def lift_ds4_kv_cache(cls, data):
+        return lift_ds4_kv_cache_request(data)
 
     @model_validator(mode="before")
     @classmethod

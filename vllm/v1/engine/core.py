@@ -27,6 +27,7 @@ from vllm.distributed import (
     stateless_destroy_torch_distributed_process_group,
 )
 from vllm.envs import enable_envs_cache
+from vllm.entrypoints.openai.ds4_kv_cache import requires_ds4_kv_transfer
 from vllm.logger import init_logger
 from vllm.logging_utils.dump_input import dump_engine_exception
 from vllm.lora.request import LoRARequest
@@ -361,6 +362,13 @@ class EngineCore:
         if request.kv_transfer_params is not None and (
             not self.scheduler.get_kv_connector()
         ):
+            if requires_ds4_kv_transfer(request.kv_transfer_params):
+                raise ValueError(
+                    "DS4 KV cache was requested, but this vLLM engine has no "
+                    "KVConnector configured. Refusing to serve a cache-marked "
+                    "request cold because that hides broken external-KV "
+                    "benchmark/deployment plumbing."
+                )
             logger.warning(
                 "Got kv_transfer_params, but no KVConnector found. "
                 "Disabling KVTransfer for this request."
