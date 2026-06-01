@@ -139,6 +139,8 @@ def build_command(args: argparse.Namespace) -> str:
         "vllm/entrypoints/openai/chat_completion/protocol.py "
         "vllm/v1/engine/core.py "
         "vllm/v1/core/sched/scheduler.py "
+        "vllm/distributed/kv_transfer/kv_connector/v1/simple_cpu_offload_connector.py "
+        "vllm/v1/simple_kv_offload/manager.py "
         "vllm/v1/worker/workspace.py "
         "tools/ds4_stop_spark_processes.py tools/ds4_relaunch_spark_service.py "
         "tools/ds4_nccl_preflight.py "
