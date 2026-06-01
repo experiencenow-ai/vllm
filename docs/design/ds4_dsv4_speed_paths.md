@@ -32,7 +32,7 @@ The physical rail TCP guard is temporarily relaxed while the weak back-half
 ring links are investigated:
 
 ```text
-rail TCP fail floor:     25 Gbit/s
+rail TCP fail floor:     10 Gbit/s
 rail TCP warning floor:  64 Gbit/s
 PP4 NCCL P2P fail floor: 3.125 GB/s
 PP4 NCCL P2P warning:    8 GB/s
