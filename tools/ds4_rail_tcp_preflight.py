@@ -12,6 +12,7 @@ from dataclasses import dataclass
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -247,6 +248,13 @@ def _run_iperf_server(pair_index: int, src: int, dst: int) -> int:
     return 0
 
 
+def _iperf_server_command(pair_index: int) -> list[str]:
+    port_base = int(_env("DS4_RAIL_TCP_PREFLIGHT_PORT_BASE", "49400"))
+    port = port_base + (pair_index * 100)
+    bind_ip = _env("DS4_RAIL_TCP_PREFLIGHT_SERVER_BIND", "0.0.0.0")
+    return ["iperf", "-s", "-B", bind_ip, "-p", str(port), "-f", "g", "-y", "C"]
+
+
 def _parse_iperf_csv_bits_per_second(stdout: str) -> float:
     for line in reversed([item.strip() for item in stdout.splitlines() if item.strip()]):
         fields = [field.strip() for field in line.split(",")]
@@ -353,6 +361,13 @@ def _run_iperf3_server(pair_index: int, src: int, dst: int) -> int:
         file=sys.stderr,
     )
     return 0
+
+
+def _iperf3_server_command(pair_index: int) -> list[str]:
+    port_base = int(_env("DS4_RAIL_TCP_PREFLIGHT_PORT_BASE", "49400"))
+    port = port_base + (pair_index * 100)
+    bind_ip = _env("DS4_RAIL_TCP_PREFLIGHT_SERVER_BIND", "0.0.0.0")
+    return ["iperf3", "-s", "-B", bind_ip, "-p", str(port)]
 
 
 def _run_iperf3_client(
@@ -544,18 +559,118 @@ def _run_client(pair_index: int, src: int, dst: int, destination_ip: str) -> int
     return 0
 
 
+def _start_bandwidth_server(tool: str, pair_index: int, src: int, dst: int) -> subprocess.Popen[str]:
+    if tool == "iperf":
+        argv = _iperf_server_command(pair_index)
+    elif tool == "iperf3":
+        argv = _iperf3_server_command(pair_index)
+    else:
+        raise ValueError(f"background server is not supported for {tool}")
+    proc = subprocess.Popen(
+        argv,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    )
+    print(
+        "DS4 rail TCP preflight server started: "
+        f"pair={src}-{dst} tool={tool} pid={proc.pid}",
+        file=sys.stderr,
+    )
+    return proc
+
+
+def _check_background_servers(
+    servers: list[tuple[int, int, int, subprocess.Popen[str]]],
+) -> None:
+    for pair_index, src, dst, proc in servers:
+        status = proc.poll()
+        if status is None:
+            continue
+        stdout, stderr = proc.communicate(timeout=1)
+        raise RuntimeError(
+            "rail TCP preflight server exited before client phase: "
+            f"pair={src}-{dst} index={pair_index} status={status}: "
+            f"{(stderr or stdout)[-500:]}"
+        )
+
+
+def _stop_background_servers(
+    servers: list[tuple[int, int, int, subprocess.Popen[str]]],
+) -> None:
+    stop_timeout_s = float(_env("DS4_RAIL_TCP_PREFLIGHT_SERVER_STOP_TIMEOUT_S", "2"))
+    for pair_index, src, dst, proc in servers:
+        if proc.poll() is None:
+            try:
+                os.killpg(proc.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+        try:
+            stdout, stderr = proc.communicate(timeout=stop_timeout_s)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            stdout, stderr = proc.communicate(timeout=stop_timeout_s)
+        text = (stderr or stdout or "").strip()
+        if text:
+            text = " " + text.splitlines()[-1][-300:]
+        print(
+            "DS4 rail TCP preflight server stopped: "
+            f"pair={src}-{dst} index={pair_index} status={proc.returncode}{text}",
+            file=sys.stderr,
+        )
+
+
+def _run_bandwidth_preflight(
+    rank: int,
+    fabric_ips: list[str],
+    pairs: list[tuple[int, int]],
+    tool: str,
+) -> int:
+    servers: list[tuple[int, int, int, subprocess.Popen[str]]] = []
+    try:
+        for pair_index, (src, dst) in enumerate(pairs):
+            if rank == dst:
+                servers.append(
+                    (pair_index, src, dst, _start_bandwidth_server(tool, pair_index, src, dst))
+                )
+        if servers:
+            time.sleep(float(_env("DS4_RAIL_TCP_PREFLIGHT_SERVER_READY_S", "1.0")))
+            _check_background_servers(servers)
+        for pair_index, (src, dst) in enumerate(pairs):
+            if rank == src:
+                status = _run_client(pair_index, src, dst, fabric_ips[dst])
+                if status != 0:
+                    return status
+                _check_background_servers(servers)
+        return 0
+    finally:
+        _stop_background_servers(servers)
+
+
 def main() -> int:
     rank = _rank()
     world_size = _world_size()
     fabric_ips = _fabric_ips(world_size)
     pairs = _parse_pairs(world_size)
+    tool = _preflight_tool()
     print(
         "DS4 rail TCP preflight starting: "
         f"rank={rank}/{world_size} pairs="
-        + ";".join(f"{src}-{dst}" for src, dst in pairs),
+        + ";".join(f"{src}-{dst}" for src, dst in pairs)
+        + f" tool={tool}",
         file=sys.stderr,
     )
     try:
+        if tool in {"iperf", "iperf3"}:
+            status = _run_bandwidth_preflight(rank, fabric_ips, pairs, tool)
+            if status != 0:
+                return status
+            print(f"DS4 rail TCP preflight passed on rank {rank}", file=sys.stderr)
+            return 0
         for pair_index, (src, dst) in enumerate(pairs):
             if rank == dst:
                 status = _run_server(pair_index, src, dst)
