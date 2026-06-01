@@ -246,6 +246,19 @@ class Executor(ABC):
         )
         return output[0]
 
+    def execute_model_and_sample_tokens(
+        self,
+        scheduler_output: SchedulerOutput,
+        grammar_output: GrammarOutput | None,
+        non_block: bool = False,
+    ) -> ModelRunnerOutput | Future[ModelRunnerOutput]:
+        output = self.collective_rpc(  # type: ignore[call-overload]
+            "execute_model_and_sample_tokens",
+            args=(scheduler_output, grammar_output),
+            non_block=non_block,
+        )
+        return output[0]
+
     def execute_dummy_batch(self) -> None:
         self.collective_rpc("execute_dummy_batch")
 

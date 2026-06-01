@@ -912,6 +912,24 @@ class Worker(WorkerBase):
         return self.model_runner.sample_tokens(grammar_output)
 
     @torch.inference_mode()
+    def execute_model_and_sample_tokens(
+        self,
+        scheduler_output: "SchedulerOutput",
+        grammar_output: "GrammarOutput | None",
+    ) -> ModelRunnerOutput | AsyncModelRunnerOutput | None:
+        """DS4 sync-PP fast path: execute and sample in one worker RPC.
+
+        This is equivalent to execute_model(); sample_tokens() for simple
+        generation batches, but avoids a second parent->all-workers message
+        queue broadcast. Non-last PP ranks execute their local stage and return
+        None; the executor still only reads the last PP rank response.
+        """
+        output = self.execute_model(scheduler_output)
+        if output is None:
+            return self.sample_tokens(grammar_output)
+        return output
+
+    @torch.inference_mode()
     def execute_model(
         self, scheduler_output: "SchedulerOutput"
     ) -> ModelRunnerOutput | AsyncModelRunnerOutput | None:

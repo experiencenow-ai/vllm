@@ -496,30 +496,46 @@ class EngineCore:
         deferred_scheduler_output = None
         if self.scheduler.has_requests():
             scheduler_output = self.scheduler.schedule()
-            with self.log_error_detail(scheduler_output):
-                exec_future = self.model_executor.execute_model(
-                    scheduler_output, non_block=True
-                )
             if self.is_ec_consumer:
                 model_executed = scheduler_output.total_num_scheduled_tokens > 0
 
-            if self.is_pooling_model or not model_executed:
-                # No sampling required (no requests scheduled).
-                future = cast(Future[ModelRunnerOutput], exec_future)
+            use_ds4_fused_execute_sample = (
+                envs.VLLM_DS4_FUSED_EXECUTE_SAMPLE
+                and model_executed
+                and not self.is_pooling_model
+                and not scheduler_output.pending_structured_output_tokens
+                and not self.use_spec_decode
+            )
+            if use_ds4_fused_execute_sample:
+                grammar_output = self.scheduler.get_grammar_bitmask(scheduler_output)
+                with self.log_error_detail(scheduler_output):
+                    future = self.model_executor.execute_model_and_sample_tokens(
+                        scheduler_output, grammar_output, non_block=True
+                    )
+                exec_future = future
             else:
-                if not scheduler_output.pending_structured_output_tokens:
-                    # We aren't waiting for any tokens, get any grammar output
-                    # and sample immediately.
-                    grammar_output = self.scheduler.get_grammar_bitmask(
-                        scheduler_output
+                with self.log_error_detail(scheduler_output):
+                    exec_future = self.model_executor.execute_model(
+                        scheduler_output, non_block=True
                     )
-                    future = self.model_executor.sample_tokens(
-                        grammar_output, non_block=True
-                    )
+
+                if self.is_pooling_model or not model_executed:
+                    # No sampling required (no requests scheduled).
+                    future = cast(Future[ModelRunnerOutput], exec_future)
                 else:
-                    # We need to defer sampling until we have processed the model output
-                    # from the prior step.
-                    deferred_scheduler_output = scheduler_output
+                    if not scheduler_output.pending_structured_output_tokens:
+                        # We aren't waiting for any tokens, get any grammar output
+                        # and sample immediately.
+                        grammar_output = self.scheduler.get_grammar_bitmask(
+                            scheduler_output
+                        )
+                        future = self.model_executor.sample_tokens(
+                            grammar_output, non_block=True
+                        )
+                    else:
+                        # We need to defer sampling until we have processed the model output
+                        # from the prior step.
+                        deferred_scheduler_output = scheduler_output
 
             if not deferred_scheduler_output:
                 # Add this step's future to the queue.
