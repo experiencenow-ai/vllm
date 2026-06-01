@@ -44,6 +44,7 @@ def _print_env() -> None:
         "DS4_NCCL_PREFLIGHT_GROUPS",
         "DS4_NCCL_PREFLIGHT_P2P_PAIRS",
         "DS4_NCCL_PREFLIGHT_MIN_P2P_GBPS",
+        "DS4_NCCL_PREFLIGHT_WARN_P2P_GBPS",
     ]
     for name in names:
         print(f"{name}={_env(name, '<unset>')}", file=sys.stderr)
@@ -171,6 +172,7 @@ def _run_p2p_pair_probe(rank: int, src: int, dst: int) -> int:
             _env("DS4_NCCL_PREFLIGHT_MIN_BUSBW_GBPS", "0"),
         )
     )
+    warn_p2p_gbps = float(_env("DS4_NCCL_PREFLIGHT_WARN_P2P_GBPS", "0"))
     element_size = torch.empty((), dtype=torch.float32).element_size()
     numel = max(1, bench_bytes // element_size)
     actual_bytes = (numel * element_size)
@@ -207,7 +209,8 @@ def _run_p2p_pair_probe(rank: int, src: int, dst: int) -> int:
         f"pair={src}-{dst} local_rank={rank} peer={peer} "
         f"bytes={actual_bytes} iters={bench_iters} stripes={len(send_chunks)} "
         f"direction={'bidirectional' if bidirectional else 'unidirectional'} "
-        f"min_p2p_GBps={min_p2p_gbps:.3f}",
+        f"min_p2p_GBps={min_p2p_gbps:.3f} "
+        f"warn_p2p_GBps={warn_p2p_gbps:.3f}",
         file=sys.stderr,
     )
     exchange()
@@ -241,9 +244,21 @@ def _run_p2p_pair_probe(rank: int, src: int, dst: int) -> int:
         f"direction={'bidirectional' if bidirectional else 'unidirectional'} "
         f"elapsed_s={elapsed_s:.6f} "
         f"p2p_GBps={measured_gbps:.3f} "
-        f"min_p2p_GBps={min_p2p_gbps:.3f}",
+        f"p2p_Gbit_s={(measured_gbps * 8.0):.3f} "
+        f"min_p2p_GBps={min_p2p_gbps:.3f} "
+        f"warn_p2p_GBps={warn_p2p_gbps:.3f}",
         file=sys.stderr,
     )
+    if warn_p2p_gbps > 0 and measured_gbps < warn_p2p_gbps:
+        print(
+            "WARNING: DS4 NCCL P2P preflight below warning threshold: "
+            f"pair={src}-{dst} rank={rank} measured "
+            f"{measured_gbps:.3f} GB/s ({(measured_gbps * 8.0):.3f} Gbit/s) "
+            f"< warning {warn_p2p_gbps:.3f} GB/s "
+            f"({(warn_p2p_gbps * 8.0):.3f} Gbit/s); launch continues unless "
+            "the fail threshold is crossed",
+            file=sys.stderr,
+        )
     if min_p2p_gbps > 0 and measured_gbps < min_p2p_gbps:
         print(
             "DS4 NCCL P2P preflight failed: "
