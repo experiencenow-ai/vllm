@@ -1320,7 +1320,14 @@ class GroupCoordinator:
             handles.append(handle)
 
         cuda_handle = self._enqueue_ds4_pynccl_p2p(
-            cuda_p2p_tensors, dst, torch.distributed.isend
+            cuda_p2p_tensors,
+            dst,
+            torch.distributed.isend,
+            # PP sends must be globally complete before the worker starts
+            # scheduling another step. A stream-only wait lets the model stream
+            # outrun NCCL P2P matching and can wedge the pipeline after the
+            # first cohort.
+            synchronize_on_wait=True,
         )
         if cuda_handle is not None:
             handles.append(cuda_handle)
