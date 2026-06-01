@@ -22,6 +22,7 @@ logger = init_logger(__name__)
 ROOT_ENV = "VLLM_SIMPLE_KV_OFFLOAD_PERSIST_ROOT"
 STRICT_ENV = "VLLM_SIMPLE_KV_OFFLOAD_PERSIST_STRICT"
 RANK_ENV = "VLLM_SIMPLE_KV_OFFLOAD_PERSIST_RANK"
+NAMESPACE_ENV = "VLLM_SIMPLE_KV_OFFLOAD_PERSIST_NAMESPACE"
 API_URL_ENV = "VLLM_SIMPLE_KV_OFFLOAD_PERSIST_API_URL"
 API_TOKEN_ENV = "VLLM_SIMPLE_KV_OFFLOAD_PERSIST_API_TOKEN"
 API_TIMEOUT_ENV = "VLLM_SIMPLE_KV_OFFLOAD_PERSIST_API_TIMEOUT"
@@ -401,6 +402,9 @@ def _model_key(vllm_config: Any) -> str:
     model = getattr(model_config, "model", None) or getattr(
         model_config, "served_model_name", None
     )
+    namespace = os.getenv(NAMESPACE_ENV)
+    if namespace:
+        return _safe_key(f"{model or 'unknown-model'}__{namespace}")
     return _safe_key(str(model or "unknown-model"))
 
 

@@ -39,6 +39,7 @@ from vllm.v1.kv_cache_interface import (
 )
 from vllm.v1.outputs import KVConnectorOutput
 from vllm.v1.request import Request
+from vllm.v1.simple_kv_offload.capacity import derive_logical_cpu_block_count
 from vllm.v1.simple_kv_offload.manager import SimpleCPUOffloadScheduler
 from vllm.v1.simple_kv_offload.metadata import SimpleCPUOffloadWorkerMetadata
 from vllm.v1.simple_kv_offload.persistent_api import (
@@ -299,6 +300,29 @@ def simulate_load_completion(
 def get_cpu_free_blocks(scheduler: SimpleCPUOffloadScheduler) -> int:
     """Return number of free CPU blocks."""
     return scheduler.cpu_block_pool.get_num_free_blocks()
+
+
+def test_logical_cpu_block_count_is_shared_across_uneven_pp_stages() -> None:
+    """The scheduler and workers must use one logical CPU block id space.
+
+    PP stages can own different physical layer counts.  A middle stage with
+    larger per-block tensors may fit fewer blocks inside its nominal byte cap,
+    but it still has to allocate the scheduler's logical id space because
+    SimpleCPUOffload metadata is broadcast as flat CPU block ids.
+    """
+    kv_cache_config = _make_kv_cache_config(num_blocks=16, num_groups=1)
+    logical_capacity_bytes = _BYTES_PER_BLOCK * 8
+    logical_blocks = derive_logical_cpu_block_count(
+        kv_cache_config, logical_capacity_bytes
+    )
+    heavier_stage_bytes_per_block = _BYTES_PER_BLOCK * 2
+    heavier_physical_blocks = logical_capacity_bytes // heavier_stage_bytes_per_block
+
+    assert logical_blocks == 8
+    assert heavier_physical_blocks == 4
+
+    fix = make_scheduler(num_cpu_blocks=8, num_gpu_blocks=16, lazy=False)
+    assert fix.scheduler.num_cpu_blocks == logical_blocks
 
 
 def _allocate_gpu_blocks(

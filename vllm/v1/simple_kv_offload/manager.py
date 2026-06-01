@@ -28,6 +28,7 @@ from vllm.v1.kv_cache_interface import (
     SlidingWindowSpec,
 )
 from vllm.v1.outputs import KVConnectorOutput
+from vllm.v1.simple_kv_offload.capacity import derive_logical_cpu_block_count
 from vllm.v1.simple_kv_offload.metadata import (
     SimpleCPUOffloadMetadata,
     SimpleCPUOffloadWorkerMetadata,
@@ -211,10 +212,12 @@ class SimpleCPUOffloadScheduler:
 
         assert len(gpu_config.kv_cache_tensors) > 0
 
-        gpu_total_bytes = sum(t.size for t in gpu_config.kv_cache_tensors)
         num_gpu_blocks = gpu_config.num_blocks
-        num_cpu_blocks = max(1, num_gpu_blocks * cpu_capacity_bytes // gpu_total_bytes)
+        num_cpu_blocks = derive_logical_cpu_block_count(
+            gpu_config, cpu_capacity_bytes
+        )
         # Create CPU kv_cache_tensors mirroring GPU by scaling size proportionally.
+        gpu_total_bytes = sum(t.size for t in gpu_config.kv_cache_tensors)
         cpu_tensors = [
             KVCacheTensor(
                 size=t.size // num_gpu_blocks * num_cpu_blocks,
