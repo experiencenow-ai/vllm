@@ -36,10 +36,10 @@ def main() -> int:
         and "envs.VLLM_DS4_COHORT_ADMISSION_MIN_PROMPTS" in serving,
     )
     failures += check(
-        "cohort admission does not pause scheduler by default",
-        "envs.VLLM_DS4_COHORT_PAUSE_DURING_ADMISSION" in serving
-        and "pause=%s" in serving
-        and "resume_generation()" not in serving,
+        "cohort admission requires atomic scheduler pause",
+        "VLLM_DS4_COHORT_PAUSE_DURING_ADMISSION=1" in serving
+        and "pause_generation(mode=\"keep\", clear_cache=False)" in serving
+        and "fragments prefill/decode waves" in serving,
     )
     failures += check(
         "cohort admission wakes scheduling explicitly",
@@ -68,7 +68,7 @@ def main() -> int:
         'VLLM_DS4_COHORT_ADMISSION="${VLLM_DS4_COHORT_ADMISSION:-1}"'
         in dsv4
         and "VLLM_DS4_COHORT_ADMISSION_MIN_PROMPTS" in dsv4
-        and 'VLLM_DS4_COHORT_PAUSE_DURING_ADMISSION="${VLLM_DS4_COHORT_PAUSE_DURING_ADMISSION:-0}"'
+        and 'VLLM_DS4_COHORT_PAUSE_DURING_ADMISSION="${VLLM_DS4_COHORT_PAUSE_DURING_ADMISSION:-1}"'
         in dsv4,
     )
     return 1 if failures else 0

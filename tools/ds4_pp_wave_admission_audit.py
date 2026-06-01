@@ -50,7 +50,7 @@ def main() -> int:
     )
     failures += check(
         "DSV4 PP launcher defaults to bounded admission waves",
-        'VLLM_DS4_COHORT_PAUSE_DURING_ADMISSION="${VLLM_DS4_COHORT_PAUSE_DURING_ADMISSION:-0}"' in dsv4
+        'VLLM_DS4_COHORT_PAUSE_DURING_ADMISSION="${VLLM_DS4_COHORT_PAUSE_DURING_ADMISSION:-1}"' in dsv4
         and 'DSV4_SCHED_MAX_NEW_REQS_PER_STEP:-32' in dsv4
         and 'DSV4_SCHED_MAX_NEW_PREFILL_TOKENS_PER_STEP:-32768' in dsv4,
     )
