@@ -28,8 +28,10 @@ def _print_env() -> None:
         "TP_SOCKET_IFNAME",
         "VLLM_HOST_IP",
         "NCCL_NET",
+        "NCCL_ALGO",
         "NCCL_IB_HCA",
         "NCCL_IB_DISABLE",
+        "DS4_200G_VERIFIED_ROUTED_LOOPBACK_NCCL",
         "NCCL_DEBUG",
         "NCCL_DEBUG_SUBSYS",
     ]

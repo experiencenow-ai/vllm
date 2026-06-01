@@ -24,6 +24,7 @@ from vllm.distributed.kv_transfer.kv_connector.v1 import (
 from vllm.distributed.kv_transfer.kv_connector.v1.base import KVConnectorMetadata
 from vllm.distributed.kv_transfer.kv_connector.v1.metrics import KVConnectorStats
 from vllm.logger import init_logger
+import vllm.envs as envs
 from vllm.model_executor.layers.fused_moe.routed_experts_capturer import (
     RoutedExpertsManager,
 )
@@ -541,8 +542,24 @@ class Scheduler(SchedulerInterface):
         # Next, schedule the WAITING requests.
         if not preempted_reqs and self._pause_state == PauseState.UNPAUSED:
             step_skipped_waiting = create_request_queue(self.policy)
+            ds4_max_new_reqs_this_step = 0
+            if self.use_pp:
+                ds4_max_new_reqs_this_step = max(
+                    0, envs.VLLM_DS4_SCHED_MAX_NEW_REQS_PER_STEP
+                )
+            ds4_new_reqs_scheduled_this_step = 0
 
             while (self.waiting or self.skipped_waiting) and token_budget > 0:
+                if (
+                    ds4_max_new_reqs_this_step > 0
+                    and ds4_new_reqs_scheduled_this_step
+                    >= ds4_max_new_reqs_this_step
+                ):
+                    logger.debug(
+                        "DS4 PP new-request wave cap reached: %d requests",
+                        ds4_new_reqs_scheduled_this_step,
+                    )
+                    break
                 if len(self.running) == self.max_num_running_reqs:
                     break
 
@@ -780,6 +797,7 @@ class Scheduler(SchedulerInterface):
                     continue
 
                 self.running.append(request)
+                ds4_new_reqs_scheduled_this_step += 1
                 if self.log_stats:
                     request.record_event(
                         EngineCoreEventType.SCHEDULED, scheduled_timestamp

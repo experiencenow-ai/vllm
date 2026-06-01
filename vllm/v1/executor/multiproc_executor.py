@@ -328,6 +328,21 @@ class MultiprocExecutor(Executor):
             kv_output_aggregator=self.kv_output_aggregator,
         )
 
+    def execute_model_and_sample_tokens(
+        self,
+        scheduler_output: SchedulerOutput,
+        grammar_output: GrammarOutput | None,
+        non_block: bool = False,
+    ) -> ModelRunnerOutput | Future[ModelRunnerOutput]:
+        return self.collective_rpc(
+            "execute_model_and_sample_tokens",
+            args=(scheduler_output, grammar_output),
+            unique_reply_rank=self.output_rank,
+            non_block=non_block,
+            timeout=envs.VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS,
+            kv_output_aggregator=self.kv_output_aggregator,
+        )
+
     def execute_dummy_batch(self) -> None:
         self.collective_rpc("execute_dummy_batch", unique_reply_rank=self.output_rank)
 

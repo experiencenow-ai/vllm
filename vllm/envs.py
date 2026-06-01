@@ -132,6 +132,8 @@ if TYPE_CHECKING:
     VLLM_DS4_COHORT_ADMISSION: bool = False
     VLLM_DS4_COHORT_ADMISSION_MIN_PROMPTS: int = 2
     VLLM_DS4_COHORT_PAUSE_DURING_ADMISSION: bool = False
+    VLLM_DS4_SCHED_MAX_NEW_REQS_PER_STEP: int = 0
+    VLLM_DS4_FUSED_EXECUTE_SAMPLE: bool = False
     VLLM_DS4_PP_ONLY_GLOBAL_BACKEND: str = ""
     VLLM_DS4_PP_DISABLE_DEVICE_COMMUNICATOR: bool = False
     VLLM_DS4_SKIP_PYNCCL_WARMUP_ALLREDUCE: bool = False
@@ -1235,6 +1237,22 @@ environment_variables: dict[str, Callable[[], Any]] = {
         os.environ.get("VLLM_DS4_COHORT_PAUSE_DURING_ADMISSION", "0")
         .strip()
         .lower()
+        in ("1", "true", "yes", "on")
+    ),
+    # DS4 PP throughput mode: intentionally limit how many waiting requests
+    # are admitted in one scheduler iteration. A PP service needs multiple
+    # independently scheduled batches in flight to fill the pipe; admitting a
+    # giant prompt-array cohort into a single SchedulerOutput makes PP8 behave
+    # like one large batch walking through eight stages. 0 keeps upstream
+    # behavior. Values such as 32 or 64 create deterministic PP fill waves.
+    "VLLM_DS4_SCHED_MAX_NEW_REQS_PER_STEP": lambda: int(
+        os.environ.get("VLLM_DS4_SCHED_MAX_NEW_REQS_PER_STEP", "0")
+    ),
+    # DS4 PP sync scheduler fast path: fuse execute_model + sample_tokens into
+    # one worker RPC for simple generation batches. This removes one global
+    # worker-message broadcast per decode batch without changing model math.
+    "VLLM_DS4_FUSED_EXECUTE_SAMPLE": lambda: (
+        os.environ.get("VLLM_DS4_FUSED_EXECUTE_SAMPLE", "0").strip().lower()
         in ("1", "true", "yes", "on")
     ),
     "VLLM_DS4_PP_ONLY_GLOBAL_BACKEND": lambda: os.environ.get(
