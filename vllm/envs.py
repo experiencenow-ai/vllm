@@ -127,6 +127,7 @@ if TYPE_CHECKING:
     VLLM_DS4_PROFILE_DEBUG: bool = False
     VLLM_DS4_PROFILE_LAYER_TRACE: bool = False
     VLLM_DS4_PROFILE_RUN_MAX_TOKENS: int | None = None
+    VLLM_DS4_SKIP_EXPLICIT_KV_PROFILE_RUN: bool = False
     VLLM_DS4_PROFILE_WATCHDOG_SECONDS: int = 0
     VLLM_DS4_PROFILE_ABORT_SECONDS: int = 0
     VLLM_DS4_COHORT_ADMISSION: bool = False
@@ -1224,6 +1225,16 @@ environment_variables: dict[str, Callable[[], Any]] = {
         if os.environ.get("VLLM_DS4_PROFILE_RUN_MAX_TOKENS", "").strip()
         in ("", "0", "none", "None", "NONE", "auto", "AUTO")
         else int(os.environ["VLLM_DS4_PROFILE_RUN_MAX_TOKENS"])
+    ),
+    # DS4 services with explicit kv_cache_memory_bytes do not need a
+    # pre-KV-cache dummy forward for memory sizing. PP/TP shapes can make that
+    # profile-only forward issue unmatched pipeline sends, so production DS4
+    # launchers skip it and rely on the later normal warmup/capture path.
+    "VLLM_DS4_SKIP_EXPLICIT_KV_PROFILE_RUN": lambda: (
+        os.environ.get("VLLM_DS4_SKIP_EXPLICIT_KV_PROFILE_RUN", "0")
+        .strip()
+        .lower()
+        in ("1", "true", "yes", "on")
     ),
     # DS4 explicit-KV service startup still runs profile_run() to compile and
     # warm the model body, but the dummy sampler can force a large full-vocab
