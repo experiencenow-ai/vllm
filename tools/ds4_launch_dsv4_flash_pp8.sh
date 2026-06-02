@@ -100,7 +100,7 @@ case "$DS4_DSV4_PIPELINE_RAM_PROFILE" in
     exit 1
     ;;
 esac
-DEFAULT_COMPILATION_CONFIG="{\"cudagraph_mode\":\"FULL_AND_PIECEWISE\",\"custom_ops\":[\"all\"],\"cudagraph_capture_sizes\":[$DSV4_CUDAGRAPH_CAPTURE_SIZES],\"max_cudagraph_capture_size\":$DSV4_MAX_CUDAGRAPH_CAPTURE_SIZE}"
+DEFAULT_COMPILATION_CONFIG="{\"cudagraph_mode\":\"FULL_AND_PIECEWISE\",\"custom_ops\":[\"all\"],\"cudagraph_capture_sizes\":[$DSV4_CUDAGRAPH_CAPTURE_SIZES],\"max_cudagraph_capture_size\":$DSV4_MAX_CUDAGRAPH_CAPTURE_SIZE,\"cudagraph_copy_inputs\":true}"
 DSV4_COMPILATION_CONFIG="${DSV4_COMPILATION_CONFIG:-$DEFAULT_COMPILATION_CONFIG}"
 ASYNC_SCHEDULING_ARGS=(--no-async-scheduling)
 if [[ "${DSV4_ENABLE_ASYNC_SCHEDULING_EXPERIMENTAL:-0}" =~ ^(1|true|TRUE|yes|YES|on|ON)$ ]]; then

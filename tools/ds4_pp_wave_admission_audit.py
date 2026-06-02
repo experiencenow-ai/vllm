@@ -104,6 +104,10 @@ def main() -> int:
         and "self._zero_padded_input_token_lanes(" in runner
         and "if is_first_rank:" in runner,
     )
+    failures += check(
+        "DSV4 PP CUDA graphs copy dynamic inputs into static buffers",
+        '\\"cudagraph_copy_inputs\\":true' in dsv4,
+    )
     return 1 if failures else 0
 
 if __name__ == "__main__":
