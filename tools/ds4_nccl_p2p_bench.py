@@ -17,6 +17,7 @@ from collections.abc import Callable
 
 import torch
 import torch.distributed as dist
+from torch.distributed import ProcessGroup
 
 
 def _env(name: str, default: str = "") -> str:
@@ -26,6 +27,15 @@ def _env(name: str, default: str = "") -> str:
 def _bool_env(name: str, default: bool = False) -> bool:
     raw = _env(name, "1" if default else "0").lower()
     return raw in {"1", "true", "yes", "on"}
+
+
+def _verbose() -> bool:
+    return _bool_env("DS4_NCCL_P2P_BENCH_VERBOSE", False)
+
+
+def _phase(rank: int, text: str) -> None:
+    if _verbose():
+        print(f"DS4 NCCL P2P bench rank={rank} {text}", file=sys.stderr, flush=True)
 
 
 def _csv(name: str, default: str) -> list[str]:
@@ -263,18 +273,13 @@ def _bench_pair(
     methods: list[str],
     byte_sizes: list[int],
     dtype: torch.dtype,
+    control_group: ProcessGroup,
 ) -> None:
     active = rank in {src, dst}
+    _phase(rank, f"pair={src}-{dst} create gloo pair group")
     cpu_group = _make_pair_cpu_group(src, dst)
     communicators: dict[str, object] = {}
-    if active and "pynccl" in methods:
-        communicators["pynccl"] = _make_pynccl(cpu_group)
-    if active and "striped" in methods:
-        communicators["striped"] = _make_striped_channel(
-            cpu_group,
-            max(1, int(_env("DS4_NCCL_P2P_BENCH_STRIPES", "8"))),
-        )
-    dist.barrier()
+    dist.barrier(group=control_group)
     try:
         if not active:
             return
@@ -302,6 +307,9 @@ def _bench_pair(
                         bidirectional=bidirectional,
                     )
                 elif method == "pynccl":
+                    if "pynccl" not in communicators:
+                        _phase(rank, f"pair={src}-{dst} create pynccl communicator")
+                        communicators["pynccl"] = _make_pynccl(cpu_group)
                     exchange = lambda: _pynccl_exchange(
                         rank=rank,
                         src=src,
@@ -312,6 +320,12 @@ def _bench_pair(
                         communicator=communicators["pynccl"],
                     )
                 elif method == "striped":
+                    if "striped" not in communicators:
+                        _phase(rank, f"pair={src}-{dst} create striped communicator")
+                        communicators["striped"] = _make_striped_channel(
+                            cpu_group,
+                            max(1, int(_env("DS4_NCCL_P2P_BENCH_STRIPES", "8"))),
+                        )
                     exchange = lambda: _striped_exchange(
                         rank=rank,
                         src=src,
@@ -322,6 +336,7 @@ def _bench_pair(
                     )
                 else:
                     raise ValueError(f"unknown method {method!r}")
+                _phase(rank, f"pair={src}-{dst} method={method} bytes={actual_bytes} begin")
                 row = _measure(
                     method=method,
                     exchange=exchange,
@@ -337,12 +352,13 @@ def _bench_pair(
                 row["dtype"] = str(dtype).replace("torch.", "")
                 row["stripes"] = stripes
                 print(json.dumps(row, sort_keys=True), flush=True)
+                _phase(rank, f"pair={src}-{dst} method={method} bytes={actual_bytes} done")
     finally:
         for value in communicators.values():
             destroy = getattr(value, "destroy", None)
             if destroy is not None:
                 destroy()
-        dist.barrier()
+        dist.barrier(group=control_group)
 
 
 def main() -> int:
@@ -367,6 +383,7 @@ def main() -> int:
         timeout=dt.timedelta(seconds=timeout_s),
     )
     try:
+        control_group = dist.new_group(ranks=list(range(world_size)), backend="gloo")
         value = torch.tensor([rank + 1], dtype=torch.float32, device="cuda")
         dist.all_reduce(value)
         torch.cuda.synchronize()
@@ -377,8 +394,8 @@ def main() -> int:
         )
         dtype = _dtype()
         for src, dst in _parse_pairs(world_size):
-            _bench_pair(rank, src, dst, methods, byte_sizes, dtype)
-            dist.barrier()
+            _bench_pair(rank, src, dst, methods, byte_sizes, dtype, control_group)
+            dist.barrier(group=control_group)
         print(f"DS4 NCCL P2P bench passed rank={rank}", file=sys.stderr)
         return 0
     except Exception as exc:
