@@ -110,10 +110,18 @@ def main() -> int:
         '\\"cudagraph_copy_inputs\\":true' in dsv4,
     )
     failures += check(
-        "CUDA graph input copy buffers grow and force recapture for later larger symbolic shapes",
+        "CUDA graph input copying bypasses static buffers for non-graph prefill",
+        "def _use_cudagraph_static_inputs" in backends
+        and "get_forward_context().cudagraph_runtime_mode != CUDAGraphMode.NONE" in backends
+        and "return callable_fn(*args)" in backends,
+    )
+    failures += check(
+        "CUDA graph input copy buffers fail closed if serving exceeds captured static shapes",
         "static_buffer.shape[0] < runtime_shape" in backends
         and "static_buffer.shape[1:] != runtime_tensor.shape[1:]" in backends
         and "torch.empty_like(runtime_tensor)" in backends
+        and "is_cudagraph_capturing_enabled()" in backends
+        and "static buffer was exceeded after" in backends
         and "CUDAGraphWrapper.clear_all_graphs()" in backends,
     )
     return 1 if failures else 0
