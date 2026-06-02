@@ -339,7 +339,9 @@ checks = [
         "DSV4 PP8 launcher keeps bounded coexistence KV defaults",
         ': "${DSV4_KV_CACHE_MEMORY_BYTES:=4294967296}"' in dsv4_pp8
         and ': "${DSV4_KV_CACHE_MEMORY_BYTES:=12884901888}"' in dsv4_pp8
-        and 'KV_CACHE_MEMORY_ARGS=(--kv-cache-memory-bytes "$DSV4_KV_CACHE_MEMORY_BYTES")' in dsv4_pp8
+        and "DSV4_KV_CACHE_MEMORY_BYTES_EFFECTIVE" in dsv4_pp8
+        and "DSV4_SCALE_KV_CACHE_BY_LOCAL_LAYERS" in dsv4_pp8
+        and 'KV_CACHE_MEMORY_ARGS=(--kv-cache-memory-bytes "$DSV4_KV_CACHE_MEMORY_BYTES_EFFECTIVE")' in dsv4_pp8
         and '--max-num-batched-tokens "$DSV4_MAX_NUM_BATCHED_TOKENS"' in dsv4_pp8
         and '--gpu-memory-utilization "$DSV4_GPU_MEMORY_UTILIZATION"' in dsv4_pp8
         and "DSV4_ENABLE_MTP:-0" in dsv4_pp8
