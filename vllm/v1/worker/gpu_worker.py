@@ -230,8 +230,49 @@ class Worker(WorkerBase):
             raise ValueError(f"Unknown profiler type: {self.profiler_config.profiler}")
 
         self.use_v2_model_runner = vllm_config.use_v2_model_runner
-        # pending non-blocking PP send work from the previous iteration
-        self._pp_send_work: list[Handle] = []
+        # Pending non-blocking PP send batches. DS4 may keep a small bounded
+        # backlog so the next scheduler step can overlap receive/compute with
+        # the previous PP boundary transfer.
+        self._pp_send_work: list[list[Handle]] = []
+
+    def _drain_completed_pp_send_work(self) -> None:
+        if not self._pp_send_work:
+            return
+        pending: list[list[Handle]] = []
+        for handles in self._pp_send_work:
+            if all(handle.is_completed() for handle in handles):
+                for handle in handles:
+                    handle.wait()
+            else:
+                pending.append(handles)
+        self._pp_send_work = pending
+
+    def _wait_one_pp_send_work(self) -> float:
+        if not self._pp_send_work:
+            return 0.0
+        handles = self._pp_send_work.pop(0)
+        started = time.perf_counter()
+        for handle in handles:
+            handle.wait()
+        return (time.perf_counter() - started) * 1000
+
+    def _wait_for_pp_send_window(self, forward_pass: bool) -> float:
+        if not self._pp_send_work:
+            return 0.0
+        self._drain_completed_pp_send_work()
+        if not self._pp_send_work:
+            return 0.0
+        if not forward_pass:
+            wait_ms = 0.0
+            while self._pp_send_work:
+                wait_ms += self._wait_one_pp_send_work()
+            return wait_ms
+        max_backlog = max(1, envs.VLLM_DS4_PP_SEND_BACKLOG)
+        wait_ms = 0.0
+        while len(self._pp_send_work) >= max_backlog:
+            wait_ms += self._wait_one_pp_send_work()
+            self._drain_completed_pp_send_work()
+        return wait_ms
 
     def sleep(self, level: int = 1) -> None:
         from vllm.device_allocator.cumem import CuMemAllocator
@@ -1034,23 +1075,19 @@ class Worker(WorkerBase):
                 )
             _DS4_PP_EXECUTE_TIMING_INDEX = ds4_iter_idx + 1
 
-        # ensure any previous non-blocking PP sends are complete
-        if self._pp_send_work:
-            ds4_started = time.perf_counter() if ds4_timing_enabled else 0.0
-            for handle in self._pp_send_work:
-                handle.wait()
-            if ds4_timing_enabled:
-                ds4_prev_send_wait_ms = (
-                    time.perf_counter() - ds4_started
-                ) * 1000
-            self._pp_send_work = []
-
         intermediate_tensors = None
         forward_pass = scheduler_output.total_num_scheduled_tokens > 0
         num_scheduled_tokens = scheduler_output.total_num_scheduled_tokens
         all_gather_tensors = {}
         compilation_config = self.vllm_config.compilation_config
         parallel_config = self.vllm_config.parallel_config
+
+        # Keep PP send work bounded, but do not serialize every scheduler step
+        # on the previous boundary transfer. This preserves ordering while
+        # allowing receive/setup/compute for the next step to overlap with the
+        # prior send when the backlog has spare room.
+        if self._pp_send_work:
+            ds4_prev_send_wait_ms = self._wait_for_pp_send_window(forward_pass)
 
         if (
             parallel_config.pipeline_parallel_size > 1
@@ -1126,11 +1163,13 @@ class Worker(WorkerBase):
 
         # launch non-blocking send of intermediate tensors
         ds4_started = time.perf_counter() if ds4_timing_enabled else 0.0
-        self._pp_send_work = get_pp_group().isend_tensor_dict(
+        send_handles = get_pp_group().isend_tensor_dict(
             output.tensors,
             all_gather_group=get_tp_group(),
             all_gather_tensors=all_gather_tensors,
         )
+        if send_handles:
+            self._pp_send_work.append(send_handles)
         if ds4_timing_enabled:
             ds4_send_setup_ms = (time.perf_counter() - ds4_started) * 1000
         log_ds4_execute_timing()
