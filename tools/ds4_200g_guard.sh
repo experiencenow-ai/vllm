@@ -649,16 +649,62 @@ ds4_prepare_python_include_environment()
   fi
 }
 
+ds4_path_fragment()
+{
+  local value="${1:-unset}"
+  value="$(printf "%s" "$value" | tr -c 'A-Za-z0-9_.=-' '_' | sed -e 's/__*/_/g' -e 's/^_//' -e 's/_$//')"
+  if [[ -n "$value" ]]; then
+    printf "%s" "$value"
+  else
+    printf "unset"
+  fi
+}
+
+ds4_vllm_git_commit()
+{
+  local root="${1:-}"
+  if [[ -z "$root" ]]; then
+    root="${DS4_VLLM_SOURCE_ROOT:-${SOURCE_ROOT:-$PWD}}"
+  fi
+  if command -v git >/dev/null 2>&1 && [[ -d "$root/.git" ]]; then
+    git -C "$root" rev-parse --short=12 HEAD 2>/dev/null && return 0
+  fi
+  printf "unknown"
+}
+
+ds4_triton_cache_scope()
+{
+  local service_name="${1:-ds4}"
+  local commit profile partition model_len seqs batched_tokens graph_sizes graph_max arch mtp kv_bytes backend shape
+  commit="$(ds4_vllm_git_commit "${DS4_VLLM_SOURCE_ROOT:-${SOURCE_ROOT:-$PWD}}")"
+  profile="${DS4_DSV4_PIPELINE_RAM_PROFILE:-${DS4_QWEN_PIPELINE_RAM_PROFILE:-profile-unset}}"
+  partition="${DSV4_FLASH_PP_LAYER_PARTITION:-${QWEN27_PP_LAYER_PARTITION:-${VLLM_PP_LAYER_PARTITION:-partition-unset}}}"
+  model_len="${DSV4_MAX_MODEL_LEN:-${QWEN27_MAX_MODEL_LEN:-model-len-unset}}"
+  seqs="${DSV4_MAX_NUM_SEQS:-${QWEN27_MAX_NUM_SEQS:-seqs-unset}}"
+  batched_tokens="${DSV4_MAX_NUM_BATCHED_TOKENS:-${QWEN27_MAX_NUM_BATCHED_TOKENS:-batched-unset}}"
+  graph_sizes="${DSV4_CUDAGRAPH_CAPTURE_SIZES:-${QWEN27_CUDAGRAPH_CAPTURE_SIZES:-graphs-unset}}"
+  graph_max="${DSV4_MAX_CUDAGRAPH_CAPTURE_SIZE:-${QWEN27_MAX_CUDAGRAPH_CAPTURE_SIZE:-graphmax-unset}}"
+  arch="${TORCH_CUDA_ARCH_LIST:-arch-unset}"
+  mtp="${DSV4_MTP_MODE:-${QWEN27_NVFP4_MTP_MODE:-mtp-off}}"
+  kv_bytes="${DSV4_KV_CACHE_MEMORY_BYTES:-${QWEN27_KV_CACHE_MEMORY_BYTES:-kv-unset}}"
+  backend="${DSV4_MOE_BACKEND:-${DSV4_LINEAR_BACKEND:-backend-auto}}"
+  shape="svc-${service_name}_git-${commit}_prof-${profile}_part-${partition}_ml-${model_len}_seq-${seqs}_mbt-${batched_tokens}_cg-${graph_sizes}_cgmax-${graph_max}_kv-${kv_bytes}_mtp-${mtp}_arch-${arch}_backend-${backend}"
+  ds4_path_fragment "$shape"
+}
+
 ds4_prepare_triton_jit_environment()
 {
   local service_name="${1:-ds4}"
-  local default_work_root
+  local cache_scope default_work_base default_work_root
   local default_ipc_tmp
-  default_work_root="$HOME/ds4_triton/$service_name"
+  cache_scope="${DS4_TRITON_CACHE_SCOPE:-$(ds4_triton_cache_scope "$service_name")}"
+  default_work_base="$HOME/ds4_triton/$service_name"
+  default_work_root="$default_work_base/$cache_scope"
   default_ipc_tmp="/tmp/d4i/${MASTER_PORT:-0}_${NODE_RANK:-x}"
   local work_root="${DS4_TRITON_WORK_ROOT:-$default_work_root}"
   local ipc_tmp="${DS4_IPC_TMPDIR:-$default_ipc_tmp}"
   local cc cxx libcuda_path libcuda_dir libcudart_path libcudart_dir symlink_dir
+  export DS4_TRITON_CACHE_SCOPE="$cache_scope"
 
   cc="$(ds4_find_executable "${CC:-${DS4_CC:-}}" gcc cc || true)"
   [[ -n "$cc" ]] || ds4_200g_die "Triton JIT requires gcc/cc; set CC or DS4_CC"
@@ -717,7 +763,7 @@ ds4_prepare_triton_jit_environment()
     ds4_prepend_env_path LIBRARY_PATH "$symlink_dir"
   fi
 
-  echo "DS4 Triton JIT env: service=$service_name CC=$CC CXX=$CXX TRITON_CACHE_DIR=$TRITON_CACHE_DIR TRITON_LIBCUDA_PATH=$TRITON_LIBCUDA_PATH VLLM_CUDART_SO_PATH=$VLLM_CUDART_SO_PATH TMPDIR=$TMPDIR DS4_PYTHON_INCLUDE_DIRS=${DS4_PYTHON_INCLUDE_DIRS:-<unset>}" >&2
+  echo "DS4 Triton JIT env: service=$service_name cache_scope=$DS4_TRITON_CACHE_SCOPE work_root=$work_root CC=$CC CXX=$CXX TRITON_CACHE_DIR=$TRITON_CACHE_DIR TORCHINDUCTOR_CACHE_DIR=$TORCHINDUCTOR_CACHE_DIR VLLM_CACHE_ROOT=$VLLM_CACHE_ROOT TRITON_LIBCUDA_PATH=$TRITON_LIBCUDA_PATH VLLM_CUDART_SO_PATH=$VLLM_CUDART_SO_PATH TMPDIR=$TMPDIR DS4_PYTHON_INCLUDE_DIRS=${DS4_PYTHON_INCLUDE_DIRS:-<unset>}" >&2
 }
 
 ds4_prepare_flashinfer_jit_environment()
