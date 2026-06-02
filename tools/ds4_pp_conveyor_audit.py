@@ -100,6 +100,10 @@ def main() -> int:
             and 'VLLM_DS4_PP_SEND_BUFFER_SLOTS="${VLLM_DS4_PP_SEND_BUFFER_SLOTS:-4}"'
             in script
             and 'VLLM_DS4_PP_PYNCCL_P2P_CREDIT="${VLLM_DS4_PP_PYNCCL_P2P_CREDIT:-1}"'
+            in script
+            and 'VLLM_DS4_SKIP_PYNCCL_WARMUP_ALLREDUCE="${VLLM_DS4_SKIP_PYNCCL_WARMUP_ALLREDUCE:-0}"'
+            in script
+            and 'VLLM_DS4_PP_STRIPED_NCCL_TENSOR_DICT="${VLLM_DS4_PP_STRIPED_NCCL_TENSOR_DICT:-0}"'
             in script,
         )
     failures += check(

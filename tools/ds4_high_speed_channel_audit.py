@@ -67,7 +67,8 @@ for script in [
 ]:
     path = ROOT / script
     if path.exists():
-        require(script, "VLLM_DS4_PP_STRIPED_NCCL_TENSOR_DICT", f"{script} enables striped channel")
+        require(script, "VLLM_DS4_PP_STRIPED_NCCL_TENSOR_DICT", f"{script} exposes striped channel")
+        require(script, "VLLM_DS4_PP_STRIPED_NCCL_TENSOR_DICT:-0", f"{script} keeps independent striped channel opt-in")
         require(script, "VLLM_DS4_PP_PYNCCL_P2P_CREDIT", f"{script} enables PyNCCL P2P credit")
 
 for label in checks:
