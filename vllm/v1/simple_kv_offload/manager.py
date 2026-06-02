@@ -317,7 +317,9 @@ class SimpleCPUOffloadScheduler:
         cache_ref = _request_cache_ref(request)
         if not remaining_hashes:
             return tuple(), 0, cache_ref
-        max_hit_len = request.num_tokens - 1 - num_computed_tokens
+        # External KV loads may cover the full prompt. The scheduler will
+        # recompute the last prompt token after the load so logits are valid.
+        max_hit_len = request.num_tokens - num_computed_tokens
         if max_hit_len <= 0:
             return tuple(), 0, cache_ref
         self._seed_persistent_hits(remaining_hashes, max_hit_len, cache_ref)

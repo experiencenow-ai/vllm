@@ -426,8 +426,8 @@ def test_eager_store_and_load_roundtrip() -> None:
         block_hasher=req._block_hasher,
     )
     hit_tokens, is_async = sched.get_num_new_matched_tokens(req2, num_computed_tokens=0)
-    # make_request pads num_tokens by +1 beyond the last full block, so the
-    # manager's max_hit_len = num_tokens - 1 cap leaves all full blocks intact.
+    # make_request pads num_tokens by +1 beyond the last full block; all full
+    # blocks remain eligible for external KV hits.
     assert hit_tokens == num_blocks * BLOCK_SIZE
     assert is_async is True
 
@@ -538,14 +538,11 @@ def test_eager_store_flushes_final_blocks_on_finish() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Test 1b: Boundary — max_hit_len cap drops the last full block when the
-# prompt is an exact multiple of BLOCK_SIZE.
+# Test 1b: Boundary — exact block-aligned prompts can load every full block
+# from external KV.
 # ---------------------------------------------------------------------------
-def test_max_hit_len_cap_drops_last_full_block() -> None:
-    """When num_tokens is an exact multiple of BLOCK_SIZE, the manager's
-    ``max_hit_len = num_tokens - 1`` cap forces ``find_longest_cache_hit`` to
-    drop the final block (since ``max_length // block_size`` rounds down).
-    """
+def test_exact_block_prompt_can_load_full_external_prefix() -> None:
+    """Remote KV can cover the full prompt; scheduler recomputes final token."""
     fix = make_scheduler(num_cpu_blocks=8, num_gpu_blocks=16, lazy=False)
     sched = fix.scheduler
 
@@ -571,7 +568,7 @@ def test_max_hit_len_cap_drops_last_full_block() -> None:
         block_hasher=req._block_hasher,
     )
     hit_tokens, _ = sched.get_num_new_matched_tokens(req2, num_computed_tokens=0)
-    assert hit_tokens == (num_blocks - 1) * BLOCK_SIZE
+    assert hit_tokens == num_blocks * BLOCK_SIZE
 
 
 # ---------------------------------------------------------------------------
@@ -639,8 +636,8 @@ def test_lazy_store_and_load_roundtrip() -> None:
     hit_tokens, is_async = sched.get_num_new_matched_tokens(
         req_old2, num_computed_tokens=0
     )
-    # make_request pads num_tokens by +1 beyond the last full block, so the
-    # manager's max_hit_len = num_tokens - 1 cap leaves all full blocks intact.
+    # make_request pads num_tokens by +1 beyond the last full block; all full
+    # blocks remain eligible for external KV hits.
     expected_hit = num_blocks * BLOCK_SIZE
     assert hit_tokens == expected_hit, (
         f"Expected {expected_hit} hit tokens, got {hit_tokens}"
@@ -1330,8 +1327,8 @@ def test_partial_gpu_prefix_plus_cpu_load() -> None:
     hit_tokens, is_async = sched.get_num_new_matched_tokens(
         req2, num_computed_tokens=gpu_local_computed
     )
-    # CPU has all 6 blocks stored. make_request pads num_tokens by +1, so
-    # the manager's num_tokens - 1 cap leaves all full blocks intact:
+    # CPU has all 6 blocks stored. make_request pads num_tokens by +1, so all
+    # remaining full blocks are eligible:
     # remaining hashable range = 6 - 2 = 4 blocks, all hit.
     num_cpu_hit_blocks = 4
     assert hit_tokens == num_cpu_hit_blocks * BLOCK_SIZE, (
