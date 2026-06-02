@@ -7,7 +7,9 @@ ds4_200g_print_diag()
     echo "NODE_RANK: ${NODE_RANK:-<unset>}"
     echo "HEAD_ADDR: ${HEAD_ADDR:-<unset>}"
     echo "DS4_200G_IFNAME: ${DS4_200G_IFNAME:-<unset>}"
+    echo "DS4_200G_EFFECTIVE_IFNAME: ${DS4_200G_EFFECTIVE_IFNAME:-<unset>}"
     echo "DS4_200G_NCCL_IFNAME: ${DS4_200G_NCCL_IFNAME:-<unset>}"
+    echo "DS4_200G_EFFECTIVE_NCCL_IFNAME: ${DS4_200G_EFFECTIVE_NCCL_IFNAME:-<unset>}"
     echo "DS4_CONTROL_IFNAME: ${DS4_CONTROL_IFNAME:-<unset>}"
     echo "DS4_200G_ADVERTISE_LOOPBACK: ${DS4_200G_ADVERTISE_LOOPBACK:-<unset>}"
     echo "DS4_NODE_LOOPBACK: ${DS4_NODE_LOOPBACK:-<unset>}"
@@ -239,6 +241,7 @@ ds4_require_200g_fabric()
     echo "WARNING: effective DS4_200G_IFNAME=$usable_ifnames_csv after excluding degraded interfaces from '$ifnames_csv'" >&2
   fi
   ifnames_csv="$usable_ifnames_csv"
+  export DS4_200G_EFFECTIVE_IFNAME="$ifnames_csv"
   [[ -n "$local_ip" ]] || ds4_200g_die "selected interface list has no IPv4 fabric address"
   nccl_ifnames_csv="${DS4_200G_NCCL_IFNAME:-$ifnames_csv}"
   nccl_hcas_csv=""
@@ -268,6 +271,7 @@ ds4_require_200g_fabric()
     echo "WARNING: effective DS4_200G_NCCL_IFNAME=$usable_nccl_ifnames_csv after excluding degraded interfaces from '$nccl_ifnames_csv'" >&2
   fi
   nccl_ifnames_csv="$usable_nccl_ifnames_csv"
+  export DS4_200G_EFFECTIVE_NCCL_IFNAME="$nccl_ifnames_csv"
   [[ -n "$nccl_hcas_csv" ]] || ds4_200g_die "selected NCCL interface list has no RoCE HCA"
   control_ifname="${DS4_CONTROL_IFNAME:-$ifnames_csv}"
   IFS=',' read -r -a control_ifnames <<< "$control_ifname"
@@ -403,7 +407,7 @@ ds4_run_nccl_preflight()
   local preflight_port="${DS4_NCCL_PREFLIGHT_PORT:-$((MASTER_PORT + 1000))}"
   local mode="${DS4_NCCL_PREFLIGHT_MODE:-nccl}"
   local timeout_s="${DS4_NCCL_PREFLIGHT_TIMEOUT:-90}"
-  echo "DS4 200G NCCL preflight: rank=$NODE_RANK/$world_size addr=$HEAD_ADDR port=$preflight_port if=$DS4_200G_IFNAME nccl_if=${DS4_200G_NCCL_IFNAME:-$DS4_200G_IFNAME} transport=${DS4_200G_NCCL_TRANSPORT:-<unset>} hca=${NCCL_IB_HCA:-<unset>} host_ip=$VLLM_HOST_IP" >&2
+  echo "DS4 200G NCCL preflight: rank=$NODE_RANK/$world_size addr=$HEAD_ADDR port=$preflight_port configured_if=$DS4_200G_IFNAME effective_if=${DS4_200G_EFFECTIVE_IFNAME:-$DS4_200G_IFNAME} configured_nccl_if=${DS4_200G_NCCL_IFNAME:-<unset>} effective_nccl_if=${DS4_200G_EFFECTIVE_NCCL_IFNAME:-${DS4_200G_NCCL_IFNAME:-$DS4_200G_IFNAME}} transport=${DS4_200G_NCCL_TRANSPORT:-<unset>} hca=${NCCL_IB_HCA:-<unset>} host_ip=$VLLM_HOST_IP" >&2
   case "$mode" in
     gloo)
       if command -v timeout >/dev/null 2>&1; then

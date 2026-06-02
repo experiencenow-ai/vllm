@@ -78,6 +78,7 @@ check("200G guard pins IB HCA from NCCL IFNAME, not the full route list", 'ds4_2
 check("200G guard supports explicit degraded-link bringup without hiding it", "DS4_200G_ALLOW_DEGRADED_LINKS" in guard and "excluding it from the effective DS4 fabric list" in guard)
 check("200G guard uses configurable link-speed floor before measured TCP preflight", "DS4_200G_LINK_MIN_MBPS" in guard and "below DS4_200G_LINK_MIN_MBPS" in guard)
 check("200G guard prints effective fabric list after degraded filtering", "effective DS4_200G_IFNAME" in guard and "effective DS4_200G_NCCL_IFNAME" in guard)
+check("NCCL preflight banner prints configured and effective interface lists", "configured_if=$DS4_200G_IFNAME" in guard and "effective_if=${DS4_200G_EFFECTIVE_IFNAME" in guard and "effective_nccl_if=${DS4_200G_EFFECTIVE_NCCL_IFNAME" in guard)
 check("NCCL preflight prints NCCL interface override", '"DS4_200G_NCCL_IFNAME"' in preflight)
 check("NCCL preflight has P2P bandwidth mode", "def _run_p2p_nccl_preflight(" in preflight and "DS4_NCCL_PREFLIGHT_P2P_PAIRS" in preflight)
 check("NCCL preflight stripes P2P probes to match PP tensor transport", "DS4_NCCL_PREFLIGHT_P2P_STRIPES" in preflight and "_split_p2p_tensor" in preflight)
