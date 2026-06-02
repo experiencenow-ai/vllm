@@ -49,10 +49,12 @@ def main() -> int:
         and "ds4_new_reqs_scheduled_this_step += 1" in scheduler,
     )
     failures += check(
-        "DSV4 PP launcher defaults to bounded admission waves",
+        "DSV4 PP launcher uses large prefill waves for throughput profiles",
         'VLLM_DS4_COHORT_PAUSE_DURING_ADMISSION="${VLLM_DS4_COHORT_PAUSE_DURING_ADMISSION:-1}"' in dsv4
-        and 'DSV4_SCHED_MAX_NEW_REQS_PER_STEP:-32' in dsv4
-        and 'DSV4_SCHED_MAX_NEW_PREFILL_TOKENS_PER_STEP:-32768' in dsv4,
+        and 'DSV4_SCHED_MAX_NEW_REQS_PER_STEP:=128' in dsv4
+        and 'DSV4_SCHED_MAX_NEW_PREFILL_TOKENS_PER_STEP:=131072' in dsv4
+        and 'DSV4_SCHED_MAX_NEW_REQS_PER_STEP:=512' in dsv4
+        and 'DSV4_SCHED_MAX_NEW_PREFILL_TOKENS_PER_STEP:=262144' in dsv4,
     )
     failures += check(
         "DS4 fused execute+sample fast path is wired",
