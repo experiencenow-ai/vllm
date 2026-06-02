@@ -1187,9 +1187,7 @@ def test_project_kv_cache_groups_to_worker():
     projected = kv_cache_utils._project_kv_cache_groups_to_worker(
         global_groups, {"layer4": spec_a}
     )
-    assert len(projected) == 1
-    assert projected[0].layer_names == []
-    assert projected[0].kv_cache_spec is spec_a
+    assert len(projected) == 0
 
     uniform_spec = UniformTypeKVCacheSpecs(
         block_size=16,
@@ -1206,6 +1204,40 @@ def test_project_kv_cache_groups_to_worker():
     proj_spec = projected[0].kv_cache_spec
     assert isinstance(proj_spec, UniformTypeKVCacheSpecs)
     assert set(proj_spec.kv_cache_specs.keys()) == {"layer1", "layer3"}
+
+
+def test_uniform_group_allocator_skips_empty_page_buckets():
+    model_config = ModelConfig(max_model_len=512)
+    vllm_config = VllmConfig(model_config=model_config)
+    spec_a = new_kv_cache_spec(num_kv_heads=1)
+    spec_b = new_kv_cache_spec(num_kv_heads=2)
+    uniform_a = UniformTypeKVCacheSpecs(
+        block_size=spec_a.block_size,
+        kv_cache_specs={"layer1": spec_a, "layer2": spec_a},
+    )
+    uniform_b = UniformTypeKVCacheSpecs(
+        block_size=spec_b.block_size,
+        kv_cache_specs={"layer3": spec_b},
+    )
+    groups = [
+        KVCacheGroupSpec(["layer1", "layer2"], uniform_a),
+        KVCacheGroupSpec(["layer3"], uniform_b),
+    ]
+    num_blocks = 3
+    page_sizes = {spec_a.page_size_bytes, spec_b.page_size_bytes}
+    available_memory = sum(page_sizes) * 2 * num_blocks
+
+    config = kv_cache_utils.get_kv_cache_config_from_groups(
+        vllm_config, groups, available_memory
+    )
+
+    assert config.num_blocks == num_blocks
+    assert [tensor.shared_by for tensor in config.kv_cache_tensors] == [
+        ["layer1"],
+        ["layer3"],
+        ["layer2"],
+    ]
+    assert all(tensor.shared_by for tensor in config.kv_cache_tensors)
 
 
 def test_merge_kv_cache_spec():
