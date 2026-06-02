@@ -919,9 +919,15 @@ def _pool_bytes_per_block(kv_cache_groups: list[KVCacheGroupSpec]) -> int:
     if all(
         isinstance(g.kv_cache_spec, UniformTypeKVCacheSpecs) for g in kv_cache_groups
     ):
-        # DeepseekV4: shared layout sized by the largest per-page-size bucket.
-        full_mla_spec = cast(UniformTypeKVCacheSpecs, kv_cache_groups[0].kv_cache_spec)
-        layer_tuple_page_bytes = sum(full_mla_spec.get_page_sizes())
+        # DeepseekV4: shared layout sized by the worker-local page-size buckets.
+        # In PP, a worker may own only SWA/cache-compressor layers, so the first
+        # projected group is not guaranteed to be the global full-MLA group.
+        page_sizes = {
+            ps
+            for group in kv_cache_groups
+            for ps in cast(UniformTypeKVCacheSpecs, group.kv_cache_spec).get_page_sizes()
+        }
+        layer_tuple_page_bytes = sum(page_sizes)
         num_layer_tuples = max(
             cast(UniformTypeKVCacheSpecs, g.kv_cache_spec).get_num_layer_tuples()
             for g in kv_cache_groups
@@ -1183,19 +1189,23 @@ def _get_kv_cache_config_deepseek_v4(
 ) -> tuple[int, list[KVCacheTensor]]:
     """DeepseekV4 KV cache tensor layout planning.
 
-    Precondition: kv_cache_groups[0] is the full-MLA group; its page sizes
-    define the canonical bucket set. Non-full-MLA groups must have been
-    page_size-padded upstream (see _get_kv_cache_groups_uniform_groups) so
-    every layer's page_size matches one of the full-MLA bucket sizes.
-
     For each group, bucket its layers by page_size_bytes and place each
     layer at tuple_idx = position-within-bucket. Emit one KVCacheTensor
     per (tuple_idx, bucket) whose shared_by is the union of per-group
     layers at that slot.
+
+    In PP, projection can leave a worker with only a subset of the global
+    groups. Use the worker-local union of page-size buckets rather than
+    assuming group 0 is the global full-MLA group.
     """
-    full_mla_spec = kv_cache_groups[0].kv_cache_spec
-    assert isinstance(full_mla_spec, UniformTypeKVCacheSpecs)
-    page_sizes = sorted(full_mla_spec.get_page_sizes())
+    assert kv_cache_groups
+    page_sizes = sorted(
+        {
+            ps
+            for group in kv_cache_groups
+            for ps in cast(UniformTypeKVCacheSpecs, group.kv_cache_spec).get_page_sizes()
+        }
+    )
     layer_tuple_page_bytes = sum(page_sizes)
 
     # Pre-bucket each group's layers by page_size (registration order within
@@ -1226,9 +1236,10 @@ def _get_kv_cache_config_deepseek_v4(
                 bucket = b.get(ps)
                 if bucket is not None and tuple_idx < len(bucket):
                     shared_by.append(bucket[tuple_idx])
-            kv_cache_tensors.append(
-                KVCacheTensor(size=ps * num_blocks, shared_by=shared_by)
-            )
+            if shared_by:
+                kv_cache_tensors.append(
+                    KVCacheTensor(size=ps * num_blocks, shared_by=shared_by)
+                )
 
     return num_blocks, kv_cache_tensors
 
@@ -1923,6 +1934,8 @@ def _project_kv_cache_groups_to_worker(
         worker_layer_names = [
             layer_name for layer_name in group.layer_names if layer_name in worker_spec
         ]
+        if not worker_layer_names:
+            continue
         group_spec = group.kv_cache_spec
         if worker_layer_names and isinstance(group_spec, UniformTypeKVCacheSpecs):
             group_spec = UniformTypeKVCacheSpecs(

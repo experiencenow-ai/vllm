@@ -7014,8 +7014,12 @@ class GPUModelRunner(
                 if layer_name in self.runner_only_attn_layers:
                     continue
                 layer_names.add(layer_name)
-        assert layer_names == set(kv_cache_raw_tensors.keys()), (
-            "Some layers are not correctly initialized"
+        tensor_layer_names = set(kv_cache_raw_tensors.keys())
+        missing_layer_names = sorted(layer_names - tensor_layer_names)
+        extra_layer_names = sorted(tensor_layer_names - layer_names)
+        assert not missing_layer_names and not extra_layer_names, (
+            "Some layers are not correctly initialized: "
+            f"missing={missing_layer_names}, extra={extra_layer_names}"
         )
         return kv_cache_raw_tensors
 

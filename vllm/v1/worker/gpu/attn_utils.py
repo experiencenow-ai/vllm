@@ -173,8 +173,12 @@ def _allocate_kv_cache(
     for group in kv_cache_config.kv_cache_groups:
         for layer_name in group.layer_names:
             layer_names.add(layer_name)
-    assert layer_names == (kv_cache_raw_tensors.keys() | shared_layers.keys()), (
-        "Some layers are not correctly initialized"
+    tensor_layer_names = set(kv_cache_raw_tensors.keys()) | shared_layers.keys()
+    missing_layer_names = sorted(layer_names - tensor_layer_names)
+    extra_layer_names = sorted(tensor_layer_names - layer_names)
+    assert not missing_layer_names and not extra_layer_names, (
+        "Some layers are not correctly initialized: "
+        f"missing={missing_layer_names}, extra={extra_layer_names}"
     )
     return kv_cache_raw_tensors
 
