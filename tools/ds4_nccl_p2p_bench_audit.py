@@ -31,3 +31,4 @@ check("benchmark supports adjacent pair selection", "DS4_NCCL_P2P_BENCH_PAIRS" i
 check("runner launches all ranks over ssh", "subprocess.Popen([\"ssh\", node, command]" in runner)
 check("runner can stop a service before isolated testing", "--stop-service" in runner and "ds4_stop_spark_processes.py" in runner)
 check("runner can pull/build before testing", "--pull" in runner and "--build" in runner)
+check("runner supports per-rank interface lists", "--nccl-ifnames" in runner and "--gloo-ifnames" in runner and "_rank_value" in runner)
