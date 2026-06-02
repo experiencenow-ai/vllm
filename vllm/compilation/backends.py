@@ -23,6 +23,7 @@ from torch._logging._internal import trace_structured
 from torch.fx._lazy_graph_module import _use_lazy_graph_module
 
 import vllm.envs as envs
+from vllm.compilation.monitor import is_cudagraph_capturing_enabled
 from vllm.compilation.codegen import (
     compile_execution_fn,
     generate_execution_code,
@@ -30,6 +31,7 @@ from vllm.compilation.codegen import (
 from vllm.config import CompilationConfig, CUDAGraphMode, VllmConfig
 from vllm.config.compilation import DynamicShapesType
 from vllm.config.utils import Range, hash_factors
+from vllm.forward_context import get_forward_context, is_forward_context_available
 from vllm.logger import init_logger
 from vllm.logging_utils import lazy
 from vllm.platforms import current_platform
@@ -75,7 +77,15 @@ def make_copy_and_call(
         A wrapper function that copies inputs and calls the compiled function
     """
 
+    def _use_cudagraph_static_inputs() -> bool:
+        if not is_forward_context_available():
+            return True
+        return get_forward_context().cudagraph_runtime_mode != CUDAGraphMode.NONE
+
     def copy_and_call(*args: Any) -> Any:
+        if not _use_cudagraph_static_inputs():
+            return callable_fn(*args)
+
         list_args = list(args)
         recapture_cudagraphs = False
         for i, index in enumerate(sym_tensor_indices):
@@ -90,6 +100,16 @@ def make_copy_and_call(
                 or static_buffer.dtype != runtime_tensor.dtype
                 or static_buffer.device != runtime_tensor.device
             ):
+                if not is_cudagraph_capturing_enabled():
+                    raise RuntimeError(
+                        "cudagraph_copy_inputs static buffer was exceeded after "
+                        "CUDA graph capture was sealed. This would invalidate "
+                        "captured input addresses; run the request shape without "
+                        "CUDA graphs or include it in startup capture/warmup. "
+                        f"index={index} static_shape="
+                        f"{None if static_buffer is None else tuple(static_buffer.shape)} "
+                        f"runtime_shape={tuple(runtime_tensor.shape)}"
+                    )
                 input_buffers[i] = torch.empty_like(runtime_tensor)
                 static_buffer = input_buffers[i]
                 recapture_cudagraphs = True

@@ -99,6 +99,10 @@ def validate_cudagraph_capturing_enabled() -> None:
         )
 
 
+def is_cudagraph_capturing_enabled() -> bool:
+    return cudagraph_capturing_enabled
+
+
 def set_cudagraph_capturing_enabled(enabled: bool) -> None:
     global cudagraph_capturing_enabled
     cudagraph_capturing_enabled = enabled
