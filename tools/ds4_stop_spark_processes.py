@@ -41,6 +41,8 @@ SERVICE_PATTERNS = {
     "benchmarks": [
         r"\bds4_api_queue_benchmark\.py\b",
         r"\bds4_queue_saturation\.py\b",
+        r"\bds4_nccl_p2p_bench\.py\b",
+        r"\bds4_run_nccl_p2p_bench\.py\b",
     ],
     "coordinator": [
         r"\bpython[0-9.]* -m ds4_infer\.api\b",

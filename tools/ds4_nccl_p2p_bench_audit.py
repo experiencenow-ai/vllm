@@ -28,6 +28,8 @@ check("benchmark compares single PyNCCL P2P", "method == \"pynccl\"" in bench an
 check("benchmark compares striped PyNCCL P2P", "method == \"striped\"" in bench and "Ds4StripedNcclTensorChannel" in bench)
 check("benchmark emits JSON rows", "json.dumps(row, sort_keys=True)" in bench)
 check("benchmark supports adjacent pair selection", "DS4_NCCL_P2P_BENCH_PAIRS" in bench)
+check("benchmark uses Gloo control barriers", "control_group" in bench and "dist.barrier(group=control_group)" in bench)
+check("benchmark creates PyNCCL lazily", "create pynccl communicator" in bench and "create striped communicator" in bench)
 check("runner launches all ranks over ssh", "subprocess.Popen([\"ssh\", node, command]" in runner)
 check("runner can stop a service before isolated testing", "--stop-service" in runner and "ds4_stop_spark_processes.py" in runner)
 check("runner can pull/build before testing", "--pull" in runner and "--build" in runner)
