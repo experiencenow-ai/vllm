@@ -106,6 +106,13 @@ def main() -> int:
         and "if is_first_rank:" in runner,
     )
     failures += check(
+        "input prep event protects reused CPU buffers for sync and async scheduling",
+        "self.prepare_inputs_event: torch.Event | None = torch.Event()" in runner
+        and "This is required whenever CPU->GPU transfer happens async." in runner
+        and "if self.use_async_scheduling:" in runner
+        and "self.async_output_copy_stream = torch.cuda.Stream()" in runner,
+    )
+    failures += check(
         "DSV4 PP CUDA graphs copy dynamic inputs into static buffers",
         '\\"cudagraph_copy_inputs\\":true' in dsv4,
     )
