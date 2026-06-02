@@ -54,8 +54,17 @@ def main() -> int:
         "DSV4 PP launcher uses conveyor-shaped request waves for throughput profiles",
         'VLLM_DS4_COHORT_PAUSE_DURING_ADMISSION="${VLLM_DS4_COHORT_PAUSE_DURING_ADMISSION:-1}"' in dsv4
         and 'DSV4_SCHED_MAX_NEW_REQS_PER_STEP:=64' in dsv4
-        and 'DSV4_SCHED_MAX_NEW_PREFILL_TOKENS_PER_STEP:=131072' in dsv4
-        and 'DSV4_SCHED_MAX_NEW_PREFILL_TOKENS_PER_STEP:=262144' in dsv4,
+        and 'DSV4_SCHED_MAX_NEW_PREFILL_TOKENS_PER_STEP:=65536' in dsv4,
+    )
+    failures += check(
+        "DSV4 PP launcher redlines mixed cold-prefill KV admission",
+        "VLLM_DS4_SCHED_KV_ADMISSION_MAX_USAGE" in envs
+        and "VLLM_DS4_SCHED_KV_HARD_FAIL_USAGE" in envs
+        and "new_cold_prefill_admission" in scheduler
+        and "post_allocate_slots" in scheduler
+        and 'DSV4_SCHED_KV_ADMISSION_MAX_USAGE:=0.82' in dsv4
+        and 'DSV4_SCHED_KV_HARD_FAIL_USAGE:=0.97' in dsv4
+        and "sched_kv_admission_max_usage=" in dsv4,
     )
     failures += check(
         "DS4 fused execute+sample fast path is wired",

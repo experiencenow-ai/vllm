@@ -246,6 +246,7 @@ class Scheduler(SchedulerInterface):
         self.scheduler_reserve_full_isl = (
             self.scheduler_config.scheduler_reserve_full_isl
         )
+        self.ds4_kv_pressure_last_log_time = 0.0
 
         self.has_mamba_layers = kv_cache_config.has_mamba_layers
         self.needs_kv_cache_zeroing = kv_cache_config.needs_kv_cache_zeroing
@@ -276,6 +277,40 @@ class Scheduler(SchedulerInterface):
             self._re_block_ids: dict[str, list[int]] = {}
 
         self._pause_state: PauseState = PauseState.UNPAUSED
+
+    def _ds4_check_kv_pressure(self, reason: str) -> bool:
+        if not self.use_pp:
+            return True
+        usage = self.kv_cache_manager.usage
+        hard_fail_usage = envs.VLLM_DS4_SCHED_KV_HARD_FAIL_USAGE
+        if hard_fail_usage > 0 and usage >= hard_fail_usage:
+            raise RuntimeError(
+                "DS4 PP KV cache hard-fail redline reached "
+                f"at {reason}: usage={usage:.4f}, "
+                f"hard_fail={hard_fail_usage:.4f}, "
+                f"running={len(self.running)}, waiting={len(self.waiting)}, "
+                f"skipped_waiting={len(self.skipped_waiting)}. "
+                "Admission control failed to keep the service below the "
+                "configured CUDA danger zone."
+            )
+        max_usage = envs.VLLM_DS4_SCHED_KV_ADMISSION_MAX_USAGE
+        if max_usage <= 0 or usage < max_usage:
+            return True
+        now = time.monotonic()
+        log_interval = max(0.0, envs.VLLM_DS4_SCHED_KV_PRESSURE_LOG_INTERVAL_S)
+        if now - self.ds4_kv_pressure_last_log_time >= log_interval:
+            self.ds4_kv_pressure_last_log_time = now
+            logger.warning(
+                "DS4 PP KV admission redline: reason=%s usage=%.4f "
+                "limit=%.4f running=%d waiting=%d skipped_waiting=%d",
+                reason,
+                usage,
+                max_usage,
+                len(self.running),
+                len(self.waiting),
+                len(self.skipped_waiting),
+            )
+        return False
 
     def _mamba_block_aligned_split(
         self,
@@ -358,6 +393,7 @@ class Scheduler(SchedulerInterface):
         scheduled_timestamp = time.monotonic()
 
         self.kv_cache_manager.new_step_starts()
+        self._ds4_check_kv_pressure("schedule_start")
 
         # First, schedule the RUNNING requests.
         req_index = 0
@@ -707,6 +743,16 @@ class Scheduler(SchedulerInterface):
 
                     num_new_tokens = min(num_new_tokens, token_budget)
                     assert num_new_tokens > 0
+                    remaining_prompt_tokens = max(
+                        0, request.num_prompt_tokens - num_computed_tokens
+                    )
+                    if (
+                        remaining_prompt_tokens > 0
+                        and not self._ds4_check_kv_pressure(
+                            "new_cold_prefill_admission"
+                        )
+                    ):
+                        break
 
                     # Schedule encoder inputs.
                     if request.has_encoder_inputs:
@@ -778,6 +824,7 @@ class Scheduler(SchedulerInterface):
                     if request.has_encoder_inputs:
                         self.encoder_cache_manager.free(request)
                     break
+                self._ds4_check_kv_pressure("post_allocate_slots")
 
                 # KVTransfer: the connector uses this info to determine
                 # if a load is needed. Note that

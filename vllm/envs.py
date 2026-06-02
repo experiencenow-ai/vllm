@@ -137,6 +137,9 @@ if TYPE_CHECKING:
     VLLM_DS4_COHORT_PAUSE_DURING_ADMISSION: bool = False
     VLLM_DS4_SCHED_MAX_NEW_REQS_PER_STEP: int = 0
     VLLM_DS4_SCHED_MAX_NEW_PREFILL_TOKENS_PER_STEP: int = 0
+    VLLM_DS4_SCHED_KV_ADMISSION_MAX_USAGE: float = 0.0
+    VLLM_DS4_SCHED_KV_HARD_FAIL_USAGE: float = 0.0
+    VLLM_DS4_SCHED_KV_PRESSURE_LOG_INTERVAL_S: float = 5.0
     VLLM_DS4_FUSED_EXECUTE_SAMPLE: bool = False
     VLLM_DS4_FINAL_ONLY_NONSTREAMING: bool = False
     VLLM_DS4_ITERATION_TIMING: bool = False
@@ -1318,6 +1321,22 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # one giant prompt slab that serializes across PP stages.
     "VLLM_DS4_SCHED_MAX_NEW_PREFILL_TOKENS_PER_STEP": lambda: int(
         os.environ.get("VLLM_DS4_SCHED_MAX_NEW_PREFILL_TOKENS_PER_STEP", "0")
+    ),
+    # DS4 PP admission redline. When set, new cold-prefill requests are not
+    # admitted once live KV block usage crosses this ratio. Cached-prefix and
+    # decode work may still proceed. This protects high-concurrency mixed
+    # context runs from entering CUDA with an effectively full KV pool.
+    "VLLM_DS4_SCHED_KV_ADMISSION_MAX_USAGE": lambda: float(
+        os.environ.get("VLLM_DS4_SCHED_KV_ADMISSION_MAX_USAGE", "0")
+    ),
+    # Optional fail-closed diagnostic redline. This should never trip in a
+    # healthy config; if it does, crash with context before CUDA reports an
+    # async illegal memory access.
+    "VLLM_DS4_SCHED_KV_HARD_FAIL_USAGE": lambda: float(
+        os.environ.get("VLLM_DS4_SCHED_KV_HARD_FAIL_USAGE", "0")
+    ),
+    "VLLM_DS4_SCHED_KV_PRESSURE_LOG_INTERVAL_S": lambda: float(
+        os.environ.get("VLLM_DS4_SCHED_KV_PRESSURE_LOG_INTERVAL_S", "5")
     ),
     # DS4 PP sync scheduler fast path: fuse execute_model + sample_tokens into
     # one worker RPC for simple generation batches. This removes one global
