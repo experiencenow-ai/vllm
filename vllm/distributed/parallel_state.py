@@ -643,7 +643,10 @@ class GroupCoordinator:
         )
 
     def _can_use_ds4_pynccl_tensor_dict(self) -> bool:
-        if not envs.VLLM_DS4_PP_PYNCCL_TENSOR_DICT:
+        if (
+            not envs.VLLM_DS4_PP_PYNCCL_TENSOR_DICT
+            and not envs.VLLM_DS4_PP_DIRECT_CUDA_TENSOR_DICT
+        ):
             return False
         if "pp" not in self.unique_name:
             return False
@@ -1374,11 +1377,10 @@ class GroupCoordinator:
             cuda_p2p_tensors,
             dst,
             torch.distributed.isend,
-            # PP sends must be globally complete before the worker starts
-            # scheduling another step. A stream-only wait lets the model stream
-            # outrun NCCL P2P matching and can wedge the pipeline after the
-            # first cohort.
-            synchronize_on_wait=True,
+            # DS4 conveyor mode sends from owned CUDA comm buffers, so the
+            # worker can wait on the comm-stream event before reusing a slot
+            # without globally synchronizing the device at every PP boundary.
+            synchronize_on_wait=not envs.VLLM_DS4_PP_OVERLAP_SEND,
         )
         if cuda_handle is not None:
             handles.append(cuda_handle)

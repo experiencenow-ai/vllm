@@ -7,12 +7,18 @@ from pathlib import Path
 root = Path(__file__).resolve().parents[1]
 tilelang = (root / "vllm/model_executor/kernels/mhc/tilelang.py").read_text()
 dsv4_pp8 = (root / "tools/ds4_launch_dsv4_flash_pp8.sh").read_text()
+envs = (root / "vllm/envs.py").read_text()
 
 checks = [
     (
         "mHC TileLang max-token env is parsed",
         "VLLM_DS4_MHC_TILELANG_MAX_TOKENS" in tilelang
         and "def _ds4_mhc_tilelang_max_tokens() -> int:" in tilelang,
+    ),
+    (
+        "mHC TileLang max-token env is registered with 8K default",
+        "VLLM_DS4_MHC_TILELANG_MAX_TOKENS: int = 8192" in envs
+        and 'os.environ.get("VLLM_DS4_MHC_TILELANG_MAX_TOKENS", "8192")' in envs,
     ),
     (
         "mHC pre path chunks large token slabs",
@@ -27,7 +33,7 @@ checks = [
     ),
     (
         "DSV4 PP launcher sets chunk default",
-        'export VLLM_DS4_MHC_TILELANG_MAX_TOKENS="${VLLM_DS4_MHC_TILELANG_MAX_TOKENS:-65536}"'
+        'export VLLM_DS4_MHC_TILELANG_MAX_TOKENS="${VLLM_DS4_MHC_TILELANG_MAX_TOKENS:-8192}"'
         in dsv4_pp8,
     ),
     (
