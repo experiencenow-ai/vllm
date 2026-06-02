@@ -278,7 +278,7 @@ def make_scheduler_output(
 def simulate_store_completion(
     scheduler: SimpleCPUOffloadScheduler,
     event_idx: int,
-) -> None:
+) -> KVConnectorOutput:
     """Simulate worker reporting a store event completion."""
     output = KVConnectorOutput(
         finished_recving=set(),
@@ -287,6 +287,7 @@ def simulate_store_completion(
         ),
     )
     scheduler.update_connector_output(output)
+    return output
 
 
 def simulate_load_completion(
@@ -500,6 +501,40 @@ def test_reset_cache_releases_in_flight_store_refs() -> None:
     assert sched.reset_cache() is True
     assert sched._store_event_to_blocks == {}
     assert sched._in_flight_store_gpu_blocks == set()
+
+
+def test_eager_store_flushes_final_blocks_on_finish() -> None:
+    fix = make_scheduler(num_cpu_blocks=8, num_gpu_blocks=16, lazy=False)
+    sched = fix.scheduler
+
+    num_blocks = 2
+    req = make_request(num_blocks=num_blocks, extra_tokens=0)
+    kv_blocks = _alloc_and_register(fix, req, num_blocks)
+    sched.update_state_after_alloc(req, kv_blocks, num_external_tokens=0)
+
+    delay_free, params = sched.request_finished_all_groups(
+        req, kv_blocks.get_block_ids()
+    )
+    assert delay_free is True
+    assert params is None
+    assert req.request_id in sched._reqs_to_store
+    assert sched._reqs_to_store[req.request_id].finished is True
+
+    meta = sched.build_connector_meta(make_scheduler_output({}))
+    assert meta.store_event >= 0
+    assert len(meta.store_gpu_blocks) == num_blocks
+    assert len(meta.store_cpu_blocks) == num_blocks
+    assert len(meta.store_block_hashes) == num_blocks
+    output = simulate_store_completion(sched, meta.store_event)
+    assert output.finished_sending == {req.request_id}
+    assert req.request_id not in sched._reqs_to_store
+
+    for bhash in req.block_hashes[:num_blocks]:
+        bhash_with_group = make_block_hash_with_group_id(bhash, 0)
+        cached = sched.cpu_block_pool.cached_block_hash_to_block.get_one_block(
+            bhash_with_group
+        )
+        assert cached is not None
 
 
 # ---------------------------------------------------------------------------
