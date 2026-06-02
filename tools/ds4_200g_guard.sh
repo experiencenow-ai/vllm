@@ -92,13 +92,37 @@ ds4_200g_require_link_200g()
 {
   local ifname="$1"
   local role="$2"
-  local speed carrier
+  local speed carrier min_mbps allow_degraded
+  min_mbps="${DS4_200G_LINK_MIN_MBPS:-200000}"
+  allow_degraded="${DS4_200G_ALLOW_DEGRADED_LINKS:-0}"
   [[ -d "/sys/class/net/$ifname" ]] || ds4_200g_die "$role interface '$ifname' does not exist"
-  [[ -r "/sys/class/net/$ifname/speed" ]] || ds4_200g_die "$role interface '$ifname' does not expose link speed"
+  if [[ ! -r "/sys/class/net/$ifname/speed" ]]; then
+    if [[ "$allow_degraded" =~ ^(1|true|TRUE|yes|YES|on|ON)$ ]]; then
+      echo "WARNING: $role interface '$ifname' does not expose link speed; excluding it from the effective DS4 fabric list" >&2
+      return 1
+    fi
+    ds4_200g_die "$role interface '$ifname' does not expose link speed"
+  fi
   speed="$(cat "/sys/class/net/$ifname/speed" 2>/dev/null || true)"
-  [[ "$speed" == "200000" ]] || ds4_200g_die "$role interface '$ifname' speed is ${speed:-unknown}Mb/s, expected 200000Mb/s"
   carrier="$(cat "/sys/class/net/$ifname/carrier" 2>/dev/null || true)"
-  [[ "$carrier" == "1" ]] || ds4_200g_die "$role interface '$ifname' carrier is ${carrier:-unknown}, expected 1"
+  if [[ ! "$speed" =~ ^[0-9]+$ || "$carrier" != "1" ]]; then
+    if [[ "$allow_degraded" =~ ^(1|true|TRUE|yes|YES|on|ON)$ ]]; then
+      echo "WARNING: $role interface '$ifname' speed=${speed:-unknown}Mb/s carrier=${carrier:-unknown}; excluding it from the effective DS4 fabric list" >&2
+      return 1
+    fi
+    ds4_200g_die "$role interface '$ifname' speed is ${speed:-unknown}Mb/s and carrier is ${carrier:-unknown}; expected 200000Mb/s carrier 1"
+  fi
+  if (( speed < min_mbps )); then
+    if [[ "$allow_degraded" =~ ^(1|true|TRUE|yes|YES|on|ON)$ ]]; then
+      echo "WARNING: $role interface '$ifname' speed=${speed}Mb/s below DS4_200G_LINK_MIN_MBPS=$min_mbps; excluding it from the effective DS4 fabric list" >&2
+      return 1
+    fi
+    ds4_200g_die "$role interface '$ifname' speed is ${speed}Mb/s, expected at least ${min_mbps}Mb/s"
+  fi
+  if [[ "$speed" != "200000" ]]; then
+    echo "WARNING: $role interface '$ifname' speed=${speed}Mb/s, below the preferred 200000Mb/s rail speed; measured rail preflight must still pass" >&2
+  fi
+  return 0
 }
 
 ds4_200g_check_or_export()
@@ -178,7 +202,7 @@ ds4_require_routed_loopback_over_200g()
 
 ds4_require_200g_fabric()
 {
-  local ifname ifnames_csv control_ifname socket_ifname speed carrier local_ip bound_dev route_dev hca hcas_csv advertise_ip advertise_bound nccl_transport nccl_ifname nccl_ifnames_csv nccl_hcas_csv
+  local ifname ifnames_csv usable_ifnames_csv control_ifname socket_ifname speed carrier local_ip bound_dev route_dev hca hcas_csv advertise_ip advertise_bound nccl_transport nccl_ifname nccl_ifnames_csv usable_nccl_ifnames_csv nccl_hcas_csv
   : "${NODE_RANK:?set NODE_RANK before ds4_require_200g_fabric}"
   : "${HEAD_ADDR:?set HEAD_ADDR before ds4_require_200g_fabric}"
   if [[ -z "${DS4_200G_IFNAME:-}" ]]; then
@@ -186,11 +210,19 @@ ds4_require_200g_fabric()
   fi
   ifnames_csv="$DS4_200G_IFNAME"
   hcas_csv=""
+  usable_ifnames_csv=""
   local_ip=""
   IFS=',' read -r -a ifnames <<< "$ifnames_csv"
   for ifname in "${ifnames[@]}"; do
     [[ -n "$ifname" ]] || ds4_200g_die "DS4_200G_IFNAME contains an empty interface"
-    ds4_200g_require_link_200g "$ifname" "200G fabric"
+    if ! ds4_200g_require_link_200g "$ifname" "200G fabric"; then
+      continue
+    fi
+    if [[ -n "$usable_ifnames_csv" ]]; then
+      usable_ifnames_csv="$usable_ifnames_csv,$ifname"
+    else
+      usable_ifnames_csv="$ifname"
+    fi
     if [[ -z "$local_ip" ]]; then
       local_ip="$(ds4_200g_if_ip "$ifname")"
     fi
@@ -202,14 +234,27 @@ ds4_require_200g_fabric()
       hcas_csv="$hca"
     fi
   done
+  [[ -n "$usable_ifnames_csv" ]] || ds4_200g_die "no usable DS4 fabric interfaces remain after link-speed/carrier filtering; original DS4_200G_IFNAME='$DS4_200G_IFNAME'"
+  if [[ "$usable_ifnames_csv" != "$ifnames_csv" ]]; then
+    echo "WARNING: effective DS4_200G_IFNAME=$usable_ifnames_csv after excluding degraded interfaces from '$ifnames_csv'" >&2
+  fi
+  ifnames_csv="$usable_ifnames_csv"
   [[ -n "$local_ip" ]] || ds4_200g_die "selected interface list has no IPv4 fabric address"
   nccl_ifnames_csv="${DS4_200G_NCCL_IFNAME:-$ifnames_csv}"
   nccl_hcas_csv=""
+  usable_nccl_ifnames_csv=""
   IFS=',' read -r -a nccl_ifnames <<< "$nccl_ifnames_csv"
   for nccl_ifname in "${nccl_ifnames[@]}"; do
     [[ -n "$nccl_ifname" ]] || ds4_200g_die "DS4_200G_NCCL_IFNAME contains an empty interface"
     ds4_200g_csv_contains "$ifnames_csv" "$nccl_ifname" || ds4_200g_die "NCCL interface '$nccl_ifname' is not in route-verified 200G interface list '$ifnames_csv'"
-    ds4_200g_require_link_200g "$nccl_ifname" "NCCL 200G fabric"
+    if ! ds4_200g_require_link_200g "$nccl_ifname" "NCCL 200G fabric"; then
+      continue
+    fi
+    if [[ -n "$usable_nccl_ifnames_csv" ]]; then
+      usable_nccl_ifnames_csv="$usable_nccl_ifnames_csv,$nccl_ifname"
+    else
+      usable_nccl_ifnames_csv="$nccl_ifname"
+    fi
     hca="$(ds4_200g_hca_for_if "$nccl_ifname")"
     [[ -n "$hca" ]] || ds4_200g_die "no RoCE HCA maps to NCCL interface '$nccl_ifname'"
     if [[ -n "$nccl_hcas_csv" ]]; then
@@ -218,6 +263,11 @@ ds4_require_200g_fabric()
       nccl_hcas_csv="$hca"
     fi
   done
+  [[ -n "$usable_nccl_ifnames_csv" ]] || ds4_200g_die "no usable NCCL fabric interfaces remain after link-speed/carrier filtering; original NCCL interface list='$nccl_ifnames_csv'"
+  if [[ "$usable_nccl_ifnames_csv" != "$nccl_ifnames_csv" ]]; then
+    echo "WARNING: effective DS4_200G_NCCL_IFNAME=$usable_nccl_ifnames_csv after excluding degraded interfaces from '$nccl_ifnames_csv'" >&2
+  fi
+  nccl_ifnames_csv="$usable_nccl_ifnames_csv"
   [[ -n "$nccl_hcas_csv" ]] || ds4_200g_die "selected NCCL interface list has no RoCE HCA"
   control_ifname="${DS4_CONTROL_IFNAME:-$ifnames_csv}"
   IFS=',' read -r -a control_ifnames <<< "$control_ifname"
