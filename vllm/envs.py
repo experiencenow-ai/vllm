@@ -147,6 +147,10 @@ if TYPE_CHECKING:
     VLLM_DS4_PP_SEND_BACKLOG: int = 1
     VLLM_DS4_PP_PYNCCL_TENSOR_DICT_STRIPES: int = 1
     VLLM_DS4_PP_PYNCCL_TENSOR_DICT_STRIPE_MIN_BYTES: int = 1048576
+    VLLM_DS4_PP_STRIPED_NCCL_TENSOR_DICT: bool = False
+    VLLM_DS4_PP_STRIPED_NCCL_STRIPES: int = 1
+    VLLM_DS4_PP_STRIPED_NCCL_MIN_BYTES: int = 1048576
+    VLLM_DS4_PP_STRIPED_NCCL_STREAMS: bool = True
     VLLM_DS4_PP_TENSOR_DICT_TP_ALL_GATHER: bool = True
     VLLM_DS4_TP_PROCESS_GROUP_ALL_REDUCE: bool = False
     VLLM_DS4_REQUIRE_DEVICE_TP_ALL_REDUCE: bool = False
@@ -1372,6 +1376,37 @@ environment_variables: dict[str, Callable[[], Any]] = {
             "VLLM_DS4_PP_PYNCCL_TENSOR_DICT_STRIPE_MIN_BYTES",
             str(1024 * 1024),
         )
+    ),
+    # DS4 PP high-throughput transport: split large PP boundary tensors over
+    # independent PyNCCL communicators/streams. This keeps the existing DS4
+    # PyNCCL tensor-dict path for small tensors, but lets a single slow NCCL
+    # lane stop throttling large c256/c512 pipeline cohorts.
+    "VLLM_DS4_PP_STRIPED_NCCL_TENSOR_DICT": lambda: (
+        os.environ.get("VLLM_DS4_PP_STRIPED_NCCL_TENSOR_DICT", "0")
+        .strip()
+        .lower()
+        in ("1", "true", "yes", "on")
+    ),
+    "VLLM_DS4_PP_STRIPED_NCCL_STRIPES": lambda: int(
+        os.environ.get(
+            "VLLM_DS4_PP_STRIPED_NCCL_STRIPES",
+            os.environ.get("VLLM_DS4_PP_PYNCCL_TENSOR_DICT_STRIPES", "1"),
+        )
+    ),
+    "VLLM_DS4_PP_STRIPED_NCCL_MIN_BYTES": lambda: int(
+        os.environ.get(
+            "VLLM_DS4_PP_STRIPED_NCCL_MIN_BYTES",
+            os.environ.get(
+                "VLLM_DS4_PP_PYNCCL_TENSOR_DICT_STRIPE_MIN_BYTES",
+                str(1024 * 1024),
+            ),
+        )
+    ),
+    "VLLM_DS4_PP_STRIPED_NCCL_STREAMS": lambda: (
+        os.environ.get("VLLM_DS4_PP_STRIPED_NCCL_STREAMS", "1")
+        .strip()
+        .lower()
+        in ("1", "true", "yes", "on")
     ),
     # DS4 PP tensor-dict transport can optionally slice replicated tensors and
     # reconstruct them with a TP all-gather on the receiving stage. The PP4xTP2

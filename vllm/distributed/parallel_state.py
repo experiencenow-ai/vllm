@@ -253,6 +253,21 @@ class _Ds4CudaStreamHandle:
         self._tensors = []
 
 
+class _Ds4CompositeHandle:
+    """Async handle composed of several DS4 PP transport handles."""
+
+    def __init__(self, handles: list[Handle]) -> None:
+        self._handles = handles
+
+    def is_completed(self) -> bool:
+        return all(handle.is_completed() for handle in self._handles)
+
+    def wait(self) -> None:
+        for handle in self._handles:
+            handle.wait()
+        self._handles = []
+
+
 def _split_tensor_dict(
     tensor_dict: dict[str, torch.Tensor | Any],
     *,
@@ -497,6 +512,7 @@ class GroupCoordinator:
     device_group: ProcessGroup  # group for device communication
     # device communicator (if use_device_communicator=True)
     device_communicator: DeviceCommunicatorBase | None
+    ds4_pp_striped_nccl_channel: Any | None
     mq_broadcaster: Any | None  # shared memory broadcaster
 
     def __init__(
@@ -558,6 +574,7 @@ class GroupCoordinator:
 
         self.use_device_communicator = use_device_communicator
         self.device_communicator = None
+        self.ds4_pp_striped_nccl_channel = None
         if use_device_communicator and self.world_size > 1:
             device_comm_cls = resolve_obj_by_qualname(
                 current_platform.get_device_communicator_cls()
@@ -567,6 +584,15 @@ class GroupCoordinator:
                 device=self.device,
                 device_group=self.device_group,
                 unique_name=self.unique_name,
+            )
+            from vllm.distributed.ds4_high_speed_channel import (
+                build_ds4_pp_striped_nccl_channel,
+            )
+
+            self.ds4_pp_striped_nccl_channel = build_ds4_pp_striped_nccl_channel(
+                group_name=group_name,
+                cpu_group=self.cpu_group,
+                device=self.device,
             )
 
         from vllm.distributed.device_communicators.shm_broadcast import MessageQueue
@@ -741,27 +767,52 @@ class GroupCoordinator:
             return None
         current_stream = torch.cuda.current_stream(cuda_tensors[0].device)
         comm_stream = self._get_ds4_pp_pynccl_stream()
+        handles: list[Handle] = []
+        striped_channel = self.ds4_pp_striped_nccl_channel
+        remaining_tensors: list[torch.Tensor] = []
+        for tensor in cuda_tensors:
+            if (
+                striped_channel is not None
+                and striped_channel.can_handle(tensor)
+            ):
+                if op is torch.distributed.isend:
+                    handles.append(striped_channel.send(tensor, peer))
+                    continue
+                if op is torch.distributed.irecv:
+                    handles.append(striped_channel.recv(tensor, peer))
+                    continue
+            remaining_tensors.append(tensor)
+        if not remaining_tensors:
+            if len(handles) == 1:
+                return handles[0]
+            return _Ds4CompositeHandle(handles)
         if wait_for_producer:
             producer_event = torch.cuda.Event(blocking=False)
             current_stream.record_event(producer_event)
             comm_stream.wait_event(producer_event)
         p2p_ops = []
         with torch.cuda.stream(comm_stream):
-            for tensor in cuda_tensors:
+            for tensor in remaining_tensors:
                 for chunk in self._ds4_pynccl_p2p_chunks(tensor):
                     p2p_op = object.__new__(P2POp)
                     p2p_op.op = op
                     p2p_op.tensor = chunk
                     p2p_op.group_peer = peer
                     p2p_ops.append(p2p_op)
-            self.device_communicator.batch_isend_irecv(p2p_ops)
-            for tensor in cuda_tensors:
-                tensor.record_stream(comm_stream)
-            return _Ds4CudaStreamHandle(
-                [op.tensor for op in p2p_ops],
-                comm_stream,
-                synchronize_on_wait=synchronize_on_wait,
-            )
+            if p2p_ops:
+                self.device_communicator.batch_isend_irecv(p2p_ops)
+                for tensor in remaining_tensors:
+                    tensor.record_stream(comm_stream)
+                handles.append(
+                    _Ds4CudaStreamHandle(
+                        [op.tensor for op in p2p_ops],
+                        comm_stream,
+                        synchronize_on_wait=synchronize_on_wait,
+                    )
+                )
+        if len(handles) == 1:
+            return handles[0]
+        return _Ds4CompositeHandle(handles)
 
     def _ds4_pynccl_p2p_chunks(self, tensor: torch.Tensor) -> list[torch.Tensor]:
         stripes = max(1, int(envs.VLLM_DS4_PP_PYNCCL_TENSOR_DICT_STRIPES))
@@ -1524,6 +1575,9 @@ class GroupCoordinator:
         return self.device_communicator.recv(size, dtype, src)
 
     def destroy(self):
+        if self.ds4_pp_striped_nccl_channel is not None:
+            self.ds4_pp_striped_nccl_channel.destroy()
+            self.ds4_pp_striped_nccl_channel = None
         if hasattr(self, "device_group"):
             torch.distributed.destroy_process_group(self.device_group)
             del self.device_group
