@@ -109,6 +109,33 @@ def _source_ip_for_dev(dev: str) -> str:
     raise RuntimeError(f"no source IP for device {dev}")
 
 
+def _allowed_ifnames() -> set[str]:
+    raw = (
+        _env("DS4_RAIL_TCP_ALLOWED_IFNAME")
+        or _env("DS4_200G_EFFECTIVE_IFNAME")
+        or _env("DS4_200G_IFNAME")
+    )
+    return {item.strip() for item in raw.split(",") if item.strip()}
+
+
+def _reject_forbidden_rail(destination_fabric_ip: str, rail: Rail) -> Rail:
+    allowed = _allowed_ifnames()
+    if allowed and rail.dev not in allowed:
+        raise RuntimeError(
+            "rail TCP preflight refused non-fabric route: "
+            f"destination={destination_fabric_ip} dev={rail.dev} "
+            f"source={rail.source_ip} next_hop={rail.destination_ip} "
+            f"allowed={','.join(sorted(allowed))}"
+        )
+    if rail.dev.startswith(("wl", "wlan")):
+        raise RuntimeError(
+            "rail TCP preflight refused Wi-Fi route: "
+            f"destination={destination_fabric_ip} dev={rail.dev} "
+            f"source={rail.source_ip} next_hop={rail.destination_ip}"
+        )
+    return rail
+
+
 def _discover_rails(destination_fabric_ip: str) -> list[Rail]:
     route = _run(["ip", "route", "show", destination_fabric_ip])
     rails: list[Rail] = []
@@ -118,10 +145,13 @@ def _discover_rails(destination_fabric_ip: str) -> list[Rail]:
             dst_ip = tokens[index + 1]
             dev = tokens[index + 3]
             rails.append(
-                Rail(
-                    source_ip=_source_ip_for_dev(dev),
-                    destination_ip=dst_ip,
-                    dev=dev,
+                _reject_forbidden_rail(
+                    destination_fabric_ip,
+                    Rail(
+                        source_ip=_source_ip_for_dev(dev),
+                        destination_ip=dst_ip,
+                        dev=dev,
+                    ),
                 )
             )
     if rails:
@@ -142,7 +172,12 @@ def _discover_rails(destination_fabric_ip: str) -> list[Rail]:
         source_ip = words[words.index("src") + 1]
     else:
         source_ip = _source_ip_for_dev(dev)
-    return [Rail(source_ip=source_ip, destination_ip=dst_ip, dev=dev)]
+    return [
+        _reject_forbidden_rail(
+            destination_fabric_ip,
+            Rail(source_ip=source_ip, destination_ip=dst_ip, dev=dev),
+        )
+    ]
 
 
 def _server_stream(port: int, expected_bytes: int, timeout_s: float) -> int:
