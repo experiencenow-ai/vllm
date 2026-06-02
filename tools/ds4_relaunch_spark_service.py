@@ -193,7 +193,7 @@ def repo_command(args: argparse.Namespace, inner: str) -> str:
 
 
 def pull_command(args: argparse.Namespace) -> str:
-    return repo_command(args, f"git pull {shlex.quote(args.remote)} {shlex.quote(args.branch)}")
+    return repo_command(args, f"git pull --ff-only {shlex.quote(args.remote)} {shlex.quote(args.branch)}")
 
 
 def build_command(args: argparse.Namespace) -> str:
@@ -211,6 +211,7 @@ def build_command(args: argparse.Namespace) -> str:
         "vllm/entrypoints/openai/ds4_kv_cache.py "
         "vllm/entrypoints/openai/completion/protocol.py "
         "vllm/entrypoints/openai/chat_completion/protocol.py "
+        "vllm/distributed/ds4_high_speed_channel.py "
         "vllm/v1/engine/core.py "
         "vllm/v1/core/sched/scheduler.py "
         "vllm/config/compilation.py "
@@ -228,6 +229,7 @@ def build_command(args: argparse.Namespace) -> str:
         "tools/ds4_simple_kv_offload_audit.py "
         "tools/ds4_workspace_prealloc_audit.py "
         "tools/ds4_cohort_admission_audit.py "
+        "tools/ds4_high_speed_channel_audit.py "
         "tools/ds4_pp_wave_admission_audit.py tools/ds4_speed_path_audit.py && "
         "bash -n tools/ds4_200g_guard.sh && "
         "bash -n tools/ds4_launch_dsv4_flash_pp8.sh && "
@@ -236,6 +238,7 @@ def build_command(args: argparse.Namespace) -> str:
         f"{py} tools/ds4_cudagraph_support_audit.py && "
         f"{py} tools/ds4_simple_kv_offload_audit.py && "
         f"{py} tools/ds4_cohort_admission_audit.py && "
+        f"{py} tools/ds4_high_speed_channel_audit.py && "
         f"{py} tools/ds4_pp_wave_admission_audit.py && "
         f"{py} tools/ds4_speed_path_audit.py && "
         f"{py} tools/ds4_no_marlin_static_audit.py; "
