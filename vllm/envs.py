@@ -144,6 +144,7 @@ if TYPE_CHECKING:
     VLLM_DS4_PP_DISABLE_DEVICE_COMMUNICATOR: bool = False
     VLLM_DS4_PP_PYNCCL_TENSOR_DICT: bool = False
     VLLM_DS4_PP_DEVICE_TENSOR_DICT_METADATA: bool = False
+    VLLM_DS4_PP_SEND_BACKLOG: int = 1
     VLLM_DS4_PP_PYNCCL_TENSOR_DICT_STRIPES: int = 1
     VLLM_DS4_PP_PYNCCL_TENSOR_DICT_STRIPE_MIN_BYTES: int = 1048576
     VLLM_DS4_PP_TENSOR_DICT_TP_ALL_GATHER: bool = True
@@ -1355,6 +1356,13 @@ environment_variables: dict[str, Callable[[], Any]] = {
         .strip()
         .lower()
         in ("1", "true", "yes", "on")
+    ),
+    # Number of PP tensor-dict send batches that may remain in flight before a
+    # worker blocks. The default preserves upstream-style serialization; DS4
+    # production launchers raise it to overlap PP boundary transfers with the
+    # next scheduler step while keeping a bounded CUDA/NCCL queue.
+    "VLLM_DS4_PP_SEND_BACKLOG": lambda: int(
+        os.environ.get("VLLM_DS4_PP_SEND_BACKLOG", "1")
     ),
     "VLLM_DS4_PP_PYNCCL_TENSOR_DICT_STRIPES": lambda: int(
         os.environ.get("VLLM_DS4_PP_PYNCCL_TENSOR_DICT_STRIPES", "1")
