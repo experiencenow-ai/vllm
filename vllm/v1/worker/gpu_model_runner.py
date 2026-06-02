@@ -3367,6 +3367,20 @@ class GPUModelRunner(
         inputs_embeds = self.inputs_embeds.gpu[:num_tokens]
         return input_ids, inputs_embeds
 
+    def _zero_padded_input_token_lanes(
+        self,
+        num_scheduled_tokens: int,
+        num_input_tokens: int,
+    ) -> None:
+        if num_input_tokens <= num_scheduled_tokens:
+            return
+        self.input_ids.gpu[num_scheduled_tokens:num_input_tokens].zero_()
+        if self.enable_prompt_embeds:
+            self.is_token_ids.gpu[num_scheduled_tokens:num_input_tokens].fill_(True)
+            self.inputs_embeds.gpu[num_scheduled_tokens:num_input_tokens].zero_()
+        elif self.supports_mm_inputs:
+            self.inputs_embeds.gpu[num_scheduled_tokens:num_input_tokens].zero_()
+
     def _preprocess(
         self,
         scheduler_output: "SchedulerOutput",
@@ -3383,6 +3397,10 @@ class GPUModelRunner(
         num_scheduled_tokens = scheduler_output.total_num_scheduled_tokens
         is_first_rank = get_pp_group().is_first_rank
         is_encoder_decoder = self.model_config.is_encoder_decoder
+        if is_first_rank:
+            self._zero_padded_input_token_lanes(
+                num_scheduled_tokens, num_input_tokens
+            )
 
         # _prepare_inputs may reorder the batch, so we must gather multi
         # modal outputs after that to ensure the correct order

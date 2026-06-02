@@ -19,6 +19,7 @@ def main() -> int:
     dsv4 = read("tools/ds4_launch_dsv4_flash_pp8.sh")
     qwen = read("tools/ds4_launch_qwen27_nvfp4_pp8.sh")
     relaunch = read("tools/ds4_relaunch_spark_service.py")
+    runner = read("vllm/v1/worker/gpu_model_runner.py")
 
     failures = 0
     failures += check(
@@ -94,6 +95,13 @@ def main() -> int:
         '"--env"' in relaunch
         and "KEY=VALUE" in relaunch
         and '"VLLM_DEBUG_WORKSPACE": os.getenv("VLLM_DEBUG_WORKSPACE", "0")' in relaunch,
+    )
+    failures += check(
+        "padded graph token lanes are zeroed before embedding",
+        "_zero_padded_input_token_lanes" in runner
+        and "self.input_ids.gpu[num_scheduled_tokens:num_input_tokens].zero_()" in runner
+        and "self._zero_padded_input_token_lanes(" in runner
+        and "if is_first_rank:" in runner,
     )
     return 1 if failures else 0
 
