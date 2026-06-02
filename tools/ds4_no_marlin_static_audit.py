@@ -281,8 +281,10 @@ checks = [
         and "QWEN27_CUDAGRAPH_CAPTURE_SIZES:=1,2,4,8,12" in qwen_nvfp4_pp8
         and "QWEN27_MAX_CUDAGRAPH_CAPTURE_SIZE:=12" in qwen_pp8
         and "QWEN27_MAX_CUDAGRAPH_CAPTURE_SIZE:=12" in qwen_nvfp4_pp8
-        and "QWEN27_ENABLE_ASYNC_SCHEDULING_EXPERIMENTAL" in qwen_pp8
-        and "QWEN27_ENABLE_ASYNC_SCHEDULING_EXPERIMENTAL" in qwen_nvfp4_pp8
+        and "Qwen PP async scheduling is disabled until the sync PP pipeline is stable" in qwen_pp8
+        and "Qwen PP async scheduling is disabled until the sync PP pipeline is stable" in qwen_nvfp4_pp8
+        and "VLLM_DS4_VALIDATE_INPUT_IDS" in qwen_pp8
+        and "VLLM_DS4_VALIDATE_INPUT_IDS" in qwen_nvfp4_pp8
         and "QWEN27_REASONING_PARSER:-none" in qwen_pp8
         and "QWEN27_REASONING_PARSER:-none" in qwen_nvfp4_pp8
         and "--kv-cache-memory-bytes \"$QWEN27_KV_CACHE_MEMORY_BYTES\"" in qwen_pp8
@@ -353,7 +355,8 @@ checks = [
         and '--gpu-memory-utilization "$DSV4_GPU_MEMORY_UTILIZATION"' in dsv4_pp8
         and "DSV4_ENABLE_MTP:-0" in dsv4_pp8
         and "ASYNC_SCHEDULING_ARGS=(--no-async-scheduling)" in dsv4_pp8
-        and "DSV4_ENABLE_ASYNC_SCHEDULING_EXPERIMENTAL" in dsv4_pp8
+        and "DSV4 PP async scheduling is disabled until the sync PP pipeline is stable" in dsv4_pp8
+        and "VLLM_DS4_VALIDATE_INPUT_IDS" in dsv4_pp8
         and '"${ASYNC_SCHEDULING_ARGS[@]}"' in dsv4_pp8
         and "VLLM_DS4_PP_DISABLE_DEVICE_COMMUNICATOR" in dsv4_pp8
         and "DSV4_KV_CACHE_MEMORY_BYTES=12884901888" in dual_pipeline_doc,

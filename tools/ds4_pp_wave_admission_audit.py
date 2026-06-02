@@ -113,6 +113,13 @@ def main() -> int:
         and "self.async_output_copy_stream = torch.cuda.Stream()" in runner,
     )
     failures += check(
+        "scheduled input ids fail closed before H2D copy",
+        "VLLM_DS4_VALIDATE_INPUT_IDS" in envs
+        and "_validate_ds4_scheduled_input_ids" in runner
+        and "scheduled input id validation failed before H2D copy" in runner
+        and "VLLM_DS4_VALIDATE_INPUT_IDS" in dsv4,
+    )
+    failures += check(
         "DSV4 PP CUDA graphs copy dynamic inputs into static buffers",
         '\\"cudagraph_copy_inputs\\":true' in dsv4,
     )

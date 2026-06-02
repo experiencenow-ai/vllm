@@ -214,6 +214,7 @@ def build_command(args: argparse.Namespace) -> str:
         "vllm/distributed/ds4_high_speed_channel.py "
         "vllm/v1/engine/core.py "
         "vllm/v1/core/sched/scheduler.py "
+        "vllm/v1/worker/gpu_model_runner.py "
         "vllm/config/compilation.py "
         "vllm/v1/attention/backends/mla/flashmla_sparse.py "
         "vllm/v1/attention/backends/mla/sparse_swa.py "

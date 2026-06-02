@@ -104,9 +104,14 @@ CHECKS = [
         "--gdn-prefill-backend",
     ),
     (
-        "BF16 Qwen PP makes async scheduling experimental",
+        "BF16 Qwen PP refuses async scheduling",
         ROOT / "tools/ds4_launch_qwen27_pp8.sh",
-        "QWEN27_ENABLE_ASYNC_SCHEDULING_EXPERIMENTAL",
+        "Qwen PP async scheduling is disabled until the sync PP pipeline is stable",
+    ),
+    (
+        "BF16 Qwen PP validates scheduled input ids before H2D",
+        ROOT / "tools/ds4_launch_qwen27_pp8.sh",
+        "VLLM_DS4_VALIDATE_INPUT_IDS",
     ),
     (
         "NVFP4 Qwen PP launcher exists",
@@ -159,9 +164,14 @@ CHECKS = [
         "QWEN27_CUDAGRAPH_CAPTURE_SIZES:=1,2,4,8,12",
     ),
     (
-        "NVFP4 Qwen PP makes async scheduling experimental",
+        "NVFP4 Qwen PP refuses async scheduling",
         ROOT / "tools/ds4_launch_qwen27_nvfp4_pp8.sh",
-        "QWEN27_ENABLE_ASYNC_SCHEDULING_EXPERIMENTAL",
+        "Qwen PP async scheduling is disabled until the sync PP pipeline is stable",
+    ),
+    (
+        "NVFP4 Qwen PP validates scheduled input ids before H2D",
+        ROOT / "tools/ds4_launch_qwen27_nvfp4_pp8.sh",
+        "VLLM_DS4_VALIDATE_INPUT_IDS",
     ),
 ]
 

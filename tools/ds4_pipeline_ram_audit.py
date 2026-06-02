@@ -20,14 +20,24 @@ CHECKS = [
         "ASYNC_SCHEDULING_ARGS=(--no-async-scheduling)",
     ),
     (
-        "Qwen NVFP4 async requires experimental opt-in",
+        "Qwen NVFP4 async opt-in is refused",
         "tools/ds4_launch_qwen27_nvfp4_pp8.sh",
-        "QWEN27_ENABLE_ASYNC_SCHEDULING_EXPERIMENTAL",
+        "Qwen PP async scheduling is disabled until the sync PP pipeline is stable",
     ),
     (
-        "Qwen BF16 async requires experimental opt-in",
+        "Qwen BF16 async opt-in is refused",
         "tools/ds4_launch_qwen27_pp8.sh",
-        "QWEN27_ENABLE_ASYNC_SCHEDULING_EXPERIMENTAL",
+        "Qwen PP async scheduling is disabled until the sync PP pipeline is stable",
+    ),
+    (
+        "Qwen NVFP4 validates scheduled input ids before H2D",
+        "tools/ds4_launch_qwen27_nvfp4_pp8.sh",
+        "VLLM_DS4_VALIDATE_INPUT_IDS",
+    ),
+    (
+        "Qwen BF16 validates scheduled input ids before H2D",
+        "tools/ds4_launch_qwen27_pp8.sh",
+        "VLLM_DS4_VALIDATE_INPUT_IDS",
     ),
     (
         "Qwen NVFP4 PP launcher defaults PP globals to NCCL",
