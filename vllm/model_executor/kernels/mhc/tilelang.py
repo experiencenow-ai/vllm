@@ -1,8 +1,19 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+import os
+
 import torch
 
 from vllm.utils.torch_utils import direct_register_custom_op
+
+
+def _ds4_mhc_tilelang_max_tokens() -> int:
+    raw = os.getenv("VLLM_DS4_MHC_TILELANG_MAX_TOKENS", "65536")
+    try:
+        value = int(raw)
+    except ValueError:
+        return 65536
+    return max(0, value)
 
 
 def mhc_pre_tilelang(
@@ -79,6 +90,42 @@ def mhc_pre_tilelang(
 
     residual_flat = residual.view(-1, hc_mult, hidden_size)
     num_tokens = residual_flat.shape[0]
+
+    max_tokens = _ds4_mhc_tilelang_max_tokens()
+    if max_tokens > 0 and num_tokens > max_tokens:
+        post_mix = torch.empty(
+            num_tokens, hc_mult, dtype=torch.float32, device=residual.device
+        )
+        comb_mix = torch.empty(
+            num_tokens, hc_mult2, dtype=torch.float32, device=residual.device
+        )
+        layer_input = torch.empty(
+            num_tokens, hidden_size, dtype=torch.bfloat16, device=residual.device
+        )
+        for start in range(0, num_tokens, max_tokens):
+            end = min(start + max_tokens, num_tokens)
+            chunk_post, chunk_comb, chunk_input = mhc_pre_tilelang(
+                residual_flat[start:end],
+                fn,
+                hc_scale,
+                hc_base,
+                rms_eps,
+                hc_pre_eps,
+                hc_sinkhorn_eps,
+                hc_post_mult_value,
+                sinkhorn_repeat,
+                n_splits,
+                norm_weight,
+                norm_eps,
+            )
+            post_mix[start:end].copy_(chunk_post.view(end - start, hc_mult))
+            comb_mix[start:end].copy_(chunk_comb.view(end - start, hc_mult2))
+            layer_input[start:end].copy_(chunk_input.view(end - start, hidden_size))
+        return (
+            post_mix.view(*outer_shape, hc_mult, 1),
+            comb_mix.view(*outer_shape, hc_mult, hc_mult),
+            layer_input.view(*outer_shape, hidden_size),
+        )
 
     # these numbers are from deepgemm kernel impl
     block_k = 64
@@ -303,6 +350,67 @@ def mhc_fused_post_pre_tilelang(
     x_flat = x.view(num_tokens, hidden_size)
     post_layer_mix_flat = post_layer_mix.view(num_tokens, hc_mult)
     comb_res_mix_flat = comb_res_mix.view(num_tokens, hc_mult, hc_mult)
+
+    max_tokens = _ds4_mhc_tilelang_max_tokens()
+    if max_tokens > 0 and num_tokens > max_tokens:
+        residual_cur = torch.empty_like(residual_flat)
+        post_mix_cur = torch.empty(
+            num_tokens,
+            hc_mult,
+            dtype=torch.float32,
+            device=residual.device,
+        )
+        comb_mix_cur = torch.empty(
+            num_tokens,
+            hc_mult2,
+            dtype=torch.float32,
+            device=residual.device,
+        )
+        layer_input_cur = torch.empty(
+            num_tokens,
+            hidden_size,
+            dtype=torch.bfloat16,
+            device=residual.device,
+        )
+        for start in range(0, num_tokens, max_tokens):
+            end = min(start + max_tokens, num_tokens)
+            (
+                chunk_residual,
+                chunk_post,
+                chunk_comb,
+                chunk_input,
+            ) = mhc_fused_post_pre_tilelang(
+                x_flat[start:end],
+                residual_flat[start:end],
+                post_layer_mix_flat[start:end],
+                comb_res_mix_flat[start:end],
+                fn,
+                hc_scale,
+                hc_base,
+                rms_eps,
+                hc_pre_eps,
+                hc_sinkhorn_eps,
+                hc_post_mult_value,
+                sinkhorn_repeat,
+                n_splits,
+                tile_n,
+                norm_weight,
+                norm_eps,
+            )
+            residual_cur[start:end].copy_(
+                chunk_residual.view(end - start, hc_mult, hidden_size)
+            )
+            post_mix_cur[start:end].copy_(chunk_post.view(end - start, hc_mult))
+            comb_mix_cur[start:end].copy_(chunk_comb.view(end - start, hc_mult2))
+            layer_input_cur[start:end].copy_(
+                chunk_input.view(end - start, hidden_size)
+            )
+        return (
+            residual_cur.view(*outer_shape, hc_mult, hidden_size),
+            post_mix_cur.view(*outer_shape, hc_mult, 1),
+            comb_mix_cur.view(*outer_shape, hc_mult, hc_mult),
+            layer_input_cur.view(*outer_shape, hidden_size),
+        )
 
     fma_token_threshold = 16
     if num_tokens <= fma_token_threshold:
