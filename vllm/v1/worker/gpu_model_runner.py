@@ -3374,7 +3374,8 @@ class GPUModelRunner(
     ) -> None:
         if num_input_tokens <= num_scheduled_tokens:
             return
-        self.input_ids.gpu[num_scheduled_tokens:num_input_tokens].zero_()
+        self.input_ids.cpu[num_scheduled_tokens:num_input_tokens].zero_()
+        self.input_ids.copy_to_gpu(num_input_tokens)
         if self.enable_prompt_embeds:
             self.is_token_ids.gpu[num_scheduled_tokens:num_input_tokens].fill_(True)
             self.inputs_embeds.gpu[num_scheduled_tokens:num_input_tokens].zero_()

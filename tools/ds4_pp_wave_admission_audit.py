@@ -99,7 +99,8 @@ def main() -> int:
     failures += check(
         "padded graph token lanes are zeroed before embedding",
         "_zero_padded_input_token_lanes" in runner
-        and "self.input_ids.gpu[num_scheduled_tokens:num_input_tokens].zero_()" in runner
+        and "self.input_ids.cpu[num_scheduled_tokens:num_input_tokens].zero_()" in runner
+        and "self.input_ids.copy_to_gpu(num_input_tokens)" in runner
         and "self._zero_padded_input_token_lanes(" in runner
         and "if is_first_rank:" in runner,
     )
