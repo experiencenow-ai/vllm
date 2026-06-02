@@ -139,8 +139,11 @@ def _pynccl_exchange(
     src: int,
     send: torch.Tensor,
     recv: torch.Tensor,
+    send_credit: torch.Tensor | None,
+    recv_credit: torch.Tensor | None,
     stripes: int,
     bidirectional: bool,
+    credit: bool,
     communicator,
 ) -> None:
     group_rank = 0 if rank == src else 1
@@ -152,6 +155,13 @@ def _pynccl_exchange(
     if bidirectional or rank != src:
         for recv_chunk in _chunks(recv, stripes):
             communicator.recv(recv_chunk, peer)
+    if credit and not bidirectional:
+        assert send_credit is not None
+        assert recv_credit is not None
+        if rank == src:
+            communicator.recv(recv_credit, peer)
+        else:
+            communicator.send(send_credit, peer)
     communicator.group_end()
 
 
@@ -289,10 +299,13 @@ def _bench_pair(
         iters = max(1, int(_env("DS4_NCCL_P2P_BENCH_ITERS", "20")))
         warmup = max(0, int(_env("DS4_NCCL_P2P_BENCH_WARMUP", "5")))
         stripes = max(1, int(_env("DS4_NCCL_P2P_BENCH_STRIPES", "8")))
+        credit = _bool_env("DS4_NCCL_P2P_BENCH_CREDIT", False)
         for byte_size in byte_sizes:
             numel = max(1, byte_size // torch.empty((), dtype=dtype).element_size())
             send = torch.full((numel,), rank + 1, dtype=dtype, device="cuda")
             recv = torch.empty_like(send)
+            send_credit = torch.full((1,), rank + 1, dtype=torch.uint8, device="cuda")
+            recv_credit = torch.empty_like(send_credit)
             actual_bytes = numel * send.element_size()
             for method in methods:
                 recv.fill_(0)
@@ -315,8 +328,11 @@ def _bench_pair(
                         src=src,
                         send=send,
                         recv=recv,
+                        send_credit=send_credit,
+                        recv_credit=recv_credit,
                         stripes=stripes,
                         bidirectional=bidirectional,
+                        credit=credit,
                         communicator=communicators["pynccl"],
                     )
                 elif method == "striped":
@@ -351,6 +367,7 @@ def _bench_pair(
                 )
                 row["dtype"] = str(dtype).replace("torch.", "")
                 row["stripes"] = stripes
+                row["credit"] = credit
                 print(json.dumps(row, sort_keys=True), flush=True)
                 _phase(rank, f"pair={src}-{dst} method={method} bytes={actual_bytes} done")
     finally:

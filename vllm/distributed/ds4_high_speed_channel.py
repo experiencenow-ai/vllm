@@ -166,7 +166,15 @@ class Ds4StripedNcclTensorChannel:
             with torch.cuda.stream(stream):
                 if stream is not producer_stream:
                     stream.wait_stream(producer_stream)
-                communicator.send(chunk, dst, stream=stream)
+                if envs.VLLM_DS4_PP_PYNCCL_P2P_CREDIT:
+                    credit = torch.empty((1,), dtype=torch.uint8, device=tensor.device)
+                    tensors.append(credit)
+                    communicator.group_start()
+                    communicator.send(chunk, dst, stream=stream)
+                    communicator.recv(credit, dst, stream=stream)
+                    communicator.group_end()
+                else:
+                    communicator.send(chunk, dst, stream=stream)
                 event = torch.cuda.Event()
                 event.record(stream)
                 events.append(event)
@@ -191,7 +199,15 @@ class Ds4StripedNcclTensorChannel:
             else:
                 stream = consumer_stream
             with torch.cuda.stream(stream):
-                communicator.recv(chunk, src, stream=stream)
+                if envs.VLLM_DS4_PP_PYNCCL_P2P_CREDIT:
+                    credit = torch.empty((1,), dtype=torch.uint8, device=tensor.device)
+                    tensors.append(credit)
+                    communicator.group_start()
+                    communicator.recv(chunk, src, stream=stream)
+                    communicator.send(credit, src, stream=stream)
+                    communicator.group_end()
+                else:
+                    communicator.recv(chunk, src, stream=stream)
                 event = torch.cuda.Event()
                 event.record(stream)
                 events.append(event)
