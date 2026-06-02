@@ -684,6 +684,8 @@ class GroupCoordinator:
                 "with VLLM_DS4_PP_CPU_STAGED_TENSOR_DICT. Refusing CPU/Gloo "
                 "metadata fallback."
             )
+        if envs.VLLM_DS4_PP_TORCH_PG_TENSOR_DICT:
+            return True
         # The metadata header is only useful if the tensor payloads are also
         # on the DS4 PP device fast path. This call performs the fail-closed
         # checks for the PP device communicator and PyNCCL batch P2P support.
@@ -698,6 +700,14 @@ class GroupCoordinator:
         comm_stream = self._get_ds4_pp_pynccl_stream()
         with torch.cuda.stream(comm_stream):
             metadata_tensor = _encode_ds4_pp_device_metadata(metadata_list, "cuda")
+        if envs.VLLM_DS4_PP_TORCH_PG_TENSOR_DICT:
+            with torch.cuda.stream(comm_stream):
+                handle = torch.distributed.isend(
+                    metadata_tensor, dst=self.ranks[dst], group=self.device_group
+                )
+                metadata_tensor.record_stream(comm_stream)
+            handle.wait()
+            return
         handle = self._enqueue_ds4_pynccl_p2p(
             [metadata_tensor],
             dst,
@@ -718,6 +728,13 @@ class GroupCoordinator:
             metadata_tensor = torch.empty(
                 _DS4_PP_DEVICE_METADATA_LEN, dtype=torch.int64, device="cuda"
             )
+        if envs.VLLM_DS4_PP_TORCH_PG_TENSOR_DICT:
+            with torch.cuda.stream(comm_stream):
+                handle = torch.distributed.irecv(
+                    metadata_tensor, src=self.ranks[src], group=self.device_group
+                )
+            handle.wait()
+            return _decode_ds4_pp_device_metadata(metadata_tensor)
         handle = self._enqueue_ds4_pynccl_p2p(
             [metadata_tensor],
             src,

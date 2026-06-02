@@ -30,8 +30,9 @@ def main() -> int:
         and "VLLM_DS4_PP_SEND_BUFFER_MAX_BYTES" in envs,
     )
     failures += check(
-        "env exposes PP direct CUDA tensor-dict controls",
+        "env exposes PP CUDA tensor-dict transport controls",
         "VLLM_DS4_PP_DIRECT_CUDA_TENSOR_DICT" in envs
+        and "VLLM_DS4_PP_TORCH_PG_TENSOR_DICT" in envs
         and "VLLM_DS4_PP_DIRECT_CUDA_MIN_BYTES" in envs,
     )
     failures += check(
@@ -82,7 +83,13 @@ def main() -> int:
         and "credit_op" in parallel,
     )
     failures += check(
-        "parallel_state accepts direct CUDA tensor-dict alias",
+        "parallel_state accepts torch ProcessGroup CUDA tensor-dict path",
+        "VLLM_DS4_PP_TORCH_PG_TENSOR_DICT" in parallel
+        and "dst=self.ranks[dst], group=self.device_group" in parallel
+        and "src=self.ranks[src], group=self.device_group" in parallel,
+    )
+    failures += check(
+        "parallel_state keeps PyNCCL tensor-dict path explicit",
         "VLLM_DS4_PP_DIRECT_CUDA_TENSOR_DICT" in parallel
         and "VLLM_DS4_PP_PYNCCL_TENSOR_DICT" in parallel,
     )
@@ -93,7 +100,11 @@ def main() -> int:
     ):
         failures += check(
             f"{script_name} launcher enables PP conveyor defaults",
-            'VLLM_DS4_PP_DIRECT_CUDA_TENSOR_DICT="${VLLM_DS4_PP_DIRECT_CUDA_TENSOR_DICT:-1}"'
+            'VLLM_DS4_PP_TORCH_PG_TENSOR_DICT="${VLLM_DS4_PP_TORCH_PG_TENSOR_DICT:-1}"'
+            in script
+            and 'VLLM_DS4_PP_PYNCCL_TENSOR_DICT="${VLLM_DS4_PP_PYNCCL_TENSOR_DICT:-0}"'
+            in script
+            and 'VLLM_DS4_PP_DIRECT_CUDA_TENSOR_DICT="${VLLM_DS4_PP_DIRECT_CUDA_TENSOR_DICT:-0}"'
             in script
             and 'VLLM_DS4_PP_OVERLAP_SEND="${VLLM_DS4_PP_OVERLAP_SEND:-1}"'
             in script
