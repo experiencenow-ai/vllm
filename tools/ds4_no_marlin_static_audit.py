@@ -153,10 +153,17 @@ checks = [
         and "def _tf32_hc_prenorm_gemm_sm12x(" in ds4_sm12x_fallbacks,
     ),
     (
-        "DeepGEMM wrapper routes SM12x MQA/HC through fallbacks",
+        "DeepGEMM wrapper routes SM12x MQA through bounded fallbacks",
         "def fp8_fp4_mqa_topk_indices(" in deep_gemm
         and "def fp8_fp4_paged_mqa_topk_indices(" in deep_gemm
-        and "if current_platform.is_device_capability_family(120) and q[1] is None" in deep_gemm
+        and "if current_platform.is_device_capability_family(120) and q[1] is None" in deep_gemm,
+    ),
+    (
+        "DeepGEMM wrapper prefers native SM12x MHC before Triton fallback",
+        "if current_platform.is_device_capability_family(120):" in deep_gemm
+        and "if _tf32_hc_prenorm_gemm_impl is not None:" in deep_gemm
+        and "return _tf32_hc_prenorm_gemm_impl(" in deep_gemm
+        and "VLLM_DS4_MHC_ALLOW_TRITON_SM12X_FALLBACK" in deep_gemm
         and "return _tf32_hc_prenorm_gemm_sm12x(x, fn, out, sqrsum, num_split)" in deep_gemm,
     ),
     (

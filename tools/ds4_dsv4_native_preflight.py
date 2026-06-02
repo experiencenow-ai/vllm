@@ -254,7 +254,10 @@ def active_probe_sf_layout() -> bool:
 def active_probe_mhc() -> bool:
     try:
         import torch
+        from vllm import envs
+        from vllm._tilelang_ops import compute_num_split
         from vllm.utils.deep_gemm import tf32_hc_prenorm_gemm
+        from vllm.utils.math_utils import cdiv
     except BaseException as exc:
         emit("active_mhc_import", f"no: {exc}")
         return False
@@ -262,21 +265,22 @@ def active_probe_mhc() -> bool:
     try:
         device = torch.device("cuda:0")
         hc_mult = 4
-        hidden_size = 1280
-        num_tokens = 64
+        hidden_size = 4096
+        num_tokens = max(1, int(envs.VLLM_DS4_MHC_NATIVE_PREFLIGHT_TOKENS))
         hc_mult2 = hc_mult * hc_mult
         hc_mult3 = hc_mult * 2 + hc_mult2
+        hc_hidden_size = hc_mult * hidden_size
+        n_splits = compute_num_split(64, hc_hidden_size, cdiv(num_tokens, 64))
         x = torch.randn(
-            (num_tokens, hc_mult * hidden_size),
+            (num_tokens, hc_hidden_size),
             device=device,
             dtype=torch.bfloat16,
         )
         fn = torch.randn(
-            (hc_mult3, hc_mult * hidden_size),
+            (hc_mult3, hc_hidden_size),
             device=device,
             dtype=torch.float32,
         )
-        n_splits = 1
         out = torch.empty(
             (n_splits, num_tokens, hc_mult3),
             device=device,
@@ -289,7 +293,10 @@ def active_probe_mhc() -> bool:
         )
         tf32_hc_prenorm_gemm(x, fn, out, sqrsum, n_splits)
         torch.cuda.synchronize()
-        emit("active_mhc_tf32_hc_prenorm_gemm", "yes")
+        emit(
+            "active_mhc_tf32_hc_prenorm_gemm",
+            f"yes:tokens={num_tokens}:hidden={hidden_size}:splits={n_splits}",
+        )
         return True
     except BaseException as exc:
         emit("active_mhc_tf32_hc_prenorm_gemm", f"no: {exc}")
