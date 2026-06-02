@@ -1,18 +1,16 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
-import os
-
 import torch
 
+import vllm.envs as envs
 from vllm.utils.torch_utils import direct_register_custom_op
 
 
 def _ds4_mhc_tilelang_max_tokens() -> int:
-    raw = os.getenv("VLLM_DS4_MHC_TILELANG_MAX_TOKENS", "65536")
     try:
-        value = int(raw)
-    except ValueError:
-        return 65536
+        value = int(envs.VLLM_DS4_MHC_TILELANG_MAX_TOKENS)
+    except (TypeError, ValueError):
+        return 8192
     return max(0, value)
 
 

@@ -185,6 +185,14 @@ class AsyncIntermediateTensors(IntermediateTensors):
         return object.__getattribute__(self, name)
 
 
+class _Ds4PpSendBufferSlot:
+    """Owned CUDA buffers for one in-flight PP boundary send."""
+
+    def __init__(self) -> None:
+        self.tensors: dict[str, torch.Tensor] = {}
+        self.handles: list[Handle] = []
+
+
 class Worker(WorkerBase):
     def __init__(
         self,
@@ -234,6 +242,49 @@ class Worker(WorkerBase):
         # backlog so the next scheduler step can overlap receive/compute with
         # the previous PP boundary transfer.
         self._pp_send_work: list[list[Handle]] = []
+        self._pp_send_buffer_slots: list[_Ds4PpSendBufferSlot] = []
+        self._pp_send_buffer_index = 0
+
+    def _ds4_pp_gantt(
+        self,
+        event: str,
+        scheduler_output: SchedulerOutput | None = None,
+        **fields: Any,
+    ) -> None:
+        if not envs.VLLM_DS4_PP_GANTT_TRACE:
+            return
+        idx = _DS4_PP_EXECUTE_TIMING_INDEX
+        every = max(1, envs.VLLM_DS4_PP_GANTT_TRACE_EVERY)
+        if idx % every != 0:
+            return
+        try:
+            pp = get_pp_group()
+            pp_rank = pp.rank_in_group
+            is_first = pp.is_first_rank
+            is_last = pp.is_last_rank
+        except Exception:
+            pp_rank = -1
+            is_first = False
+            is_last = False
+        scheduled = (
+            -1
+            if scheduler_output is None
+            else int(scheduler_output.total_num_scheduled_tokens)
+        )
+        detail = " ".join(f"{key}={value}" for key, value in sorted(fields.items()))
+        logger.info(
+            "DS4 PP GANTT event=%s iter=%d rank=%d pp_rank=%d first=%s "
+            "last=%s scheduled_tokens=%d t=%.9f %s",
+            event,
+            idx,
+            self.rank,
+            pp_rank,
+            is_first,
+            is_last,
+            scheduled,
+            time.perf_counter(),
+            detail,
+        )
 
     def _drain_completed_pp_send_work(self) -> None:
         if not self._pp_send_work:
@@ -255,6 +306,85 @@ class Worker(WorkerBase):
         for handle in handles:
             handle.wait()
         return (time.perf_counter() - started) * 1000
+
+    def _wait_pp_send_handles(self, handles: list[Handle]) -> float:
+        if not handles:
+            return 0.0
+        started = time.perf_counter()
+        for handle in handles:
+            handle.wait()
+        return (time.perf_counter() - started) * 1000
+
+    def _get_ds4_pp_send_buffer_slot(
+        self,
+        scheduler_output: SchedulerOutput,
+    ) -> tuple[_Ds4PpSendBufferSlot, float]:
+        slots = max(1, int(envs.VLLM_DS4_PP_SEND_BUFFER_SLOTS))
+        while len(self._pp_send_buffer_slots) < slots:
+            self._pp_send_buffer_slots.append(_Ds4PpSendBufferSlot())
+        slot_index = self._pp_send_buffer_index % slots
+        slot = self._pp_send_buffer_slots[slot_index]
+        self._pp_send_buffer_index += 1
+        wait_ms = 0.0
+        if slot.handles:
+            if not all(handle.is_completed() for handle in slot.handles):
+                self._ds4_pp_gantt(
+                    "send_buffer_wait",
+                    scheduler_output,
+                    handles=len(slot.handles),
+                    slot=slot_index,
+                )
+            wait_ms = self._wait_pp_send_handles(slot.handles)
+            slot.handles = []
+        return slot, wait_ms
+
+    def _buffer_pp_output_for_send(
+        self,
+        output: IntermediateTensors,
+        scheduler_output: SchedulerOutput,
+    ) -> tuple[dict[str, torch.Tensor | Any], _Ds4PpSendBufferSlot | None, float]:
+        if not envs.VLLM_DS4_PP_OVERLAP_SEND:
+            return output.tensors, None, 0.0
+        cuda_bytes = 0
+        for tensor in output.tensors.values():
+            if isinstance(tensor, torch.Tensor) and tensor.is_cuda:
+                cuda_bytes += tensor.numel() * tensor.element_size()
+        if cuda_bytes <= 0:
+            return output.tensors, None, 0.0
+        max_bytes = max(0, int(envs.VLLM_DS4_PP_SEND_BUFFER_MAX_BYTES))
+        if max_bytes > 0 and cuda_bytes > max_bytes:
+            self._ds4_pp_gantt(
+                "send_buffer_bypass",
+                scheduler_output,
+                cuda_bytes=cuda_bytes,
+                max_bytes=max_bytes,
+            )
+            return output.tensors, None, 0.0
+        slot, wait_ms = self._get_ds4_pp_send_buffer_slot(scheduler_output)
+        buffered: dict[str, torch.Tensor | Any] = {}
+        for key, tensor in output.tensors.items():
+            if not isinstance(tensor, torch.Tensor) or not tensor.is_cuda:
+                buffered[key] = tensor
+                continue
+            send_tensor = slot.tensors.get(key)
+            if (
+                send_tensor is None
+                or send_tensor.shape != tensor.shape
+                or send_tensor.dtype != tensor.dtype
+                or send_tensor.device != tensor.device
+            ):
+                send_tensor = torch.empty_like(tensor)
+                slot.tensors[key] = send_tensor
+            send_tensor.copy_(tensor, non_blocking=True)
+            buffered[key] = send_tensor
+        self._ds4_pp_gantt(
+            "send_buffer_copy",
+            scheduler_output,
+            cuda_bytes=cuda_bytes,
+            tensors=",".join(sorted(buffered.keys())),
+            wait_ms=f"{wait_ms:.3f}",
+        )
+        return buffered, slot, wait_ms
 
     def _wait_for_pp_send_window(self, forward_pass: bool) -> float:
         if not self._pp_send_work:
@@ -1087,7 +1217,11 @@ class Worker(WorkerBase):
         # allowing receive/setup/compute for the next step to overlap with the
         # prior send when the backlog has spare room.
         if self._pp_send_work:
-            ds4_prev_send_wait_ms = self._wait_for_pp_send_window(forward_pass)
+            if envs.VLLM_DS4_PP_OVERLAP_SEND and forward_pass:
+                self._drain_completed_pp_send_work()
+            else:
+                ds4_prev_send_wait_ms = self._wait_for_pp_send_window(forward_pass)
+        self._ds4_pp_gantt("execute_start", scheduler_output)
 
         if (
             parallel_config.pipeline_parallel_size > 1
@@ -1120,6 +1254,7 @@ class Worker(WorkerBase):
 
         if forward_pass and not get_pp_group().is_first_rank:
             ds4_started = time.perf_counter() if ds4_timing_enabled else 0.0
+            self._ds4_pp_gantt("recv_post", scheduler_output)
             tensor_dict, comm_handles, comm_postprocess = (
                 get_pp_group().irecv_tensor_dict(
                     all_gather_group=get_tp_group(),
@@ -1134,9 +1269,16 @@ class Worker(WorkerBase):
                 comm_handles=comm_handles,
                 comm_postprocess=comm_postprocess,
             )
+            self._ds4_pp_gantt(
+                "recv_enqueued",
+                scheduler_output,
+                handles=len(comm_handles),
+                postprocess=len(comm_postprocess),
+            )
 
         with self.annotate_profile(scheduler_output):
             ds4_started = time.perf_counter() if ds4_timing_enabled else 0.0
+            self._ds4_pp_gantt("forward_start", scheduler_output)
             output = self.model_runner.execute_model(
                 scheduler_output, intermediate_tensors
             )
@@ -1151,10 +1293,16 @@ class Worker(WorkerBase):
             if isinstance(
                 output, ModelRunnerOutput | AsyncModelRunnerOutput | NoneType
             ):
+                self._ds4_pp_gantt("forward_done_final", scheduler_output)
                 log_ds4_execute_timing()
                 return output
 
         assert isinstance(output, IntermediateTensors)
+        self._ds4_pp_gantt(
+            "forward_done_intermediate",
+            scheduler_output,
+            keys=",".join(sorted(output.tensors.keys())),
+        )
         parallel_config = self.vllm_config.parallel_config
         assert (
             parallel_config.distributed_executor_backend != "external_launcher"
@@ -1163,13 +1311,26 @@ class Worker(WorkerBase):
 
         # launch non-blocking send of intermediate tensors
         ds4_started = time.perf_counter() if ds4_timing_enabled else 0.0
+        send_tensor_dict, send_slot, send_buffer_wait_ms = (
+            self._buffer_pp_output_for_send(output, scheduler_output)
+        )
+        ds4_prev_send_wait_ms += send_buffer_wait_ms
+        if send_slot is None and self._pp_send_work:
+            ds4_prev_send_wait_ms += self._wait_for_pp_send_window(forward_pass)
         send_handles = get_pp_group().isend_tensor_dict(
-            output.tensors,
+            send_tensor_dict,
             all_gather_group=get_tp_group(),
             all_gather_tensors=all_gather_tensors,
         )
         if send_handles:
+            if send_slot is not None:
+                send_slot.handles = send_handles
             self._pp_send_work.append(send_handles)
+        self._ds4_pp_gantt(
+            "send_enqueue_buffered" if send_slot is not None else "send_enqueue_direct",
+            scheduler_output,
+            handles=len(send_handles),
+        )
         if ds4_timing_enabled:
             ds4_send_setup_ms = (time.perf_counter() - ds4_started) * 1000
         log_ds4_execute_timing()

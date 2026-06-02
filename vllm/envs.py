@@ -140,11 +140,19 @@ if TYPE_CHECKING:
     VLLM_DS4_FINAL_ONLY_NONSTREAMING: bool = False
     VLLM_DS4_ITERATION_TIMING: bool = False
     VLLM_DS4_ITERATION_TIMING_EVERY: int = 1
+    VLLM_DS4_MHC_TILELANG_MAX_TOKENS: int = 8192
     VLLM_DS4_PP_ONLY_GLOBAL_BACKEND: str = ""
     VLLM_DS4_PP_DISABLE_DEVICE_COMMUNICATOR: bool = False
     VLLM_DS4_PP_PYNCCL_TENSOR_DICT: bool = False
+    VLLM_DS4_PP_DIRECT_CUDA_TENSOR_DICT: bool = False
+    VLLM_DS4_PP_DIRECT_CUDA_MIN_BYTES: int = 262144
     VLLM_DS4_PP_DEVICE_TENSOR_DICT_METADATA: bool = False
     VLLM_DS4_PP_SEND_BACKLOG: int = 1
+    VLLM_DS4_PP_OVERLAP_SEND: bool = False
+    VLLM_DS4_PP_SEND_BUFFER_SLOTS: int = 1
+    VLLM_DS4_PP_SEND_BUFFER_MAX_BYTES: int = 1073741824
+    VLLM_DS4_PP_GANTT_TRACE: bool = False
+    VLLM_DS4_PP_GANTT_TRACE_EVERY: int = 1
     VLLM_DS4_PP_PYNCCL_TENSOR_DICT_STRIPES: int = 1
     VLLM_DS4_PP_PYNCCL_TENSOR_DICT_STRIPE_MIN_BYTES: int = 1048576
     VLLM_DS4_PP_STRIPED_NCCL_TENSOR_DICT: bool = False
@@ -1327,6 +1335,13 @@ environment_variables: dict[str, Callable[[], Any]] = {
     "VLLM_DS4_ITERATION_TIMING_EVERY": lambda: int(
         os.environ.get("VLLM_DS4_ITERATION_TIMING_EVERY", "1")
     ),
+    # DS4 DSV4: TileLang mHC prefill slabs must be chunked well below the
+    # 65K prefill scheduler budget on GB10. The live c256 run showed illegal
+    # accesses with 65K slabs; 8K keeps the same native kernel while bounding
+    # transient TileLang allocation pressure.
+    "VLLM_DS4_MHC_TILELANG_MAX_TOKENS": lambda: int(
+        os.environ.get("VLLM_DS4_MHC_TILELANG_MAX_TOKENS", "8192")
+    ),
     "VLLM_DS4_PP_ONLY_GLOBAL_BACKEND": lambda: os.environ.get(
         "VLLM_DS4_PP_ONLY_GLOBAL_BACKEND", ""
     ),
@@ -1350,6 +1365,15 @@ environment_variables: dict[str, Callable[[], Any]] = {
         .lower()
         in ("1", "true", "yes", "on")
     ),
+    "VLLM_DS4_PP_DIRECT_CUDA_TENSOR_DICT": lambda: (
+        os.environ.get("VLLM_DS4_PP_DIRECT_CUDA_TENSOR_DICT", "0")
+        .strip()
+        .lower()
+        in ("1", "true", "yes", "on")
+    ),
+    "VLLM_DS4_PP_DIRECT_CUDA_MIN_BYTES": lambda: int(
+        os.environ.get("VLLM_DS4_PP_DIRECT_CUDA_MIN_BYTES", "262144")
+    ),
     # DS4 PP tensor-dict metadata fast path. When enabled, the metadata header
     # for PP intermediate tensors is sent as a small CUDA tensor on the PP
     # device group instead of a pickled Python object on the CPU/Gloo group.
@@ -1367,6 +1391,27 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # next scheduler step while keeping a bounded CUDA/NCCL queue.
     "VLLM_DS4_PP_SEND_BACKLOG": lambda: int(
         os.environ.get("VLLM_DS4_PP_SEND_BACKLOG", "1")
+    ),
+    # DS4 PP conveyor fast path: send PP outputs from owned CUDA comm buffers
+    # and let compute for the next scheduler wave proceed while the previous
+    # PP boundary transfer drains. The worker only blocks when every reusable
+    # comm buffer slot is still in flight.
+    "VLLM_DS4_PP_OVERLAP_SEND": lambda: (
+        os.environ.get("VLLM_DS4_PP_OVERLAP_SEND", "0").strip().lower()
+        in ("1", "true", "yes", "on")
+    ),
+    "VLLM_DS4_PP_SEND_BUFFER_SLOTS": lambda: int(
+        os.environ.get("VLLM_DS4_PP_SEND_BUFFER_SLOTS", "1")
+    ),
+    "VLLM_DS4_PP_SEND_BUFFER_MAX_BYTES": lambda: int(
+        os.environ.get("VLLM_DS4_PP_SEND_BUFFER_MAX_BYTES", str(1024**3))
+    ),
+    "VLLM_DS4_PP_GANTT_TRACE": lambda: (
+        os.environ.get("VLLM_DS4_PP_GANTT_TRACE", "0").strip().lower()
+        in ("1", "true", "yes", "on")
+    ),
+    "VLLM_DS4_PP_GANTT_TRACE_EVERY": lambda: int(
+        os.environ.get("VLLM_DS4_PP_GANTT_TRACE_EVERY", "1")
     ),
     "VLLM_DS4_PP_PYNCCL_TENSOR_DICT_STRIPES": lambda: int(
         os.environ.get("VLLM_DS4_PP_PYNCCL_TENSOR_DICT_STRIPES", "1")
