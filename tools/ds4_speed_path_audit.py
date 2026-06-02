@@ -96,6 +96,7 @@ check("rail TCP clients retry until peer servers are ready", "DS4_RAIL_TCP_PREFL
 check("rail TCP hard floor is expressed in Gbit/s", "DS4_RAIL_TCP_PREFLIGHT_MIN_GBIT_S" in rail_tcp and "fail_Gbit_s" in rail_tcp)
 check("rail TCP warning floor prints measured Gbit/s without failing launch", "DS4_RAIL_TCP_PREFLIGHT_WARN_GBIT_S" in rail_tcp and "WARNING: DS4 rail TCP preflight below warning threshold" in rail_tcp)
 check("rail TCP preflight binds explicit client source rail IPs", "nc -N -s {rail.source_ip}" in rail_tcp)
+check("rail TCP preflight refuses Wi-Fi/non-fabric routes before bandwidth tests", "_reject_forbidden_rail" in rail_tcp and "refused Wi-Fi route" in rail_tcp and "DS4_RAIL_TCP_ALLOWED_IFNAME" in rail_tcp)
 check("rail TCP preflight uses many unencrypted streams per edge", "DS4_RAIL_TCP_PREFLIGHT_STREAMS" in rail_tcp and "threading.Thread" in rail_tcp)
 check("200G guard can run rail TCP preflight before NCCL", "ds4_run_rail_tcp_preflight" in guard and "ds4_rail_tcp_preflight.py" in guard)
 check("Triton/AOT cache scope is derived from vLLM commit", "ds4_vllm_git_commit()" in guard and "git -C \"$root\" rev-parse --short=12 HEAD" in guard)
