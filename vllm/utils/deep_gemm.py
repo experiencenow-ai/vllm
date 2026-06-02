@@ -617,6 +617,41 @@ def tf32_hc_prenorm_gemm(
     See the caller function for shape requirement
     """
     if current_platform.is_device_capability_family(120):
+        _lazy_init()
+        if _tf32_hc_prenorm_gemm_impl is not None:
+            try:
+                return _tf32_hc_prenorm_gemm_impl(
+                    x,
+                    fn,
+                    out,
+                    sqrsum,
+                    num_split,
+                )
+            except RuntimeError as exc:
+                if "Unsupported architecture" not in str(exc):
+                    raise
+                if not envs.VLLM_DS4_MHC_ALLOW_TRITON_SM12X_FALLBACK:
+                    capability = current_platform.get_device_capability()
+                    capability_text = (
+                        capability.as_version_str() if capability else "unknown"
+                    )
+                    raise RuntimeError(
+                        "DeepGEMM tf32_hc_prenorm_gemm rejected this GB10/SM12x "
+                        f"shape (capability {capability_text}). The Triton "
+                        "mHC fallback is disabled for DS4 production because it "
+                        "has produced device-side asserts on real DSV4 prefill. "
+                        "Install a GB10-capable DeepGEMM build or explicitly set "
+                        "VLLM_DS4_MHC_ALLOW_TRITON_SM12X_FALLBACK=1 for a "
+                        "diagnostic run."
+                    ) from exc
+        elif not envs.VLLM_DS4_MHC_ALLOW_TRITON_SM12X_FALLBACK:
+            raise RuntimeError(
+                "DeepGEMM tf32_hc_prenorm_gemm is unavailable on GB10/SM12x. "
+                "The Triton mHC fallback is disabled for DS4 production because "
+                "it has produced device-side asserts on real DSV4 prefill. "
+                "Install a GB10-capable DeepGEMM build or explicitly set "
+                "VLLM_DS4_MHC_ALLOW_TRITON_SM12X_FALLBACK=1 for a diagnostic run."
+            )
         return _tf32_hc_prenorm_gemm_sm12x(x, fn, out, sqrsum, num_split)
     _lazy_init()
     if _tf32_hc_prenorm_gemm_impl is None:

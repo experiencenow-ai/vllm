@@ -141,6 +141,8 @@ if TYPE_CHECKING:
     VLLM_DS4_ITERATION_TIMING: bool = False
     VLLM_DS4_ITERATION_TIMING_EVERY: int = 1
     VLLM_DS4_MHC_TILELANG_MAX_TOKENS: int = 8192
+    VLLM_DS4_MHC_ALLOW_TRITON_SM12X_FALLBACK: bool = False
+    VLLM_DS4_MHC_NATIVE_PREFLIGHT_TOKENS: int = 8192
     VLLM_DS4_PP_ONLY_GLOBAL_BACKEND: str = ""
     VLLM_DS4_PP_DISABLE_DEVICE_COMMUNICATOR: bool = False
     VLLM_DS4_PP_PYNCCL_TENSOR_DICT: bool = False
@@ -1341,6 +1343,18 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # transient TileLang allocation pressure.
     "VLLM_DS4_MHC_TILELANG_MAX_TOKENS": lambda: int(
         os.environ.get("VLLM_DS4_MHC_TILELANG_MAX_TOKENS", "8192")
+    ),
+    # DS4 DSV4: GB10-capable DeepGEMM exposes the native SM120/SM121 mHC
+    # prenorm GEMM. Prefer that production path; the Triton implementation is
+    # a diagnostic fallback only because it has asserted on real c64 prefill.
+    "VLLM_DS4_MHC_ALLOW_TRITON_SM12X_FALLBACK": lambda: (
+        os.environ.get("VLLM_DS4_MHC_ALLOW_TRITON_SM12X_FALLBACK", "0")
+        .strip()
+        .lower()
+        in ("1", "true", "yes", "on")
+    ),
+    "VLLM_DS4_MHC_NATIVE_PREFLIGHT_TOKENS": lambda: int(
+        os.environ.get("VLLM_DS4_MHC_NATIVE_PREFLIGHT_TOKENS", "8192")
     ),
     "VLLM_DS4_PP_ONLY_GLOBAL_BACKEND": lambda: os.environ.get(
         "VLLM_DS4_PP_ONLY_GLOBAL_BACKEND", ""
