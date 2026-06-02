@@ -59,15 +59,18 @@ def _build_command(args: argparse.Namespace) -> str:
 
 
 def _bench_command(args: argparse.Namespace, rank: int, log_tag: str) -> str:
+    nccl_ifname = _rank_value(args.nccl_ifnames, rank) or args.nccl_ifname
+    gloo_ifname = _rank_value(args.gloo_ifnames, rank) or args.gloo_ifname
+    host_ip = _rank_value(args.host_ips, rank)
     env = {
         "RANK": str(rank),
         "WORLD_SIZE": str(args.nnodes),
         "MASTER_ADDR": args.master_addr,
         "MASTER_PORT": args.master_port,
         "NCCL_DEBUG": args.nccl_debug,
-        "NCCL_SOCKET_IFNAME": args.nccl_ifname,
-        "GLOO_SOCKET_IFNAME": args.gloo_ifname,
-        "VLLM_HOST_IP": args.host_ips.split(",")[rank] if args.host_ips else "",
+        "NCCL_SOCKET_IFNAME": nccl_ifname,
+        "GLOO_SOCKET_IFNAME": gloo_ifname,
+        "VLLM_HOST_IP": host_ip,
         "DS4_NCCL_P2P_BENCH_PAIRS": args.pairs,
         "DS4_NCCL_P2P_BENCH_METHODS": args.methods,
         "DS4_NCCL_P2P_BENCH_BYTES_LIST": args.bytes,
@@ -96,6 +99,17 @@ def _bench_command(args: argparse.Namespace, rank: int, log_tag: str) -> str:
         f"env {env_text} timeout --kill-after=10s {args.timeout_s}s "
         f"{py} tools/ds4_nccl_p2p_bench.py > {log} 2>&1",
     )
+
+
+def _rank_value(raw: str, rank: int) -> str:
+    if not raw:
+        return ""
+    values = raw.split("|")
+    if len(values) == 1:
+        values = raw.split(",")
+    if rank >= len(values):
+        raise SystemExit(f"rank {rank} has no value in {raw!r}")
+    return values[rank].strip()
 
 
 def _collect(node: str, rank: int, log_tag: str, dry_run: bool) -> None:
@@ -138,8 +152,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--direction", choices=("unidirectional", "bidirectional"), default="unidirectional")
     parser.add_argument("--dtype", default="bfloat16")
     parser.add_argument("--nccl-ifname", default="ds4ring0")
+    parser.add_argument("--nccl-ifnames", default="", help="per-rank NCCL_SOCKET_IFNAME list separated by |")
     parser.add_argument("--gloo-ifname", default="ds4ring0")
-    parser.add_argument("--host-ips", default="")
+    parser.add_argument("--gloo-ifnames", default="", help="per-rank GLOO_SOCKET_IFNAME list separated by |")
+    parser.add_argument("--host-ips", default="", help="per-rank VLLM_HOST_IP list separated by |")
     parser.add_argument("--nccl-debug", default="WARN")
     parser.add_argument("--timeout-s", type=int, default=240)
     parser.add_argument("--log-tag", default="")
