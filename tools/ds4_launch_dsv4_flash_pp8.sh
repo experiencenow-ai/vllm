@@ -29,6 +29,7 @@ case "$DS4_DSV4_PIPELINE_RAM_PROFILE" in
     : "${DSV4_MAX_NUM_SEQS:=8}"
     : "${DSV4_MAX_NUM_BATCHED_TOKENS:=4096}"
     : "${DSV4_KV_CACHE_MEMORY_BYTES:=4294967296}"
+    : "${DSV4_MIN_KV_CACHE_MEMORY_BYTES:=1073741824}"
     : "${DSV4_KV_OFFLOADING_SIZE:=2}"
     : "${DSV4_GPU_MEMORY_UTILIZATION:=0.20}"
     : "${DSV4_WORKSPACE_PREALLOC_BYTES:=268435456}"
@@ -41,6 +42,7 @@ case "$DS4_DSV4_PIPELINE_RAM_PROFILE" in
     : "${DSV4_MAX_NUM_SEQS:=4}"
     : "${DSV4_MAX_NUM_BATCHED_TOKENS:=4096}"
     : "${DSV4_KV_CACHE_MEMORY_BYTES:=3221225472}"
+    : "${DSV4_MIN_KV_CACHE_MEMORY_BYTES:=536870912}"
     : "${DSV4_KV_OFFLOADING_SIZE:=1}"
     : "${DSV4_GPU_MEMORY_UTILIZATION:=0.18}"
     : "${DSV4_WORKSPACE_PREALLOC_BYTES:=134217728}"
@@ -53,6 +55,7 @@ case "$DS4_DSV4_PIPELINE_RAM_PROFILE" in
     : "${DSV4_MAX_NUM_SEQS:=8}"
     : "${DSV4_MAX_NUM_BATCHED_TOKENS:=8192}"
     : "${DSV4_KV_CACHE_MEMORY_BYTES:=12884901888}"
+    : "${DSV4_MIN_KV_CACHE_MEMORY_BYTES:=2147483648}"
     : "${DSV4_KV_OFFLOADING_SIZE:=8}"
     : "${DSV4_GPU_MEMORY_UTILIZATION:=0.30}"
     : "${DSV4_WORKSPACE_PREALLOC_BYTES:=536870912}"
@@ -65,6 +68,7 @@ case "$DS4_DSV4_PIPELINE_RAM_PROFILE" in
     : "${DSV4_MAX_NUM_SEQS:=128}"
     : "${DSV4_MAX_NUM_BATCHED_TOKENS:=32768}"
     : "${DSV4_KV_CACHE_MEMORY_BYTES:=34359738368}"
+    : "${DSV4_MIN_KV_CACHE_MEMORY_BYTES:=6442450944}"
     : "${DSV4_KV_OFFLOADING_SIZE:=8}"
     : "${DSV4_GPU_MEMORY_UTILIZATION:=0.60}"
     : "${DSV4_WORKSPACE_PREALLOC_BYTES:=805306368}"
@@ -77,6 +81,7 @@ case "$DS4_DSV4_PIPELINE_RAM_PROFILE" in
     : "${DSV4_MAX_NUM_SEQS:=512}"
     : "${DSV4_MAX_NUM_BATCHED_TOKENS:=65536}"
     : "${DSV4_KV_CACHE_MEMORY_BYTES:=51539607552}"
+    : "${DSV4_MIN_KV_CACHE_MEMORY_BYTES:=8589934592}"
     : "${DSV4_KV_OFFLOADING_SIZE:=8}"
     : "${DSV4_GPU_MEMORY_UTILIZATION:=0.70}"
     : "${DSV4_WORKSPACE_PREALLOC_BYTES:=1073741824}"
@@ -268,14 +273,53 @@ else
   unset VLLM_PP_LAYER_PARTITION
 fi
 
-echo "DSV4 PP${NNODES} profile=$DS4_DSV4_PIPELINE_RAM_PROFILE served_model=$DSV4_SERVED_MODEL_NAME max_model_len=$DSV4_MAX_MODEL_LEN max_num_seqs=$DSV4_MAX_NUM_SEQS max_num_batched_tokens=$DSV4_MAX_NUM_BATCHED_TOKENS sched_max_new_reqs=$VLLM_DS4_SCHED_MAX_NEW_REQS_PER_STEP sched_max_new_prefill_tokens=$VLLM_DS4_SCHED_MAX_NEW_PREFILL_TOKENS_PER_STEP kv_cache_memory_bytes=$DSV4_KV_CACHE_MEMORY_BYTES kv_offloading_size=$DSV4_KV_OFFLOADING_SIZE gpu_memory_utilization=$DSV4_GPU_MEMORY_UTILIZATION workspace_prealloc_bytes=$VLLM_WORKSPACE_PREALLOC_BYTES mq_max_chunks=$VLLM_MQ_MAX_CHUNKS pp_layer_partition=${DSV4_FLASH_PP_LAYER_PARTITION:-auto} pp_pynccl=$VLLM_DS4_PP_PYNCCL_TENSOR_DICT pp_device_metadata=$VLLM_DS4_PP_DEVICE_TENSOR_DICT_METADATA pp_send_backlog=$VLLM_DS4_PP_SEND_BACKLOG pp_pynccl_stripes=$VLLM_DS4_PP_PYNCCL_TENSOR_DICT_STRIPES pp_striped_nccl=$VLLM_DS4_PP_STRIPED_NCCL_TENSOR_DICT pp_striped_nccl_stripes=$VLLM_DS4_PP_STRIPED_NCCL_STRIPES pp_striped_nccl_min_bytes=$VLLM_DS4_PP_STRIPED_NCCL_MIN_BYTES" >&2
+DSV4_KV_CACHE_MEMORY_BYTES_PROFILE="$DSV4_KV_CACHE_MEMORY_BYTES"
+DSV4_KV_CACHE_MEMORY_BYTES_EFFECTIVE="$DSV4_KV_CACHE_MEMORY_BYTES"
+DSV4_LOCAL_LAYER_COUNT="unknown"
+DSV4_MAX_LAYER_COUNT="unknown"
+if [[ "${DSV4_SCALE_KV_CACHE_BY_LOCAL_LAYERS:-1}" =~ ^(1|true|TRUE|yes|YES|on|ON)$ ]]; then
+  case "$DSV4_KV_CACHE_MEMORY_BYTES" in
+    ""|0|auto|AUTO|none|NONE)
+      ;;
+    *)
+      read -r DSV4_LOCAL_LAYER_COUNT DSV4_MAX_LAYER_COUNT DSV4_KV_CACHE_MEMORY_BYTES_EFFECTIVE < <("$RUNTIME_PYTHON" - "$NNODES" "$NODE_RANK" "${DSV4_FLASH_PP_LAYER_PARTITION:-}" "$DSV4_KV_CACHE_MEMORY_BYTES" "${DSV4_MIN_KV_CACHE_MEMORY_BYTES:-0}" <<'PY'
+import sys
+stages = int(sys.argv[1])
+rank = int(sys.argv[2])
+raw = sys.argv[3]
+base = int(sys.argv[4])
+floor = max(0, int(sys.argv[5]))
+if rank < 0 or rank >= stages:
+    raise SystemExit(f"NODE_RANK={rank} is outside NNODES={stages}")
+if raw:
+    parts = [int(item) for item in raw.split(",") if item.strip()]
+else:
+    q, r = divmod(43, stages)
+    parts = [q + (1 if idx < r else 0) for idx in range(stages)]
+if len(parts) != stages:
+    raise SystemExit(f"partition has {len(parts)} entries but NNODES={stages}: {raw}")
+if sum(parts) != 43:
+    raise SystemExit(f"partition must sum to 43 DSV4 decoder layers, got {sum(parts)}: {raw}")
+if any(part <= 0 for part in parts):
+    raise SystemExit(f"partition stages must all be positive: {raw}")
+local = parts[rank]
+max_layers = max(parts)
+scaled = ((base * local) + max_layers - 1) // max_layers
+print(local, max_layers, max(floor, scaled))
+PY
+)
+      ;;
+  esac
+fi
+
+echo "DSV4 PP${NNODES} profile=$DS4_DSV4_PIPELINE_RAM_PROFILE served_model=$DSV4_SERVED_MODEL_NAME max_model_len=$DSV4_MAX_MODEL_LEN max_num_seqs=$DSV4_MAX_NUM_SEQS max_num_batched_tokens=$DSV4_MAX_NUM_BATCHED_TOKENS sched_max_new_reqs=$VLLM_DS4_SCHED_MAX_NEW_REQS_PER_STEP sched_max_new_prefill_tokens=$VLLM_DS4_SCHED_MAX_NEW_PREFILL_TOKENS_PER_STEP kv_cache_memory_bytes_profile=$DSV4_KV_CACHE_MEMORY_BYTES_PROFILE kv_cache_memory_bytes_effective=$DSV4_KV_CACHE_MEMORY_BYTES_EFFECTIVE kv_cache_memory_bytes_min=${DSV4_MIN_KV_CACHE_MEMORY_BYTES:-0} kv_layer_scale=${DSV4_SCALE_KV_CACHE_BY_LOCAL_LAYERS:-1} local_layers=$DSV4_LOCAL_LAYER_COUNT max_stage_layers=$DSV4_MAX_LAYER_COUNT kv_offloading_size=$DSV4_KV_OFFLOADING_SIZE gpu_memory_utilization=$DSV4_GPU_MEMORY_UTILIZATION workspace_prealloc_bytes=$VLLM_WORKSPACE_PREALLOC_BYTES mq_max_chunks=$VLLM_MQ_MAX_CHUNKS pp_layer_partition=${DSV4_FLASH_PP_LAYER_PARTITION:-auto} pp_pynccl=$VLLM_DS4_PP_PYNCCL_TENSOR_DICT pp_device_metadata=$VLLM_DS4_PP_DEVICE_TENSOR_DICT_METADATA pp_send_backlog=$VLLM_DS4_PP_SEND_BACKLOG pp_pynccl_stripes=$VLLM_DS4_PP_PYNCCL_TENSOR_DICT_STRIPES pp_striped_nccl=$VLLM_DS4_PP_STRIPED_NCCL_TENSOR_DICT pp_striped_nccl_stripes=$VLLM_DS4_PP_STRIPED_NCCL_STRIPES pp_striped_nccl_min_bytes=$VLLM_DS4_PP_STRIPED_NCCL_MIN_BYTES" >&2
 
 KV_CACHE_MEMORY_ARGS=()
-case "$DSV4_KV_CACHE_MEMORY_BYTES" in
+case "$DSV4_KV_CACHE_MEMORY_BYTES_EFFECTIVE" in
   ""|0|auto|AUTO|none|NONE)
     ;;
   *)
-    KV_CACHE_MEMORY_ARGS=(--kv-cache-memory-bytes "$DSV4_KV_CACHE_MEMORY_BYTES")
+    KV_CACHE_MEMORY_ARGS=(--kv-cache-memory-bytes "$DSV4_KV_CACHE_MEMORY_BYTES_EFFECTIVE")
     ;;
 esac
 
