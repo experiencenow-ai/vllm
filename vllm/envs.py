@@ -140,6 +140,7 @@ if TYPE_CHECKING:
     VLLM_DS4_FINAL_ONLY_NONSTREAMING: bool = False
     VLLM_DS4_ITERATION_TIMING: bool = False
     VLLM_DS4_ITERATION_TIMING_EVERY: int = 1
+    VLLM_DS4_VALIDATE_INPUT_IDS: bool = False
     VLLM_DS4_MHC_TILELANG_MAX_TOKENS: int = 8192
     VLLM_DS4_MHC_ALLOW_TRITON_SM12X_FALLBACK: bool = False
     VLLM_DS4_MHC_NATIVE_PREFLIGHT_TOKENS: int = 8192
@@ -1336,6 +1337,13 @@ environment_variables: dict[str, Callable[[], Any]] = {
     ),
     "VLLM_DS4_ITERATION_TIMING_EVERY": lambda: int(
         os.environ.get("VLLM_DS4_ITERATION_TIMING_EVERY", "1")
+    ),
+    # DS4 fail-closed integrity guard: validate first-rank scheduled input IDs
+    # before H2D copy so a bad scheduler/staging lane produces an actionable
+    # error instead of an asynchronous embedding-kernel device assert.
+    "VLLM_DS4_VALIDATE_INPUT_IDS": lambda: (
+        os.environ.get("VLLM_DS4_VALIDATE_INPUT_IDS", "0").strip().lower()
+        in ("1", "true", "yes", "on")
     ),
     # DS4 DSV4: TileLang mHC prefill slabs must be chunked well below the
     # 65K prefill scheduler budget on GB10. The live c256 run showed illegal

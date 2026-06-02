@@ -1934,6 +1934,9 @@ class GPUModelRunner(
             token_indices_tensor,
             out=self.input_ids.cpu[:total_num_scheduled_tokens],
         )
+        self._validate_ds4_scheduled_input_ids(
+            total_num_scheduled_tokens, cu_num_tokens
+        )
         if self.enable_prompt_embeds:
             is_token_ids = self.input_batch.is_token_ids_tensor.flatten()
             torch.index_select(
@@ -2186,6 +2189,48 @@ class GPUModelRunner(
         return (
             logits_indices,
             spec_decode_metadata,
+        )
+
+    def _validate_ds4_scheduled_input_ids(
+        self,
+        total_num_scheduled_tokens: int,
+        cu_num_tokens: np.ndarray,
+    ) -> None:
+        if not envs.VLLM_DS4_VALIDATE_INPUT_IDS:
+            return
+        if total_num_scheduled_tokens <= 0:
+            return
+        vocab_size = int(self.input_batch.vocab_size)
+        ids_np = self.input_ids.cpu[:total_num_scheduled_tokens].numpy()
+        invalid_mask = np.logical_or(ids_np < 0, ids_np >= vocab_size)
+        if not bool(np.any(invalid_mask)):
+            return
+        bad_offsets = np.flatnonzero(invalid_mask)
+        req_ids = getattr(self.input_batch, "req_ids", [])
+        samples: list[str] = []
+        for flat_offset in bad_offsets[:16]:
+            req_index = int(np.searchsorted(cu_num_tokens, flat_offset, side="right") - 1)
+            req_index = max(0, min(req_index, len(cu_num_tokens) - 2))
+            local_offset = int(flat_offset - cu_num_tokens[req_index])
+            req_id = "<unknown>"
+            if 0 <= req_index < len(req_ids):
+                req_id = str(req_ids[req_index])
+            samples.append(
+                "offset=%d req_index=%d req_id=%s local_token=%d token_id=%d"
+                % (
+                    int(flat_offset),
+                    req_index,
+                    req_id,
+                    local_offset,
+                    int(ids_np[flat_offset]),
+                )
+            )
+        raise RuntimeError(
+            "DS4 scheduled input id validation failed before H2D copy: "
+            f"total_scheduled={total_num_scheduled_tokens} "
+            f"vocab_size={vocab_size} min_id={int(ids_np.min())} "
+            f"max_id={int(ids_np.max())} bad_count={int(bad_offsets.size)} "
+            f"samples=[{'; '.join(samples)}]"
         )
 
     def _build_attention_metadata(
