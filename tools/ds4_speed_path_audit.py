@@ -55,6 +55,8 @@ check("PP4xTP2 launcher defaults to bounded request admission waves", 'DSV4_SCHE
 check("PP4xTP2 launcher defaults to bounded prefill token waves", 'DSV4_SCHED_MAX_NEW_PREFILL_TOKENS_PER_STEP:-32768' in pp4)
 check("PP8 launcher defaults to bounded request admission waves", 'DSV4_SCHED_MAX_NEW_REQS_PER_STEP:-32' in pp8)
 check("PP8 launcher defaults to bounded prefill token waves", 'DSV4_SCHED_MAX_NEW_PREFILL_TOKENS_PER_STEP:-32768' in pp8)
+check("PP8 launcher hard-codes the front-loaded 43-layer partition", 'DSV4_FLASH_PP_LAYER_PARTITION="8,8,8,8,8,1,1,1"' in pp8)
+check("PP8 launcher does not accept stale default partition overrides", "DSV4_FLASH_PP_LAYER_PARTITION_DEFAULT" not in pp8)
 check("DSV4 launchers skip profile-only dummy sampler logits gather", "VLLM_DS4_PROFILE_SKIP_DUMMY_SAMPLER" in envs and 'VLLM_DS4_PROFILE_SKIP_DUMMY_SAMPLER:-1' in pp8 and 'VLLM_DS4_PROFILE_SKIP_DUMMY_SAMPLER:-1' in pp4)
 check("DSV4 launchers skip explicit-KV memory profile forward", "VLLM_DS4_SKIP_EXPLICIT_KV_PROFILE_RUN" in envs and 'VLLM_DS4_SKIP_EXPLICIT_KV_PROFILE_RUN:-1' in pp8 and 'VLLM_DS4_SKIP_EXPLICIT_KV_PROFILE_RUN:-1' in pp4)
 check("DSV4 launchers skip last-rank sampler warmup", "VLLM_DS4_SKIP_LAST_RANK_SAMPLER_WARMUP" in envs and 'VLLM_DS4_SKIP_LAST_RANK_SAMPLER_WARMUP:-1' in pp8 and 'VLLM_DS4_SKIP_LAST_RANK_SAMPLER_WARMUP:-1' in pp4)
@@ -110,3 +112,4 @@ check("stop script catches stale NCCL preflight processes", "ds4_nccl_preflight"
 check("relaunch fails early when head startup process exits", "startup-fail-fast-s" in relaunch and "head_service_process_alive" in relaunch)
 check("relaunch process probe avoids pgrep self-match", "[d]s4_nccl_preflight.py" in relaunch and "[v]llm.entrypoints" in relaunch)
 check("DS4 PR helper pushes to the experiencenow fork, not upstream origin", 'DEFAULT_PUSH_REMOTE = "experiencenow"' in submit_pr and 'DEFAULT_REPO = "experiencenow-ai/vllm"' in submit_pr and "does not point at experiencenow-ai/vllm" in submit_pr)
+check("DS4 PR helper refuses non-DS4 target repos", "refusing target repo" in submit_pr and "experiencenow-ai/vllm" in submit_pr)

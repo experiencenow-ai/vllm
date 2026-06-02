@@ -117,6 +117,16 @@ def main() -> int:
     if branch == "" or branch == args.base:
         raise SystemExit(f"refusing to submit from branch {branch!r}")
     ensure_clean_tree()
+    if args.repo != DEFAULT_REPO:
+        raise SystemExit(
+            f"refusing target repo {args.repo!r}; DS4 Spark vLLM PRs must "
+            f"target {DEFAULT_REPO!r}"
+        )
+    if args.head_owner != DEFAULT_HEAD_OWNER:
+        raise SystemExit(
+            f"refusing head owner {args.head_owner!r}; DS4 Spark vLLM PRs "
+            f"must push through {DEFAULT_HEAD_OWNER!r}"
+        )
 
     push_url = remote_url(args.push_remote)
     if "experiencenow-ai/vllm" not in push_url:
