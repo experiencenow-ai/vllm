@@ -96,6 +96,7 @@ check("NCCL preflight separates directional PP P2P from TP pair collectives", "D
 check("standalone NCCL P2P bench compares torch PyNCCL and striped paths", "method == \"torch\"" in nccl_p2p_bench and "method == \"pynccl\"" in nccl_p2p_bench and "method == \"striped\"" in nccl_p2p_bench)
 check("standalone NCCL P2P bench can reproduce symmetric PyNCCL credit mode", "DS4_NCCL_P2P_BENCH_CREDIT" in nccl_p2p_bench and '"credit"' in nccl_p2p_bench)
 check("standalone NCCL P2P runner can isolate GPUs before transport tests", "--stop-service" in nccl_p2p_runner and "ds4_stop_spark_processes.py" in nccl_p2p_runner)
+check("standalone NCCL P2P runner defaults to PyNCCL credit and warmup", "--pynccl-credit" in nccl_p2p_runner and '"DS4_NCCL_P2P_BENCH_CREDIT": "1" if args.pynccl_credit else "0"' in nccl_p2p_runner and '"VLLM_DS4_SKIP_PYNCCL_WARMUP_ALLREDUCE": "0"' in nccl_p2p_runner)
 check("NCCL collective bandwidth is warning-only during cable debug", "DS4_NCCL_PREFLIGHT_MIN_BUSBW_GBPS:-0" in guard)
 check("NCCL preflight warns below old collective floor without failing launch", "DS4_NCCL_PREFLIGHT_WARN_BUSBW_GBPS" in preflight and "WARNING: DS4 NCCL preflight below warning threshold" in preflight and "DS4_NCCL_PREFLIGHT_WARN_BUSBW_GBPS:-8" in guard)
 check("rail TCP preflight script exists", "ds4_transfer.fast_copy data-plane shape" in rail_tcp)

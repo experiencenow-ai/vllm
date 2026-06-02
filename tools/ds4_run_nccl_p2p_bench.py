@@ -79,8 +79,9 @@ def _bench_command(args: argparse.Namespace, rank: int, log_tag: str) -> str:
         "DS4_NCCL_P2P_BENCH_STRIPES": str(args.stripes),
         "DS4_NCCL_P2P_BENCH_DIRECTION": args.direction,
         "DS4_NCCL_P2P_BENCH_DTYPE": args.dtype,
+        "DS4_NCCL_P2P_BENCH_CREDIT": "1" if args.pynccl_credit else "0",
         "DS4_NCCL_P2P_BENCH_STRIPED_STREAMS": "1" if args.striped_streams else "0",
-        "VLLM_DS4_SKIP_PYNCCL_WARMUP_ALLREDUCE": "1",
+        "VLLM_DS4_SKIP_PYNCCL_WARMUP_ALLREDUCE": "0",
     }
     if args.extra_env:
         for item in args.extra_env:
@@ -163,6 +164,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--build", action="store_true")
     parser.add_argument("--stop-service", default="")
     parser.add_argument("--striped-streams", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--pynccl-credit", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--extra-env", action="append", default=[], metavar="KEY=VALUE")
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args()
