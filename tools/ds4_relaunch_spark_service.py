@@ -17,6 +17,7 @@ import argparse
 import datetime as dt
 import json
 import os
+import signal
 import shlex
 import subprocess
 import sys
@@ -52,6 +53,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--skip-pull", action="store_true")
     parser.add_argument("--skip-build", action="store_true")
     parser.add_argument("--skip-stop", action="store_true")
+    parser.add_argument(
+        "--skip-local-controller-cleanup",
+        action="store_true",
+        help="do not terminate stale local ds4_relaunch_spark_service.py controllers for this service",
+    )
+    parser.add_argument("--local-controller-stop-timeout-s", type=float, default=5.0)
     parser.add_argument(
         "--build-command",
         default=os.getenv("DS4_VLLM_BUILD_COMMAND", "auto"),
@@ -112,6 +119,73 @@ def remote_output(node: str, command: str) -> str:
         text=True,
     )
     return result.stdout
+
+
+def _command_service_matches(command: str, service: str) -> bool:
+    if "--service" not in command:
+        return service == "dsv4-pp8"
+    return f"--service {service}" in command or f"--service={service}" in command
+
+
+def cleanup_stale_local_controllers(args: argparse.Namespace) -> None:
+    if args.skip_local_controller_cleanup or args.dry_run:
+        return
+    try:
+        result = subprocess.run(
+            ["ps", "-axo", "pid=,command="],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+    except (OSError, subprocess.CalledProcessError) as exc:
+        print(f"warning: could not inspect local relaunch controllers: {exc}", file=sys.stderr)
+        return
+    own_pid = os.getpid()
+    victims: list[tuple[int, str]] = []
+    for raw_line in result.stdout.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        pid_text, _, command = line.partition(" ")
+        try:
+            pid = int(pid_text)
+        except ValueError:
+            continue
+        if pid == own_pid:
+            continue
+        if "ds4_relaunch_spark_service.py" not in command:
+            continue
+        if not _command_service_matches(command, args.service):
+            continue
+        victims.append((pid, command))
+    if not victims:
+        return
+    for pid, command in victims:
+        print(f"terminating stale local relaunch controller pid={pid}: {command}")
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+    deadline = time.monotonic() + args.local_controller_stop_timeout_s
+    remaining = [pid for pid, _command in victims]
+    while remaining and time.monotonic() < deadline:
+        next_remaining: list[int] = []
+        for pid in remaining:
+            try:
+                os.kill(pid, 0)
+                next_remaining.append(pid)
+            except ProcessLookupError:
+                pass
+        remaining = next_remaining
+        if remaining:
+            time.sleep(0.2)
+    for pid in remaining:
+        print(f"force killing stale local relaunch controller pid={pid}")
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
 
 
 def repo_command(args: argparse.Namespace, inner: str) -> str:
@@ -347,6 +421,7 @@ def run_parallel_start(args: argparse.Namespace, nodes: list[str], log_tag: str)
 
 def main() -> int:
     args = parse_args()
+    cleanup_stale_local_controllers(args)
     nodes = nodes_from_arg(args.nodes)
     if len(nodes) != args.nnodes:
         raise SystemExit(f"--nodes has {len(nodes)} entries but --nnodes={args.nnodes}")

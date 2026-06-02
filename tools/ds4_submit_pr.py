@@ -53,6 +53,12 @@ def ensure_clean_tree() -> None:
         )
 
 
+def sync_base(remote: str, base: str) -> None:
+    print(f"syncing local {base} from {remote}/{base}")
+    run(["git", "checkout", base])
+    run(["git", "pull", remote, base])
+
+
 def find_existing_pr(repo: str, head: str) -> str | None:
     out = run(
         [
@@ -111,6 +117,11 @@ def main() -> int:
     parser.add_argument("--base", default=DEFAULT_BASE)
     parser.add_argument("--merge", action="store_true")
     parser.add_argument("--delete-branch", action="store_true")
+    parser.add_argument(
+        "--no-sync-main",
+        action="store_true",
+        help="after --merge, do not checkout/pull the base branch from the experiencenow fork",
+    )
     args = parser.parse_args()
 
     branch = current_branch()
@@ -180,6 +191,8 @@ def main() -> int:
             capture=True,
         )
         print(merged)
+        if not args.no_sync_main:
+            sync_base(args.push_remote, args.base)
     return 0
 
 
