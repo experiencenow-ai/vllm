@@ -77,6 +77,7 @@ def make_copy_and_call(
 
     def copy_and_call(*args: Any) -> Any:
         list_args = list(args)
+        recapture_cudagraphs = False
         for i, index in enumerate(sym_tensor_indices):
             runtime_tensor = list_args[index]
             runtime_shape = runtime_tensor.shape[0]
@@ -91,10 +92,15 @@ def make_copy_and_call(
             ):
                 input_buffers[i] = torch.empty_like(runtime_tensor)
                 static_buffer = input_buffers[i]
+                recapture_cudagraphs = True
 
             static_tensor = static_buffer[:runtime_shape]
             static_tensor.copy_(runtime_tensor)
             list_args[index] = static_tensor
+        if recapture_cudagraphs:
+            from vllm.compilation.cuda_graph import CUDAGraphWrapper
+
+            CUDAGraphWrapper.clear_all_graphs()
         return callable_fn(*list_args)
 
     return copy_and_call

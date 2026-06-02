@@ -110,10 +110,11 @@ def main() -> int:
         '\\"cudagraph_copy_inputs\\":true' in dsv4,
     )
     failures += check(
-        "CUDA graph input copy buffers grow for later larger symbolic shapes",
+        "CUDA graph input copy buffers grow and force recapture for later larger symbolic shapes",
         "static_buffer.shape[0] < runtime_shape" in backends
         and "static_buffer.shape[1:] != runtime_tensor.shape[1:]" in backends
-        and "torch.empty_like(runtime_tensor)" in backends,
+        and "torch.empty_like(runtime_tensor)" in backends
+        and "CUDAGraphWrapper.clear_all_graphs()" in backends,
     )
     return 1 if failures else 0
 
