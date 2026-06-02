@@ -686,12 +686,14 @@ class GPUModelRunner(
         # Separate cuda stream for overlapping transfer of sampled token ids from
         # GPU to CPU when async scheduling is enabled.
         self.async_output_copy_stream: torch.cuda.Stream | None = None
-        # cuda event to synchronize use of reused CPU tensors between steps
-        # when async scheduling is enabled.
-        self.prepare_inputs_event: torch.Event | None = None
+        # CUDA event to synchronize use of reused CPU tensors between steps.
+        # The input staging buffers use non-blocking H2D copies even in the
+        # synchronous scheduler. Without the event protocol, a later preprocess
+        # step can overwrite a pinned CPU lane while the previous DMA is still
+        # reading it.
+        self.prepare_inputs_event: torch.Event | None = torch.Event()
         if self.use_async_scheduling:
             self.async_output_copy_stream = torch.cuda.Stream()
-            self.prepare_inputs_event = torch.Event()
 
         # self.cudagraph_batch_sizes sorts in ascending order.
         if (
@@ -3682,8 +3684,7 @@ class GPUModelRunner(
             return
 
         # Ensure prior step has finished with reused CPU tensors.
-        # This is required in the async scheduling case because
-        # the CPU->GPU transfer happens async.
+        # This is required whenever CPU->GPU transfer happens async.
         self.prepare_inputs_event.synchronize()
         try:
             yield
