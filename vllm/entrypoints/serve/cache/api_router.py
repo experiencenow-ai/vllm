@@ -67,6 +67,11 @@ async def reset_encoder_cache(raw_request: Request):
 
 
 def attach_router(app: FastAPI):
-    if not envs.VLLM_SERVER_DEV_MODE:
+    if not (envs.VLLM_SERVER_DEV_MODE or envs.VLLM_DS4_ENABLE_CACHE_ADMIN):
         return
+    if envs.VLLM_DS4_ENABLE_CACHE_ADMIN and not envs.VLLM_SERVER_DEV_MODE:
+        logger.warning(
+            "DS4 internal cache-admin endpoints are enabled without general "
+            "vLLM dev mode. Keep this listener on the private control plane."
+        )
     app.include_router(router)
