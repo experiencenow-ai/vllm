@@ -35,6 +35,10 @@ def main() -> int:
         and "VLLM_DS4_PP_DIRECT_CUDA_MIN_BYTES" in envs,
     )
     failures += check(
+        "env exposes symmetric PyNCCL P2P credit control",
+        "VLLM_DS4_PP_PYNCCL_P2P_CREDIT" in envs,
+    )
+    failures += check(
         "env exposes PP Gantt trace controls",
         "VLLM_DS4_PP_GANTT_TRACE" in envs
         and "VLLM_DS4_PP_GANTT_TRACE_EVERY" in envs,
@@ -73,6 +77,11 @@ def main() -> int:
         "synchronize_on_wait=not envs.VLLM_DS4_PP_OVERLAP_SEND" in parallel,
     )
     failures += check(
+        "parallel_state posts reverse credit for unidirectional PyNCCL P2P",
+        "VLLM_DS4_PP_PYNCCL_P2P_CREDIT" in parallel
+        and "credit_op" in parallel,
+    )
+    failures += check(
         "parallel_state accepts direct CUDA tensor-dict alias",
         "VLLM_DS4_PP_DIRECT_CUDA_TENSOR_DICT" in parallel
         and "VLLM_DS4_PP_PYNCCL_TENSOR_DICT" in parallel,
@@ -89,6 +98,8 @@ def main() -> int:
             and 'VLLM_DS4_PP_OVERLAP_SEND="${VLLM_DS4_PP_OVERLAP_SEND:-1}"'
             in script
             and 'VLLM_DS4_PP_SEND_BUFFER_SLOTS="${VLLM_DS4_PP_SEND_BUFFER_SLOTS:-4}"'
+            in script
+            and 'VLLM_DS4_PP_PYNCCL_P2P_CREDIT="${VLLM_DS4_PP_PYNCCL_P2P_CREDIT:-1}"'
             in script,
         )
     failures += check(

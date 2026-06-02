@@ -802,6 +802,18 @@ class GroupCoordinator:
                     p2p_op.tensor = chunk
                     p2p_op.group_peer = peer
                     p2p_ops.append(p2p_op)
+            if p2p_ops and envs.VLLM_DS4_PP_PYNCCL_P2P_CREDIT:
+                credit_op = object.__new__(P2POp)
+                credit_op.op = (
+                    torch.distributed.irecv
+                    if op is torch.distributed.isend
+                    else torch.distributed.isend
+                )
+                credit_op.tensor = torch.empty(
+                    (1,), dtype=torch.uint8, device=remaining_tensors[0].device
+                )
+                credit_op.group_peer = peer
+                p2p_ops.append(credit_op)
             if p2p_ops:
                 self.device_communicator.batch_isend_irecv(p2p_ops)
                 for tensor in remaining_tensors:

@@ -30,6 +30,11 @@ require(
     "striped channel can use independent CUDA streams",
 )
 require(
+    "vllm/distributed/ds4_high_speed_channel.py",
+    "VLLM_DS4_PP_PYNCCL_P2P_CREDIT",
+    "striped channel can post a tiny reverse credit for PyNCCL P2P",
+)
+require(
     "vllm/distributed/parallel_state.py",
     "self.ds4_pp_striped_nccl_channel = build_ds4_pp_striped_nccl_channel",
     "PP group constructs striped channel",
@@ -49,6 +54,11 @@ require(
     "VLLM_DS4_PP_STRIPED_NCCL_TENSOR_DICT",
     "striped channel env exists",
 )
+require(
+    "vllm/envs.py",
+    "VLLM_DS4_PP_PYNCCL_P2P_CREDIT",
+    "PyNCCL P2P credit env exists",
+)
 
 for script in [
     "tools/ds4_launch_dsv4_flash_pp8.sh",
@@ -58,6 +68,7 @@ for script in [
     path = ROOT / script
     if path.exists():
         require(script, "VLLM_DS4_PP_STRIPED_NCCL_TENSOR_DICT", f"{script} enables striped channel")
+        require(script, "VLLM_DS4_PP_PYNCCL_P2P_CREDIT", f"{script} enables PyNCCL P2P credit")
 
 for label in checks:
     print(f"PASS: {label}")

@@ -158,6 +158,7 @@ if TYPE_CHECKING:
     VLLM_DS4_PP_GANTT_TRACE_EVERY: int = 1
     VLLM_DS4_PP_PYNCCL_TENSOR_DICT_STRIPES: int = 1
     VLLM_DS4_PP_PYNCCL_TENSOR_DICT_STRIPE_MIN_BYTES: int = 1048576
+    VLLM_DS4_PP_PYNCCL_P2P_CREDIT: bool = False
     VLLM_DS4_PP_STRIPED_NCCL_TENSOR_DICT: bool = False
     VLLM_DS4_PP_STRIPED_NCCL_STRIPES: int = 1
     VLLM_DS4_PP_STRIPED_NCCL_MIN_BYTES: int = 1048576
@@ -1443,6 +1444,12 @@ environment_variables: dict[str, Callable[[], Any]] = {
             "VLLM_DS4_PP_PYNCCL_TENSOR_DICT_STRIPE_MIN_BYTES",
             str(1024 * 1024),
         )
+    ),
+    "VLLM_DS4_PP_PYNCCL_P2P_CREDIT": lambda: (
+        os.environ.get("VLLM_DS4_PP_PYNCCL_P2P_CREDIT", "0")
+        .strip()
+        .lower()
+        in ("1", "true", "yes", "on")
     ),
     # DS4 PP high-throughput transport: split large PP boundary tensors over
     # independent PyNCCL communicators/streams. This keeps the existing DS4
