@@ -117,6 +117,7 @@ if TYPE_CHECKING:
     VLLM_SKIP_P2P_CHECK: bool = False
     VLLM_DISABLED_KERNELS: list[str] = []
     VLLM_DS4_STRICT_NATIVE_FP4: bool = False
+    VLLM_DS4_ENABLE_CACHE_ADMIN: bool = False
     VLLM_DS4_DSV4_K_GATHER_BACKEND: str = "auto"
     VLLM_DS4_DSV4_ALLOW_TRITON_GATHER_DEBUG: bool = False
     VLLM_DS4_ALLOW_DEEPGEMM_MXFP4_SM12X: bool = False
@@ -1730,6 +1731,11 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # some additional endpoints for developing and debugging,
     # e.g. `/reset_prefix_cache`
     "VLLM_SERVER_DEV_MODE": lambda: bool(int(os.getenv("VLLM_SERVER_DEV_MODE", "0"))),
+    # DS4 internal service control plane: expose only cache-reset routes
+    # without enabling every development endpoint.
+    "VLLM_DS4_ENABLE_CACHE_ADMIN": lambda: bool(
+        int(os.getenv("VLLM_DS4_ENABLE_CACHE_ADMIN", "0"))
+    ),
     # Controls the maximum number of requests to handle in a
     # single asyncio task when processing per-token outputs in the
     # V1 AsyncLLM interface. It is applicable when handling a high
