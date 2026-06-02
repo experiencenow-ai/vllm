@@ -81,11 +81,18 @@ def make_copy_and_call(
             runtime_tensor = list_args[index]
             runtime_shape = runtime_tensor.shape[0]
 
-            # lazy initialization of buffer on first call
-            if input_buffers[i] is None:
-                input_buffers[i] = runtime_tensor.clone()
+            static_buffer = input_buffers[i]
+            if (
+                static_buffer is None
+                or static_buffer.shape[0] < runtime_shape
+                or static_buffer.shape[1:] != runtime_tensor.shape[1:]
+                or static_buffer.dtype != runtime_tensor.dtype
+                or static_buffer.device != runtime_tensor.device
+            ):
+                input_buffers[i] = torch.empty_like(runtime_tensor)
+                static_buffer = input_buffers[i]
 
-            static_tensor = input_buffers[i][:runtime_shape]  # type: ignore[index]
+            static_tensor = static_buffer[:runtime_shape]
             static_tensor.copy_(runtime_tensor)
             list_args[index] = static_tensor
         return callable_fn(*list_args)

@@ -20,6 +20,7 @@ def main() -> int:
     qwen = read("tools/ds4_launch_qwen27_nvfp4_pp8.sh")
     relaunch = read("tools/ds4_relaunch_spark_service.py")
     runner = read("vllm/v1/worker/gpu_model_runner.py")
+    backends = read("vllm/compilation/backends.py")
 
     failures = 0
     failures += check(
@@ -107,6 +108,12 @@ def main() -> int:
     failures += check(
         "DSV4 PP CUDA graphs copy dynamic inputs into static buffers",
         '\\"cudagraph_copy_inputs\\":true' in dsv4,
+    )
+    failures += check(
+        "CUDA graph input copy buffers grow for later larger symbolic shapes",
+        "static_buffer.shape[0] < runtime_shape" in backends
+        and "static_buffer.shape[1:] != runtime_tensor.shape[1:]" in backends
+        and "torch.empty_like(runtime_tensor)" in backends,
     )
     return 1 if failures else 0
 
