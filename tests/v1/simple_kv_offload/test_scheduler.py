@@ -1709,8 +1709,8 @@ def test_required_ds4_cache_miss_fails_before_scheduling() -> None:
         fix.scheduler.validate_new_request(req)
 
 
-def test_persistent_scheduler_restore_uses_guarded_hits(tmp_path, monkeypatch) -> None:
-    """Restored persistent CPU hits advertise one HMA guard block less."""
+def test_persistent_scheduler_restore_uses_full_hits(tmp_path, monkeypatch) -> None:
+    """Restored persistent CPU hits advertise the full contiguous hit."""
     monkeypatch.setenv("VLLM_SIMPLE_KV_OFFLOAD_PERSIST_ROOT", str(tmp_path))
     fix = make_scheduler(num_cpu_blocks=8, num_gpu_blocks=16, lazy=False)
     sched = fix.scheduler
@@ -1741,10 +1741,10 @@ def test_persistent_scheduler_restore_uses_guarded_hits(tmp_path, monkeypatch) -
     hit_tokens, is_async = restored_sched.get_num_new_matched_tokens(
         req2, num_computed_tokens=0
     )
-    assert hit_tokens == (num_blocks - 1) * BLOCK_SIZE
+    assert hit_tokens == num_blocks * BLOCK_SIZE
     assert is_async is True
 
-    gpu_blocks = restored.gpu_block_pool.get_new_blocks(num_blocks - 1)
+    gpu_blocks = restored.gpu_block_pool.get_new_blocks(num_blocks)
     kv_blocks2 = KVCacheBlocks(blocks=(gpu_blocks,))
     restored_sched.update_state_after_alloc(
         req2, kv_blocks2, num_external_tokens=hit_tokens
@@ -1753,5 +1753,5 @@ def test_persistent_scheduler_restore_uses_guarded_hits(tmp_path, monkeypatch) -
         make_scheduler_output({req2.request_id: 1})
     )
     assert meta2.load_event >= 0
-    assert len(meta2.load_cpu_blocks) == num_blocks - 1
-    assert len(meta2.load_block_hashes) == num_blocks - 1
+    assert len(meta2.load_cpu_blocks) == num_blocks
+    assert len(meta2.load_block_hashes) == num_blocks

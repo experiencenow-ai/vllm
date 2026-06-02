@@ -329,24 +329,12 @@ class SimpleCPUOffloadScheduler:
         ):
             return tuple(), 0, cache_ref
         if hit_length > 0 and self._persistent_store is not None:
-            raw_hit_length = hit_length
-            guard_tokens = max(
-                self.block_size,
-                getattr(self.cpu_coordinator, "lcm_block_size", self.block_size),
+            logger.info(
+                "DS4 persistent SimpleCPUOffload scheduler hit: "
+                "request=%s tokens=%d",
+                request.request_id,
+                hit_length,
             )
-            # HMA grouped/sliding KV needs one aligned lookahead block during
-            # post-allocation use. Advertise one LCM less than the raw hit
-            # while keeping the full pending hit pinned for the loader.
-            hit_length = max(0, hit_length - guard_tokens)
-            if hit_length > 0:
-                logger.info(
-                    "DS4 persistent SimpleCPUOffload scheduler hit: "
-                    "request=%s tokens=%d raw_tokens=%d guard_tokens=%d",
-                    request.request_id,
-                    hit_length,
-                    raw_hit_length,
-                    guard_tokens,
-                )
         return cpu_hit_blocks, hit_length, cache_ref
 
     def _seed_persistent_hits(
