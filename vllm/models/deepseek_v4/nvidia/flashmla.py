@@ -200,6 +200,19 @@ def _ds4_check_sparse_mla_output(
 
 
 @torch.compiler.disable
+def _ds4_sparse_mla_prefill_backend() -> str:
+    backend = envs.VLLM_DS4_DSV4_SPARSE_MLA_PREFILL_BACKEND
+    if backend in ("indexed", "triton", "triton-indexed"):
+        return "indexed"
+    if backend in ("matmul-debug", "materialized-debug"):
+        return "matmul-debug"
+    raise RuntimeError(
+        "Invalid VLLM_DS4_DSV4_SPARSE_MLA_PREFILL_BACKEND="
+        f"{backend!r}; expected indexed or matmul-debug"
+    )
+
+
+@torch.compiler.disable
 def _ds4_validate_sparse_mla_prefill_selection(
     *,
     layer_prefix: str,
@@ -939,6 +952,17 @@ class DeepseekV4FlashMLASparseImpl(DeepseekV4SparseMLAAttentionImpl):
         combined_lens: torch.Tensor,
         output: torch.Tensor,
     ) -> None:
+        backend = _ds4_sparse_mla_prefill_backend()
+        if backend == "matmul-debug":
+            cls._forward_sparse_mla_prefill_matmul_debug(
+                layer,
+                q,
+                kv,
+                combined_indices,
+                combined_lens,
+                output,
+            )
+            return
         kv_flat = kv.reshape(-1, q.shape[-1])
         _ds4_validate_indexed_sparse_mla_inputs(
             layer_prefix=layer.prefix,
@@ -1018,6 +1042,73 @@ class DeepseekV4FlashMLASparseImpl(DeepseekV4SparseMLAAttentionImpl):
             combined_lens=combined_lens,
             attn_sink=layer.attn_sink,
             scale=layer.scale,
+            output=output,
+            num_heads=layer.num_heads,
+        )
+
+    @classmethod
+    def _forward_sparse_mla_prefill_matmul_debug(
+        cls,
+        layer: "DeepseekV4MLAAttention",
+        q: torch.Tensor,
+        kv: torch.Tensor,
+        combined_indices: torch.Tensor,
+        combined_lens: torch.Tensor,
+        output: torch.Tensor,
+    ) -> None:
+        kv_flat = kv.reshape(-1, q.shape[-1])
+        _ds4_validate_indexed_sparse_mla_inputs(
+            layer_prefix=layer.prefix,
+            stage="prefill_matmul_debug",
+            indices=combined_indices,
+            lens=combined_lens,
+            max_index=kv_flat.shape[0],
+        )
+        if combined_indices.dim() == 3 and combined_indices.shape[1] == 1:
+            combined_indices = combined_indices[:, 0, :]
+        if combined_indices.dim() != 2:
+            raise RuntimeError(
+                f"DS4 sparse MLA prefill matmul-debug expected 2D indices for "
+                f"{layer.prefix}, got shape={tuple(combined_indices.shape)}"
+            )
+        if combined_lens.dim() != 1 or combined_lens.shape[0] != combined_indices.shape[0]:
+            raise RuntimeError(
+                f"DS4 sparse MLA prefill matmul-debug lens mismatch for "
+                f"{layer.prefix}: indices_shape={tuple(combined_indices.shape)} "
+                f"lens_shape={tuple(combined_lens.shape)}"
+            )
+        num_tokens = q.shape[0]
+        num_candidates = combined_indices.shape[1]
+        if num_tokens == 0:
+            return
+        offsets = torch.arange(num_candidates, device=combined_indices.device).view(1, -1)
+        valid_tokens = offsets < combined_lens.view(-1, 1)
+        safe_indices = combined_indices.clamp_min(0).long()
+        materialized = kv_flat.index_select(0, safe_indices.reshape(-1))
+        materialized = materialized.reshape(num_tokens, num_candidates, q.shape[-1])
+        materialized = materialized.masked_fill(~valid_tokens.unsqueeze(-1), 0)
+        score_buffer = torch.empty(
+            (num_tokens, layer.num_heads, num_candidates),
+            dtype=torch.float32,
+            device=q.device,
+        )
+        matmul_sparse_mla_attention_with_sink(
+            q=q,
+            kv=materialized,
+            valid_tokens=valid_tokens,
+            scale=layer.scale,
+            attn_sink=layer.attn_sink,
+            output=output,
+            num_heads=layer.num_heads,
+            score_buffer=score_buffer,
+            value_block_size=512,
+            candidate_block_size=128,
+        )
+        if output.shape[1] > layer.num_heads:
+            output[:, layer.num_heads :].zero_()
+        _ds4_check_sparse_mla_output(
+            layer_prefix=layer.prefix,
+            stage="prefill_matmul_debug",
             output=output,
             num_heads=layer.num_heads,
         )

@@ -28,6 +28,7 @@ def main() -> int:
         "VLLM_DS4_DSV4_SPARSE_MLA_REF_MAX_TOKENS",
         "VLLM_DS4_DSV4_SPARSE_MLA_REF_ATOL",
         "VLLM_DS4_DSV4_SPARSE_MLA_SELECTED_ABSMAX",
+        "VLLM_DS4_DSV4_SPARSE_MLA_PREFILL_BACKEND",
     ):
         failures += check(
             f"{name} registered in envs",
@@ -78,6 +79,24 @@ def main() -> int:
         "_ds4_reference_check_sparse_mla_prefill(" in flashmla
         and "if not envs.VLLM_DS4_DSV4_SPARSE_MLA_REF_CHECK:" in flashmla
         and "torch.softmax(scores_with_sink" in flashmla,
+    )
+    failures += check(
+        "prefill backend selector fails closed",
+        "_ds4_sparse_mla_prefill_backend(" in flashmla
+        and "expected indexed or matmul-debug" in flashmla
+        and "VLLM_DS4_DSV4_SPARSE_MLA_PREFILL_BACKEND" in flashmla,
+    )
+    failures += check(
+        "materialized prefill diagnostic uses normal sparse MLA matmul path",
+        "_forward_sparse_mla_prefill_matmul_debug(" in flashmla
+        and "matmul_sparse_mla_attention_with_sink(" in flashmla
+        and "valid_tokens = offsets < combined_lens.view(-1, 1)" in flashmla
+        and "kv_flat.index_select" in flashmla,
+    )
+    failures += check(
+        "launcher logs prefill backend",
+        "sparse_mla_prefill_backend=$VLLM_DS4_DSV4_SPARSE_MLA_PREFILL_BACKEND"
+        in launcher,
     )
     failures += check(
         "diagnostic helpers are outside torch compiler",
