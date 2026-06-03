@@ -108,7 +108,7 @@ class FlashInferExperts(mk.FusedMoEExpertsModular):
         if quant_config.weight_quant_dtype == "mxfp4":
             # GPT-OSS passes an explicit OpenAI SwiGLU alpha through its
             # quant config. Other MXFP4 models such as DSV4 use standard
-            # silu(gate) * up, so their implicit alpha/beta must be 1.0.
+            # silu(gate) * up, so their implicit alpha is 1.0 and beta is 0.0.
             gemm1_alpha = (
                 quant_config.gemm1_alpha
                 if quant_config.gemm1_alpha is not None
@@ -117,7 +117,7 @@ class FlashInferExperts(mk.FusedMoEExpertsModular):
             gemm1_beta = (
                 quant_config.gemm1_beta
                 if quant_config.gemm1_beta is not None
-                else 1.0
+                else 0.0
             )
             self.gemm1_alpha = torch.tensor(
                 [gemm1_alpha] * self.num_experts,
@@ -129,12 +129,6 @@ class FlashInferExperts(mk.FusedMoEExpertsModular):
                 dtype=torch.float32,
                 device=self.device,
             )
-            if self.gemm1_clamp_limit is None:
-                self.gemm1_clamp_limit = torch.tensor(
-                    [7.0] * self.num_experts,
-                    dtype=torch.float32,
-                    device=self.device,
-                )
             if quant_config.quant_dtype == "mxfp8":
                 self.fake_input_scale = torch.ones(
                     self.num_experts,
@@ -345,7 +339,6 @@ class FlashInferExperts(mk.FusedMoEExpertsModular):
             assert w1.is_contiguous() and w2.is_contiguous()
             assert self.gemm1_alpha is not None
             assert self.gemm1_beta is not None
-            assert self.gemm1_clamp_limit is not None
             assert topk_ids.is_contiguous()
 
             fc1_expert_biases = self.w1_bias

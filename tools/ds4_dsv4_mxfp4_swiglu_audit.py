@@ -21,9 +21,15 @@ checks = [
         and "[gemm1_alpha] * self.num_experts" in flashinfer,
     ),
     (
-        "FlashInfer MXFP4 defaults missing SwiGLU beta to standard value",
+        "FlashInfer MXFP4 defaults missing SwiGLU beta to standard DSV4 value",
         "if quant_config.gemm1_beta is not None" in flashinfer
+        and "else 0.0" in flashinfer
         and "[gemm1_beta] * self.num_experts" in flashinfer,
+    ),
+    (
+        "FlashInfer MXFP4 does not synthesize a clamp for unclamped DSV4 SwiGLU",
+        "[7.0] * self.num_experts" not in flashinfer
+        and "assert self.gemm1_clamp_limit is not None" not in flashinfer,
     ),
     (
         "GPT-OSS MXFP4 still passes explicit OpenAI SwiGLU alpha",
