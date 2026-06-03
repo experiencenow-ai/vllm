@@ -134,6 +134,7 @@ def main() -> int:
     failures += check(
         "DSV4 PP launcher keeps PyNCCL pair conveyor as explicit diagnostic mode",
         "pynccl-pair|pynccl_pair" in dsv4
+        and 'VLLM_DS4_PP_EDGE_RAIL="${VLLM_DS4_PP_EDGE_RAIL:-${DS4_PP_EDGE_RAIL:-route}}"' in dsv4
         and 'VLLM_DS4_PP_PYNCCL_TENSOR_DICT="${VLLM_DS4_PP_PYNCCL_TENSOR_DICT:-1}"'
         in dsv4
         and 'VLLM_DS4_PP_PYNCCL_PAIR_COMMUNICATORS="${VLLM_DS4_PP_PYNCCL_PAIR_COMMUNICATORS:-1}"'
@@ -143,6 +144,7 @@ def main() -> int:
         "DSV4 PP launcher has first-class torch pair transport",
         "torch-pair|torch_pair" in dsv4
         and 'DS4_PP_TRANSPORT="torch-pair"' in dsv4
+        and 'VLLM_DS4_PP_EDGE_RAIL="${VLLM_DS4_PP_EDGE_RAIL:-${DS4_PP_EDGE_RAIL:-route}}"' in dsv4
         and 'VLLM_DS4_PP_TORCH_PG_TENSOR_DICT="${VLLM_DS4_PP_TORCH_PG_TENSOR_DICT:-1}"'
         in dsv4
         and 'VLLM_DS4_PP_TORCH_PAIR_GROUPS="${VLLM_DS4_PP_TORCH_PAIR_GROUPS:-1}"'
