@@ -308,8 +308,6 @@ def launch_env(args: argparse.Namespace, rank: int) -> dict[str, str]:
         if args.python.startswith("~/")
         else args.python,
         "DS4_200G_IFNAME": fabric_ifnames,
-        "DS4_200G_SOCKET_IFNAME": fabric_ifnames,
-        "DS4_200G_NCCL_IFNAME": fabric_ifnames,
         "DS4_CONTROL_IFNAME": "ds4ring0",
         "DS4_GLOO_SOCKET_IFNAME": "enP7s7",
         "DS4_200G_ADVERTISE_LOOPBACK": "1",
