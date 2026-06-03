@@ -129,6 +129,14 @@ def vllm_topk_softplus_sqrt(
             routed_scaling_factor,
         )
 
+    if hash_indices_table is not None and input_tokens is not None:
+        # The CUDA hash-router dispatch specializes one integer type for both
+        # input token ids and the token->expert table. vLLM input ids are often
+        # int64 while DS4 hash MoE tables are int32; passing mixed dtypes makes
+        # the kernel read the int64 token buffer through an int32 pointer.
+        if input_tokens.dtype != hash_indices_table.dtype:
+            input_tokens = input_tokens.to(dtype=hash_indices_table.dtype)
+
     ops.topk_hash_softplus_sqrt(
         topk_weights,
         topk_indices,
