@@ -434,7 +434,26 @@ ds4_run_nccl_preflight()
   local preflight_port="${DS4_NCCL_PREFLIGHT_PORT:-$((MASTER_PORT + 1000))}"
   local mode="${DS4_NCCL_PREFLIGHT_MODE:-nccl}"
   local timeout_s="${DS4_NCCL_PREFLIGHT_TIMEOUT:-90}"
-  echo "DS4 200G NCCL preflight: rank=$NODE_RANK/$world_size addr=$HEAD_ADDR port=$preflight_port configured_if=$DS4_200G_IFNAME effective_if=${DS4_200G_EFFECTIVE_IFNAME:-$DS4_200G_IFNAME} configured_nccl_if=${DS4_200G_NCCL_IFNAME:-<unset>} effective_nccl_if=${DS4_200G_EFFECTIVE_NCCL_IFNAME:-${DS4_200G_NCCL_IFNAME:-$DS4_200G_IFNAME}} transport=${DS4_200G_NCCL_TRANSPORT:-<unset>} hca=${NCCL_IB_HCA:-<unset>} host_ip=$VLLM_HOST_IP" >&2
+  local effective_timeout_s="$timeout_s"
+  if [[ "$mode" == "p2p_nccl" ]]; then
+    local p2p_pair_count=1
+    local p2p_pairs="${DS4_NCCL_PREFLIGHT_P2P_PAIRS:-}"
+    if [[ -n "$p2p_pairs" ]]; then
+      local old_ifs="$IFS"
+      IFS=";"
+      read -r -a ds4_p2p_pair_items <<< "$p2p_pairs"
+      IFS="$old_ifs"
+      p2p_pair_count="${#ds4_p2p_pair_items[@]}"
+      if [[ "$p2p_pair_count" -le 0 ]]; then
+        p2p_pair_count=1
+      fi
+    elif [[ "$world_size" -gt 1 ]]; then
+      p2p_pair_count="$((world_size - 1))"
+    fi
+    local p2p_timeout_per_pair_s="${DS4_NCCL_PREFLIGHT_P2P_TIMEOUT_PER_PAIR:-45}"
+    effective_timeout_s="${DS4_NCCL_PREFLIGHT_P2P_TIMEOUT:-$((timeout_s + (p2p_pair_count * p2p_timeout_per_pair_s)))}"
+  fi
+  echo "DS4 200G NCCL preflight: rank=$NODE_RANK/$world_size addr=$HEAD_ADDR port=$preflight_port configured_if=$DS4_200G_IFNAME effective_if=${DS4_200G_EFFECTIVE_IFNAME:-$DS4_200G_IFNAME} configured_nccl_if=${DS4_200G_NCCL_IFNAME:-<unset>} effective_nccl_if=${DS4_200G_EFFECTIVE_NCCL_IFNAME:-${DS4_200G_NCCL_IFNAME:-$DS4_200G_IFNAME}} transport=${DS4_200G_NCCL_TRANSPORT:-<unset>} hca=${NCCL_IB_HCA:-<unset>} host_ip=$VLLM_HOST_IP timeout_s=$effective_timeout_s" >&2
   case "$mode" in
     gloo)
       if command -v timeout >/dev/null 2>&1; then
@@ -462,9 +481,9 @@ ds4_run_nccl_preflight()
       local p2p_method="${DS4_NCCL_PREFLIGHT_P2P_METHOD:-pynccl}"
       local p2p_credit="${DS4_NCCL_PREFLIGHT_P2P_CREDIT:-1}"
       if command -v timeout >/dev/null 2>&1; then
-        ds4_run_preflight_checked env RANK="$NODE_RANK" WORLD_SIZE="$world_size" MASTER_ADDR="$HEAD_ADDR" MASTER_PORT="$preflight_port" GLOO_SOCKET_IFNAME="$p2p_gloo_ifname" DS4_NCCL_PREFLIGHT_BACKEND=p2p_nccl DS4_NCCL_PREFLIGHT_P2P_METHOD="$p2p_method" DS4_NCCL_PREFLIGHT_P2P_CREDIT="$p2p_credit" timeout --kill-after=5s "$((timeout_s + 15))s" "$RUNTIME_PYTHON" "$SCRIPT_DIR/ds4_nccl_preflight.py"
+        ds4_run_preflight_checked env RANK="$NODE_RANK" WORLD_SIZE="$world_size" MASTER_ADDR="$HEAD_ADDR" MASTER_PORT="$preflight_port" GLOO_SOCKET_IFNAME="$p2p_gloo_ifname" DS4_NCCL_PREFLIGHT_TIMEOUT="$effective_timeout_s" DS4_NCCL_PREFLIGHT_BACKEND=p2p_nccl DS4_NCCL_PREFLIGHT_P2P_METHOD="$p2p_method" DS4_NCCL_PREFLIGHT_P2P_CREDIT="$p2p_credit" timeout --kill-after=5s "$((effective_timeout_s + 15))s" "$RUNTIME_PYTHON" "$SCRIPT_DIR/ds4_nccl_preflight.py"
       else
-        ds4_run_preflight_checked env RANK="$NODE_RANK" WORLD_SIZE="$world_size" MASTER_ADDR="$HEAD_ADDR" MASTER_PORT="$preflight_port" GLOO_SOCKET_IFNAME="$p2p_gloo_ifname" DS4_NCCL_PREFLIGHT_BACKEND=p2p_nccl DS4_NCCL_PREFLIGHT_P2P_METHOD="$p2p_method" DS4_NCCL_PREFLIGHT_P2P_CREDIT="$p2p_credit" "$RUNTIME_PYTHON" "$SCRIPT_DIR/ds4_nccl_preflight.py"
+        ds4_run_preflight_checked env RANK="$NODE_RANK" WORLD_SIZE="$world_size" MASTER_ADDR="$HEAD_ADDR" MASTER_PORT="$preflight_port" GLOO_SOCKET_IFNAME="$p2p_gloo_ifname" DS4_NCCL_PREFLIGHT_TIMEOUT="$effective_timeout_s" DS4_NCCL_PREFLIGHT_BACKEND=p2p_nccl DS4_NCCL_PREFLIGHT_P2P_METHOD="$p2p_method" DS4_NCCL_PREFLIGHT_P2P_CREDIT="$p2p_credit" "$RUNTIME_PYTHON" "$SCRIPT_DIR/ds4_nccl_preflight.py"
       fi
       ;;
     store)
