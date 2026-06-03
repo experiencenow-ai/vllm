@@ -4,6 +4,7 @@ import torch
 from vllm.models.deepseek_v4.nvidia.ops.attention import (
     _pad_positions_to_num_rows,
     _pad_positions_to_q_kv_rows,
+    _slice_slot_mapping_to_q_rows,
 )
 
 
@@ -65,3 +66,29 @@ def test_deepseek_v4_fused_insert_rejects_q_kv_row_mismatch():
 
     with pytest.raises(ValueError, match="q and kv row counts"):
         _pad_positions_to_q_kv_rows(positions, q, kv)
+
+
+def test_deepseek_v4_fused_insert_slices_graph_slot_mapping_to_q_rows():
+    slot_mapping = torch.tensor([10, 11, 12, 13, 14], dtype=torch.int64)
+    q = torch.empty((1, 2), dtype=torch.float16)
+
+    sliced = _slice_slot_mapping_to_q_rows(slot_mapping, q)
+
+    assert sliced.tolist() == [14]
+
+
+def test_deepseek_v4_fused_insert_keeps_shorter_slot_mapping():
+    slot_mapping = torch.tensor([10, 11], dtype=torch.int64)
+    q = torch.empty((4, 2), dtype=torch.float16)
+
+    sliced = _slice_slot_mapping_to_q_rows(slot_mapping, q)
+
+    assert sliced is slot_mapping
+
+
+def test_deepseek_v4_fused_insert_rejects_non_1d_slot_mapping():
+    slot_mapping = torch.arange(6, dtype=torch.int64).view(2, 3)
+    q = torch.empty((4, 2), dtype=torch.float16)
+
+    with pytest.raises(ValueError, match="slot_mapping must be 1-D"):
+        _slice_slot_mapping_to_q_rows(slot_mapping, q)
