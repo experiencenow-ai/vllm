@@ -104,6 +104,29 @@ def main() -> int:
         "matmul-debug prefill path also runs reference check",
         "_ds4_reference_check_sparse_mla_prefill(" in matmul_debug_body,
     )
+    sparse_prefill_body = flashmla.split(
+        "def _forward_sparse_mla_prefill_triton(", 1
+    )[1].split("\n    @classmethod", 1)[0]
+    outer_prefill_body = flashmla.split(
+        "def _forward_prefill(", 1
+    )[1].split("\n    @classmethod", 1)[0]
+    failures += check(
+        "indexed sparse prefill accepts caller-owned scratch buffers",
+        "workspace_buffers:" in sparse_prefill_body
+        and "max_score_buffer, denom_buffer, output_buffer = workspace_buffers"
+        in sparse_prefill_body,
+    )
+    failures += check(
+        "prefill gather KV and indexed scratch share one workspace reservation",
+        "kv,\n                max_score_buffer,\n                denom_buffer,\n                output_buffer,"
+        in outer_prefill_body
+        and "current_workspace_manager().get_simultaneous(" in outer_prefill_body
+        and "workspace_buffers=(" in outer_prefill_body,
+    )
+    failures += check(
+        "indexed sparse prefill no longer nests workspace allocation on hot path",
+        "current_workspace_manager().get_simultaneous(" not in sparse_prefill_body,
+    )
     failures += check(
         "prefill indexer can rebase packed absolute topk rows",
         "_localize_prefill_topk_indices_kernel" in indexer
