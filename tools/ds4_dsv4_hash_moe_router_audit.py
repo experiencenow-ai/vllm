@@ -39,6 +39,13 @@ checks = [
         and "DS4 DSV4 hash-router CUDA op disagrees with torch reference" in router,
     ),
     (
+        "hash router reference-check skips CUDA graph capture",
+        "torch.cuda.is_current_stream_capturing()" in router
+        and "if torch.cuda.is_current_stream_capturing():" in router
+        and router.find("torch.cuda.is_current_stream_capturing()")
+        < router.find("ref_weights = torch.empty_like(topk_weights)"),
+    ),
+    (
         "DSV4 launcher logs hash router reference-check knobs",
         "hash_router_ref_check=$VLLM_DS4_DSV4_HASH_ROUTER_REF_CHECK" in launcher
         and "hash_router_ref_max_tokens=$VLLM_DS4_DSV4_HASH_ROUTER_REF_MAX_TOKENS"
