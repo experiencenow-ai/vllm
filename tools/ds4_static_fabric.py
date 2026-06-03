@@ -29,6 +29,23 @@ RAIL_DEVICES = {
 
 
 @dataclass(frozen=True)
+class LinkSpec:
+    rank: int
+    peer_rank: int
+    dev: str
+    local_ip: str
+    prefix: int = 30
+
+    @property
+    def cidr(self) -> str:
+        return f"{self.local_ip}/{self.prefix}"
+
+    @property
+    def label(self) -> str:
+        return f"spark{self.rank}<->spark{self.peer_rank}"
+
+
+@dataclass(frozen=True)
 class RouteSpec:
     source_rank: int
     target_rank: int
@@ -86,6 +103,32 @@ def line_next_hop(source_rank: int, target_rank: int, edge_rail: str) -> tuple[s
         return (f"10.10.{subnet}.2", route_dev(source_rank, target_rank, edge_rail))
     subnet = (source_rank * 2)
     return (f"10.10.{subnet}.1", route_dev(source_rank, target_rank, edge_rail))
+
+
+def build_link_specs(rank: int, nodes: int, edge_rail: str) -> list[LinkSpec]:
+    prev_dev, next_dev = rail_devices(edge_rail)
+    specs: list[LinkSpec] = []
+    if rank > 0:
+        subnet = (rank * 2)
+        specs.append(
+            LinkSpec(
+                rank=rank,
+                peer_rank=(rank - 1),
+                dev=prev_dev,
+                local_ip=f"10.10.{subnet}.2",
+            )
+        )
+    if rank < (nodes - 1):
+        subnet = ((rank + 1) * 2)
+        specs.append(
+            LinkSpec(
+                rank=rank,
+                peer_rank=(rank + 1),
+                dev=next_dev,
+                local_ip=f"10.10.{subnet}.1",
+            )
+        )
+    return specs
 
 
 def build_specs(nodes: int, route_scope: str, edge_rail: str) -> list[RouteSpec]:
@@ -152,6 +195,9 @@ def apply_command(args: argparse.Namespace, specs: list[RouteSpec]) -> list[list
             args.loopback_dev,
         ]
     )
+    for link in build_link_specs(rank, args.nnodes, args.edge_rail):
+        commands.append(prefix + ["ip", "link", "set", link.dev, "up"])
+        commands.append(prefix + ["ip", "addr", "replace", link.cidr, "dev", link.dev])
     if args.route_scope != "adjacent":
         commands.append(prefix + ["sysctl", "-w", "net.ipv4.ip_forward=1"])
     for spec in specs:
@@ -181,6 +227,10 @@ def local_apply(args: argparse.Namespace) -> int:
         raise SystemExit("--local --apply requires --rank")
     specs = build_specs(args.nnodes, args.route_scope, args.edge_rail)
     commands = apply_command(args, specs)
+    if args.dry_run:
+        for command in commands:
+            print(" ".join(shlex.quote(item) for item in command))
+        return 0
     failures = 0
     for command in commands:
         result = run_local(command, args.timeout_s)
@@ -229,6 +279,11 @@ def dev_is_up(dev: str, timeout_s: int) -> bool:
     return result.returncode == 0 and result.stdout.strip() == "up"
 
 
+def link_addr_present(link: LinkSpec, timeout_s: int) -> bool:
+    result = run_local(["ip", "-o", "-4", "addr", "show", "dev", link.dev], timeout_s)
+    return result.returncode == 0 and f" {link.cidr} " in f" {result.stdout} "
+
+
 def local_verify(args: argparse.Namespace) -> int:
     rank = args.rank
     if rank is None:
@@ -243,6 +298,16 @@ def local_verify(args: argparse.Namespace) -> int:
         print(
             f"FAIL static fabric loopback rank={rank}: "
             f"{args.loopback_dev} lacks {local_ip}/32",
+            file=sys.stderr,
+        )
+        failures += 1
+    for link in build_link_specs(rank, args.nnodes, args.edge_rail):
+        if dev_is_up(link.dev, args.timeout_s) and link_addr_present(link, args.timeout_s):
+            print(f"PASS {link.label:<15} {link.cidr:<15} dev {link.dev}")
+            continue
+        print(
+            f"FAIL static fabric link rank={rank}: "
+            f"{link.dev} lacks {link.cidr} or is not up",
             file=sys.stderr,
         )
         failures += 1

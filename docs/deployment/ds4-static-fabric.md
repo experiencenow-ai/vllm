@@ -3,8 +3,8 @@
 The Spark fabric is now treated as two separate things:
 
 - Static OS state: `ds4ring0` loopback aliases, line-fabric host routes,
-  forwarding, and fixed interface choices. Apply this once after a Spark power
-  cycle.
+  adjacent physical `/30` rail addresses, forwarding, and fixed interface
+  choices. Apply this once after a Spark power cycle.
 - Runtime communicators: PyTorch/NCCL/Gloo/PyNCCL process groups. These are
   recreated by each vLLM launch, but they must use the fixed static profile.
 
@@ -29,6 +29,7 @@ That performs the zero-drift setup path:
 ```text
 git pull on every Spark
 build/static audits on every Spark
+restore adjacent physical rail addresses
 apply the fixed fabric profile once
 exit without stopping or launching a model
 ```
