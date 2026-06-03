@@ -58,8 +58,15 @@ def main() -> int:
     )
     failures += check(
         "worker avoids execute-start send barrier in conveyor mode",
-        "if envs.VLLM_DS4_PP_OVERLAP_SEND and forward_pass" in worker
+        "def _ds4_pp_overlap_send_enabled" in worker
+        and "if self._ds4_pp_overlap_send_enabled() and forward_pass" in worker
         and "self._drain_completed_pp_send_work()" in worker,
+    )
+    failures += check(
+        "worker disables PP send overlap for CPU-staged transport",
+        "envs.VLLM_DS4_PP_CPU_STAGED_TENSOR_DICT" in worker
+        and "return False" in worker
+        and "not self._ds4_pp_overlap_send_enabled()" in worker,
     )
     failures += check(
         "worker blocks only when a reusable send buffer slot is still busy",
@@ -106,6 +113,8 @@ def main() -> int:
         'DS4_PP_TRANSPORT="${DS4_PP_TRANSPORT:-cpu-staged}"' in dsv4
         and 'VLLM_DS4_PP_CPU_STAGED_TENSOR_DICT="${VLLM_DS4_PP_CPU_STAGED_TENSOR_DICT:-1}"'
         in dsv4
+        and 'VLLM_DS4_PP_OVERLAP_SEND="${VLLM_DS4_PP_OVERLAP_SEND:-0}"'
+        in dsv4
         and 'DS4_NCCL_PREFLIGHT_MODE="${DS4_NCCL_PREFLIGHT_MODE:-skip}"'
         in dsv4,
     )
@@ -144,7 +153,7 @@ def main() -> int:
             in script,
         )
     failures += check(
-        "DSV4 PP launcher keeps PP conveyor overlap enabled",
+        "DSV4 PP launcher keeps PP conveyor controls available",
         'VLLM_DS4_PP_OVERLAP_SEND="${VLLM_DS4_PP_OVERLAP_SEND:-1}"' in dsv4
         and 'VLLM_DS4_PP_SEND_BUFFER_SLOTS="${VLLM_DS4_PP_SEND_BUFFER_SLOTS:-4}"'
         in dsv4
