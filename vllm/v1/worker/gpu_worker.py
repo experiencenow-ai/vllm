@@ -298,6 +298,13 @@ class Worker(WorkerBase):
                 pending.append(handles)
         self._pp_send_work = pending
 
+    def _ds4_pp_overlap_send_enabled(self) -> bool:
+        if not envs.VLLM_DS4_PP_OVERLAP_SEND:
+            return False
+        if envs.VLLM_DS4_PP_CPU_STAGED_TENSOR_DICT:
+            return False
+        return True
+
     def _wait_one_pp_send_work(self) -> float:
         if not self._pp_send_work:
             return 0.0
@@ -343,7 +350,7 @@ class Worker(WorkerBase):
         output: IntermediateTensors,
         scheduler_output: SchedulerOutput,
     ) -> tuple[dict[str, torch.Tensor | Any], _Ds4PpSendBufferSlot | None, float]:
-        if not envs.VLLM_DS4_PP_OVERLAP_SEND:
+        if not self._ds4_pp_overlap_send_enabled():
             return output.tensors, None, 0.0
         cuda_bytes = 0
         for tensor in output.tensors.values():
@@ -1217,7 +1224,7 @@ class Worker(WorkerBase):
         # allowing receive/setup/compute for the next step to overlap with the
         # prior send when the backlog has spare room.
         if self._pp_send_work:
-            if envs.VLLM_DS4_PP_OVERLAP_SEND and forward_pass:
+            if self._ds4_pp_overlap_send_enabled() and forward_pass:
                 self._drain_completed_pp_send_work()
             else:
                 ds4_prev_send_wait_ms = self._wait_for_pp_send_window(forward_pass)
