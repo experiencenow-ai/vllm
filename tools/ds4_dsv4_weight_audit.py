@@ -39,11 +39,22 @@ checks = [
     ),
     (
         "expert coverage is tracked by layer, tensor, shard, and expert id",
-        "ds4_expert_coverage: dict[int, dict[tuple[str, str], set[int]]]" in model
+        "self._ds4_expert_coverage: dict[int, dict[tuple[str, str], set[int]]] = {}"
+        in model
         and "self._record_ds4_expert_coverage(" in model
         and r"(?:model\.)?layers\." in model
+        and "self._ds4_expert_coverage.setdefault(layer_idx, {})" in model
         and "layer_coverage.setdefault((tensor_kind, shard_id), set()).add(expert_id)"
         in model,
+    ),
+    (
+        "expert coverage is audited once after AutoWeightsLoader completes",
+        "loaded_params = loader.load_weights(weights, mapper=self.hf_to_vllm_mapper)"
+        in model
+        and "self.model._audit_ds4_expert_coverage()" in model
+        and "self._audit_ds4_expert_coverage()" not in model.split(
+            "def _record_ds4_expert_coverage", 1
+        )[0],
     ),
     (
         "FP4 expert weights and scales are required per owned layer",
