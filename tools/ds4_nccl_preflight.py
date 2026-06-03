@@ -325,6 +325,7 @@ def _run_p2p_pair_probe(
     method = _env("DS4_NCCL_PREFLIGHT_P2P_METHOD", "pynccl").lower()
     if method not in {
         "pynccl",
+        "pynccl_pair",
         "pynccl_world",
         "pynccl-global",
         "torch",
@@ -333,7 +334,7 @@ def _run_p2p_pair_probe(
     }:
         raise ValueError(
             "DS4_NCCL_PREFLIGHT_P2P_METHOD must be pynccl, pynccl_world, "
-            "torch, or torch_world"
+            "pynccl_pair, torch, or torch_world"
         )
     direction = _env("DS4_NCCL_PREFLIGHT_P2P_DIRECTION", "unidirectional").lower()
     if direction not in {"unidirectional", "oneway", "bidirectional", "bidir"}:
@@ -363,6 +364,7 @@ def _run_p2p_pair_probe(
     recv_chunks = _split_p2p_tensor(recv, stripes)
     communicator = None
     pynccl_world = method in {"pynccl_world", "pynccl-global"}
+    pynccl_pair = method == "pynccl_pair"
 
     def torch_exchange() -> None:
         ops = []
@@ -405,15 +407,18 @@ def _run_p2p_pair_probe(
                 communicator.send(send_credit, peer_rank)
         communicator.group_end()
 
-    if method in {"pynccl", "pynccl_world", "pynccl-global"}:
+    if method in {"pynccl", "pynccl_pair", "pynccl_world", "pynccl-global"}:
         if cpu_group is None:
             raise RuntimeError("PyNCCL P2P preflight requires a Gloo CPU group")
         if pynccl_world:
             route_ifname = os.environ.get("NCCL_SOCKET_IFNAME", "")
             edge_rail = "world"
+        elif pynccl_pair:
+            route_ifname = os.environ.get("NCCL_SOCKET_IFNAME", "")
+            edge_rail = "pair"
         else:
             route_ifname, edge_rail = _pp_edge_dev_for_rank(rank, peer)
-        if route_ifname and not pynccl_world:
+        if route_ifname and not pynccl_world and not pynccl_pair:
             os.environ["NCCL_SOCKET_IFNAME"] = route_ifname
         print(
             "DS4 NCCL P2P preflight PyNCCL pair route: "
@@ -530,6 +535,7 @@ def _run_p2p_nccl_preflight(rank: int, world_size: int) -> int:
     method = _env("DS4_NCCL_PREFLIGHT_P2P_METHOD", "pynccl").lower()
     if method not in {
         "pynccl",
+        "pynccl_pair",
         "pynccl_world",
         "pynccl-global",
         "torch",
@@ -538,7 +544,7 @@ def _run_p2p_nccl_preflight(rank: int, world_size: int) -> int:
     }:
         raise ValueError(
             "DS4_NCCL_PREFLIGHT_P2P_METHOD must be pynccl, pynccl_world, "
-            "torch, or torch_world"
+            "pynccl_pair, torch, or torch_world"
         )
     torch.cuda.set_device(0)
     print(
@@ -575,6 +581,8 @@ def _run_p2p_nccl_preflight(rank: int, world_size: int) -> int:
             return 66
     broad_torch_group = None
     broad_pynccl_communicator = None
+    pair_cpu_groups = {}
+    pair_pynccl_communicators = {}
     try:
         rank_groups = _env("DS4_NCCL_PREFLIGHT_GROUPS", "")
         if rank_groups and rank_groups != "<unused>":
@@ -606,6 +614,39 @@ def _run_p2p_nccl_preflight(rank: int, world_size: int) -> int:
             print(
                 "DS4 NCCL P2P preflight stage: broad PyNCCL communicator "
                 "create complete",
+                file=sys.stderr,
+            )
+        if method == "pynccl_pair":
+            print(
+                "DS4 NCCL P2P preflight stage: adjacent PyNCCL pair "
+                "communicators create begin",
+                file=sys.stderr,
+            )
+            from vllm.distributed.device_communicators.pynccl import (
+                PyNcclCommunicator,
+            )
+
+            for pair_index, (src, dst) in enumerate(pairs):
+                _store_barrier(rank, world_size, f"p2p-pair-{pair_index}-before-create")
+                cpu_group = dist.new_group(ranks=[src, dst], backend="gloo")
+                pair_cpu_groups[(src, dst)] = cpu_group
+                if rank in {src, dst}:
+                    print(
+                        "DS4 NCCL P2P preflight adjacent PyNCCL create: "
+                        f"pair={src}-{dst} rank={rank} "
+                        f"nccl_ifname={os.environ.get('NCCL_SOCKET_IFNAME', '<unset>')}",
+                        file=sys.stderr,
+                    )
+                    pair_pynccl_communicators[(src, dst)] = PyNcclCommunicator(
+                        cpu_group,
+                        torch.device("cuda:0"),
+                    )
+                elif cpu_group != dist.GroupMember.NON_GROUP_MEMBER:
+                    dist.destroy_process_group(cpu_group)
+                _store_barrier(rank, world_size, f"p2p-pair-{pair_index}-after-create")
+            print(
+                "DS4 NCCL P2P preflight stage: adjacent PyNCCL pair "
+                "communicators create complete",
                 file=sys.stderr,
             )
         if method in {"torch_world", "torch-global"}:
@@ -655,6 +696,8 @@ def _run_p2p_nccl_preflight(rank: int, world_size: int) -> int:
             torch_group = None
             if method == "pynccl":
                 cpu_group = dist.new_group(ranks=[src, dst], backend="gloo")
+            elif method == "pynccl_pair":
+                cpu_group = pair_cpu_groups.get((src, dst))
             elif method in {"pynccl_world", "pynccl-global"}:
                 cpu_group = dist.distributed_c10d._get_default_group()
             elif method == "torch":
@@ -674,7 +717,11 @@ def _run_p2p_nccl_preflight(rank: int, world_size: int) -> int:
                     dst,
                     cpu_group=cpu_group,
                     torch_group=torch_group,
-                    pynccl_communicator=broad_pynccl_communicator,
+                    pynccl_communicator=(
+                        pair_pynccl_communicators.get((src, dst))
+                        if method == "pynccl_pair"
+                        else broad_pynccl_communicator
+                    ),
                 )
             finally:
                 if (
@@ -701,6 +748,11 @@ def _run_p2p_nccl_preflight(rank: int, world_size: int) -> int:
     finally:
         if broad_pynccl_communicator is not None:
             broad_pynccl_communicator.destroy()
+        for communicator in pair_pynccl_communicators.values():
+            communicator.destroy()
+        for group in pair_cpu_groups.values():
+            if group != dist.GroupMember.NON_GROUP_MEMBER:
+                dist.destroy_process_group(group)
         if broad_torch_group is not None and broad_torch_group != dist.GroupMember.NON_GROUP_MEMBER:
             dist.destroy_process_group(broad_torch_group)
 

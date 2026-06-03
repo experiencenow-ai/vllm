@@ -100,9 +100,13 @@ def main() -> int:
     ):
         failures += check(
             f"{script_name} launcher enables PP conveyor defaults",
-            'VLLM_DS4_PP_TORCH_PG_TENSOR_DICT="${VLLM_DS4_PP_TORCH_PG_TENSOR_DICT:-0}"'
+            'VLLM_DS4_PP_DISABLE_DEVICE_COMMUNICATOR="${VLLM_DS4_PP_DISABLE_DEVICE_COMMUNICATOR:-1}"'
+            in script
+            and 'VLLM_DS4_PP_TORCH_PG_TENSOR_DICT="${VLLM_DS4_PP_TORCH_PG_TENSOR_DICT:-0}"'
             in script
             and 'VLLM_DS4_PP_PYNCCL_TENSOR_DICT="${VLLM_DS4_PP_PYNCCL_TENSOR_DICT:-1}"'
+            in script
+            and 'VLLM_DS4_PP_PYNCCL_PAIR_COMMUNICATORS="${VLLM_DS4_PP_PYNCCL_PAIR_COMMUNICATORS:-1}"'
             in script
             and 'VLLM_DS4_PP_DIRECT_CUDA_TENSOR_DICT="${VLLM_DS4_PP_DIRECT_CUDA_TENSOR_DICT:-0}"'
             in script

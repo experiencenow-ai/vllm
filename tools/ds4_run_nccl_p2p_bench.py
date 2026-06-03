@@ -73,6 +73,7 @@ def _bench_command(args: argparse.Namespace, rank: int, log_tag: str) -> str:
         "VLLM_HOST_IP": host_ip,
         "DS4_NCCL_P2P_BENCH_PAIRS": args.pairs,
         "DS4_NCCL_P2P_BENCH_METHODS": args.methods,
+        "DS4_NCCL_P2P_BENCH_CONTROL_BACKEND": args.control_backend,
         "DS4_NCCL_P2P_BENCH_BYTES_LIST": args.bytes,
         "DS4_NCCL_P2P_BENCH_ITERS": str(args.iters),
         "DS4_NCCL_P2P_BENCH_WARMUP": str(args.warmup),
@@ -81,7 +82,7 @@ def _bench_command(args: argparse.Namespace, rank: int, log_tag: str) -> str:
         "DS4_NCCL_P2P_BENCH_DTYPE": args.dtype,
         "DS4_NCCL_P2P_BENCH_CREDIT": "1" if args.pynccl_credit else "0",
         "DS4_NCCL_P2P_BENCH_STRIPED_STREAMS": "1" if args.striped_streams else "0",
-        "VLLM_DS4_SKIP_PYNCCL_WARMUP_ALLREDUCE": "0",
+        "VLLM_DS4_SKIP_PYNCCL_WARMUP_ALLREDUCE": "1",
     }
     if args.extra_env:
         for item in args.extra_env:
@@ -145,7 +146,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--master-addr", default="10.10.100.10")
     parser.add_argument("--master-port", default="30944")
     parser.add_argument("--pairs", default="")
-    parser.add_argument("--methods", default="torch,pynccl,striped")
+    parser.add_argument("--methods", default="pynccl,striped")
+    parser.add_argument("--control-backend", choices=("gloo", "nccl"), default="gloo")
     parser.add_argument("--bytes", default="1048576,16777216,67108864")
     parser.add_argument("--iters", type=int, default=20)
     parser.add_argument("--warmup", type=int, default=5)

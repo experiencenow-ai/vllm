@@ -598,6 +598,8 @@ class GroupCoordinator:
         self.device_communicator = None
         self.ds4_pp_striped_nccl_channel = None
         self.ds4_pp_torch_pair_groups: dict[int, ProcessGroup] = {}
+        self.ds4_pp_pynccl_pair_cpu_groups: dict[int, ProcessGroup] = {}
+        self.ds4_pp_pynccl_pair_communicators: dict[int, Any] = {}
         if (
             group_name == "pp"
             and envs.VLLM_DS4_PP_TORCH_PG_TENSOR_DICT
@@ -611,9 +613,18 @@ class GroupCoordinator:
                 torch_distributed_backend
             )
         if (
+            group_name == "pp"
+            and envs.VLLM_DS4_PP_PYNCCL_PAIR_COMMUNICATORS
+            and self.world_size > 1
+        ):
+            self.ds4_pp_pynccl_pair_communicators = (
+                self._build_ds4_pp_pynccl_pair_communicators()
+            )
+        if (
             use_device_communicator
             and self.world_size > 1
             and not ds4_pp_torch_pair_groups
+            and not self.ds4_pp_pynccl_pair_communicators
         ):
             device_comm_cls = resolve_obj_by_qualname(
                 current_platform.get_device_communicator_cls()
@@ -962,6 +973,104 @@ class GroupCoordinator:
             return pair_group
         return self.device_group
 
+    def _build_ds4_pp_pynccl_pair_communicators(self) -> dict[int, Any]:
+        if not torch.cuda.is_available():
+            raise RuntimeError(
+                "VLLM_DS4_PP_PYNCCL_PAIR_COMMUNICATORS requires CUDA for "
+                "adjacent PP tensor payload groups."
+            )
+        from vllm.distributed.device_communicators.pynccl import PyNcclCommunicator
+
+        communicators: dict[int, Any] = {}
+        for left_index in range(self.world_size - 1):
+            right_index = left_index + 1
+            active = self.rank_in_group in {left_index, right_index}
+            pair_ranks = [self.ranks[left_index], self.ranks[right_index]]
+            logger.info(
+                "DS4 PP PyNCCL pair communicator create begin: unique_name=%s "
+                "pp_rank=%s pair=%s-%s active=%s ranks=%s nccl_ifnames=%s",
+                self.unique_name,
+                self.rank_in_group,
+                left_index,
+                right_index,
+                active,
+                pair_ranks,
+                os.environ.get("NCCL_SOCKET_IFNAME", "<unset>"),
+            )
+            torch.distributed.barrier(group=self.cpu_group)
+            cpu_pair_group = self._new_ds4_process_group(
+                ranks=pair_ranks,
+                backend="gloo",
+                timeout=None,
+                group_name="pp_pynccl_pair",
+                group_index=left_index,
+                kind="cpu",
+                suppress_output=True,
+            )
+            if active:
+                started = time.monotonic()
+                communicator = PyNcclCommunicator(
+                    cpu_pair_group,
+                    self.device,
+                )
+                peer_index = (
+                    right_index
+                    if self.rank_in_group == left_index
+                    else left_index
+                )
+                self.ds4_pp_pynccl_pair_cpu_groups[peer_index] = cpu_pair_group
+                self._warm_ds4_pp_pynccl_pair_communicator(
+                    communicator,
+                    peer_index,
+                )
+                communicators[peer_index] = communicator
+                elapsed_s = time.monotonic() - started
+                logger.info(
+                    "DS4 PP PyNCCL pair communicator create done: "
+                    "unique_name=%s pp_rank=%s peer=%s elapsed_s=%.3f",
+                    self.unique_name,
+                    self.rank_in_group,
+                    peer_index,
+                    elapsed_s,
+                )
+            elif cpu_pair_group != torch.distributed.GroupMember.NON_GROUP_MEMBER:
+                torch.distributed.destroy_process_group(cpu_pair_group)
+            torch.distributed.barrier(group=self.cpu_group)
+        return communicators
+
+    def _warm_ds4_pp_pynccl_pair_communicator(
+        self,
+        communicator: Any,
+        peer_index: int,
+    ) -> None:
+        send = torch.tensor(
+            [self.rank_in_group + 1],
+            dtype=torch.float32,
+            device=self.device,
+        )
+        recv = torch.empty_like(send)
+        group_peer = 1 if communicator.rank == 0 else 0
+        communicator.group_start()
+        if self.rank_in_group < peer_index:
+            communicator.send(send, group_peer)
+            communicator.recv(recv, group_peer)
+        else:
+            communicator.recv(recv, group_peer)
+            communicator.send(send, group_peer)
+        communicator.group_end()
+        torch.cuda.synchronize(self.device)
+        expected = float(peer_index + 1)
+        actual = float(recv[0].item())
+        if actual != expected:
+            raise RuntimeError(
+                "DS4 PP PyNCCL pair communicator warmup failed: "
+                f"pp_rank={self.rank_in_group} peer={peer_index} "
+                f"recv {actual} != expected {expected}"
+            )
+
+    def _ds4_pp_pynccl_pair_communicator(self, peer: int) -> Any | None:
+        return self.ds4_pp_pynccl_pair_communicators.get(peer)
+
     def create_mq_broadcaster(
         self, writer_rank=0, external_writer_handle=None, blocking=True
     ):
@@ -997,14 +1106,17 @@ class GroupCoordinator:
             return False
         if "pp" not in self.unique_name:
             return False
+        if self.world_size <= 1:
+            return False
+        if self.ds4_pp_pynccl_pair_communicators:
+            return True
         if envs.VLLM_DS4_PP_DISABLE_DEVICE_COMMUNICATOR:
             raise RuntimeError(
                 "DS4 PP PyNCCL tensor-dict fast path was requested while "
-                "VLLM_DS4_PP_DISABLE_DEVICE_COMMUNICATOR is enabled. Refusing "
+                "VLLM_DS4_PP_DISABLE_DEVICE_COMMUNICATOR is enabled, but no "
+                "adjacent PyNCCL pair communicator is available. Refusing "
                 "to fall back to torch ProcessGroup P2P silently."
             )
-        if self.world_size <= 1:
-            return False
         if self.device_communicator is None:
             raise RuntimeError(
                 "DS4 PP PyNCCL tensor-dict fast path was requested, but the "
@@ -1137,7 +1249,19 @@ class GroupCoordinator:
         current_stream = torch.cuda.current_stream(cuda_tensors[0].device)
         comm_stream = self._get_ds4_pp_pynccl_stream()
         handles: list[Handle] = []
-        striped_channel = self.ds4_pp_striped_nccl_channel
+        pair_communicator = self._ds4_pp_pynccl_pair_communicator(peer)
+        communicator = pair_communicator or self.device_communicator
+        group_peer = peer
+        if pair_communicator is not None:
+            group_peer = 1 if pair_communicator.rank == 0 else 0
+        if communicator is None:
+            raise RuntimeError(
+                "DS4 PP PyNCCL tensor-dict fast path has no communicator for "
+                f"peer {peer}; refusing torch ProcessGroup fallback."
+            )
+        striped_channel = (
+            None if pair_communicator is not None else self.ds4_pp_striped_nccl_channel
+        )
         remaining_tensors: list[torch.Tensor] = []
         for tensor in cuda_tensors:
             if (
@@ -1166,7 +1290,7 @@ class GroupCoordinator:
                     p2p_op = object.__new__(P2POp)
                     p2p_op.op = op
                     p2p_op.tensor = chunk
-                    p2p_op.group_peer = peer
+                    p2p_op.group_peer = group_peer
                     p2p_ops.append(p2p_op)
             if p2p_ops and envs.VLLM_DS4_PP_PYNCCL_P2P_CREDIT:
                 credit_op = object.__new__(P2POp)
@@ -1178,10 +1302,10 @@ class GroupCoordinator:
                 credit_op.tensor = torch.empty(
                     (1,), dtype=torch.uint8, device=remaining_tensors[0].device
                 )
-                credit_op.group_peer = peer
+                credit_op.group_peer = group_peer
                 p2p_ops.append(credit_op)
             if p2p_ops:
-                self.device_communicator.batch_isend_irecv(p2p_ops)
+                communicator.batch_isend_irecv(p2p_ops)
                 for tensor in remaining_tensors:
                     tensor.record_stream(comm_stream)
                 handles.append(
@@ -1958,6 +2082,15 @@ class GroupCoordinator:
         if self.ds4_pp_striped_nccl_channel is not None:
             self.ds4_pp_striped_nccl_channel.destroy()
             self.ds4_pp_striped_nccl_channel = None
+        for communicator in self.ds4_pp_pynccl_pair_communicators.values():
+            destroy = getattr(communicator, "destroy", None)
+            if destroy is not None:
+                destroy()
+        self.ds4_pp_pynccl_pair_communicators.clear()
+        for group in self.ds4_pp_pynccl_pair_cpu_groups.values():
+            if group != torch.distributed.GroupMember.NON_GROUP_MEMBER:
+                torch.distributed.destroy_process_group(group)
+        self.ds4_pp_pynccl_pair_cpu_groups.clear()
         if hasattr(self, "device_group"):
             torch.distributed.destroy_process_group(self.device_group)
             del self.device_group
@@ -2599,14 +2732,32 @@ def initialize_model_parallel(
                 "not silently fall through to an invalid torch P2P backend."
             )
         pp_use_device_communicator = False
+        if envs.VLLM_DS4_PP_PYNCCL_PAIR_COMMUNICATORS:
+            logger.info(
+                "DS4 broad PP device communicator disabled; pipeline "
+                "tensor-dict send/recv will use adjacent PyNCCL pair "
+                "communicators."
+            )
+        else:
+            logger.info(
+                "DS4 PP group device communicator disabled; pipeline send/recv "
+                "and async sampled-token broadcast use the torch PP process "
+                "group."
+            )
+    pp_backend = backend
+    if (
+        pipeline_model_parallel_size > 1
+        and envs.VLLM_DS4_PP_PYNCCL_PAIR_COMMUNICATORS
+    ):
+        pp_backend = "gloo"
         logger.info(
-            "DS4 PP group device communicator disabled; pipeline send/recv and "
-            "async sampled-token broadcast use the torch PP process group."
+            "DS4 PP group using Gloo ProcessGroup for control while CUDA "
+            "payloads use adjacent PyNCCL pair communicators."
         )
     _PP = init_model_parallel_group(
         group_ranks,
         get_world_group().local_rank,
-        backend,
+        pp_backend,
         group_name="pp",
         use_device_communicator=pp_use_device_communicator,
     )

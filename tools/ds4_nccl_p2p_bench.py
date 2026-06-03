@@ -392,19 +392,28 @@ def main() -> int:
         file=sys.stderr,
         flush=True,
     )
+    control_backend = _env("DS4_NCCL_P2P_BENCH_CONTROL_BACKEND", "gloo")
     dist.init_process_group(
-        "nccl",
+        control_backend,
         init_method=f"tcp://{master_addr}:{master_port}",
         rank=rank,
         world_size=world_size,
         timeout=dt.timedelta(seconds=timeout_s),
     )
     try:
-        control_group = dist.new_group(ranks=list(range(world_size)), backend="gloo")
-        value = torch.tensor([rank + 1], dtype=torch.float32, device="cuda")
+        control_group = dist.distributed_c10d._get_default_group()
+        value_device = "cuda" if control_backend == "nccl" else "cpu"
+        value = torch.tensor([rank + 1], dtype=torch.float32, device=value_device)
         dist.all_reduce(value)
-        torch.cuda.synchronize()
+        if value_device == "cuda":
+            torch.cuda.synchronize()
         methods = _csv("DS4_NCCL_P2P_BENCH_METHODS", "torch,pynccl,striped")
+        if control_backend != "nccl" and "torch" in methods:
+            raise RuntimeError(
+                "DS4_NCCL_P2P_BENCH_METHODS=torch requires "
+                "DS4_NCCL_P2P_BENCH_CONTROL_BACKEND=nccl; use pynccl or "
+                "striped for Gloo-controlled edge-only tests."
+            )
         byte_sizes = _int_csv(
             "DS4_NCCL_P2P_BENCH_BYTES_LIST",
             _env("DS4_NCCL_P2P_BENCH_BYTES", "1048576,16777216,67108864"),
