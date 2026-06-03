@@ -97,7 +97,7 @@ check("NCCL preflight prints NCCL interface override", '"DS4_200G_NCCL_IFNAME"' 
 check("NCCL preflight has P2P bandwidth mode", "def _run_p2p_nccl_preflight(" in preflight and "DS4_NCCL_PREFLIGHT_P2P_PAIRS" in preflight)
 check("NCCL preflight stripes P2P probes to match PP tensor transport", "DS4_NCCL_PREFLIGHT_P2P_STRIPES" in preflight and "_split_p2p_tensor" in preflight)
 check("NCCL preflight separates directional PP P2P from TP pair collectives", "DS4_NCCL_PREFLIGHT_P2P_DIRECTION" in preflight and "pairwise NCCL group probes begin" in preflight)
-check("P2P preflight can skip world all-reduce on open-line PP-only topology", "DS4_NCCL_PREFLIGHT_P2P_SKIP_WORLD_ALLREDUCE" in preflight and "communicator all_reduce skipped" in preflight)
+check("P2P preflight can skip world all-reduce on open-line PP-only topology", "def _bool_env(" in preflight and "DS4_NCCL_PREFLIGHT_P2P_SKIP_WORLD_ALLREDUCE" in preflight and "communicator all_reduce skipped" in preflight)
 check("standalone NCCL P2P bench compares torch PyNCCL and striped paths", "method == \"torch\"" in nccl_p2p_bench and "method == \"pynccl\"" in nccl_p2p_bench and "method == \"striped\"" in nccl_p2p_bench)
 check("standalone NCCL P2P bench can reproduce symmetric PyNCCL credit mode", "DS4_NCCL_P2P_BENCH_CREDIT" in nccl_p2p_bench and '"credit"' in nccl_p2p_bench)
 check("standalone NCCL P2P runner can isolate GPUs before transport tests", "--stop-service" in nccl_p2p_runner and "ds4_stop_spark_processes.py" in nccl_p2p_runner)
