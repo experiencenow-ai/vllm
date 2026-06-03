@@ -92,11 +92,25 @@ def _pad_positions_to_num_rows(
         return positions
     if num_positions > num_rows:
         raise ValueError(
-            "DeepSeek V4 positions exceed hidden-state rows: "
+            "DeepSeek V4 positions exceed target rows: "
             f"positions={num_positions} rows={num_rows}"
         )
     padding = positions.new_zeros((num_rows - num_positions,))
     return torch.cat((positions, padding), dim=0)
+
+
+def _pad_positions_to_q_kv_rows(
+    positions: torch.Tensor,
+    q: torch.Tensor,
+    kv: torch.Tensor,
+) -> torch.Tensor:
+    num_rows = q.shape[0]
+    if kv.shape[0] != num_rows:
+        raise ValueError(
+            "DeepSeek V4 fused Q/KV insert requires q and kv row counts "
+            f"to match; q={num_rows} kv={kv.shape[0]}"
+        )
+    return _pad_positions_to_num_rows(positions, num_rows)
 
 
 def _select_v4_sparse_impl() -> "type[DeepseekV4SparseMLAAttentionImpl]":
@@ -562,6 +576,7 @@ class DeepseekV4MultiHeadLatentAttentionWrapper(PluggableLayer):
         #   Q side:  q_head_norm (per-head RMSNorm, no weight) + GPT-J RoPE
         #   KV side: GPT-J RoPE + UE8M0 FP8 quant + paged cache insert
         # kv is unchanged; mla_attn reads kv solely via swa_kv_cache.
+        positions = _pad_positions_to_q_kv_rows(positions, q, kv)
         torch.ops._C.fused_deepseek_v4_qnorm_rope_kv_rope_quant_insert(
             q,
             kv,
