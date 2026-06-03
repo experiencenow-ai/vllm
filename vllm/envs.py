@@ -148,6 +148,10 @@ if TYPE_CHECKING:
     VLLM_DS4_DSV4_PP_FLUSH_HC_BOUNDARY: bool = False
     VLLM_DS4_DSV4_LAYER_BACKEND: str = "cuda"
     VLLM_DS4_DSV4_HC_HEAD_BACKEND: str = "tilelang"
+    VLLM_DS4_DSV4_HC_HEAD_REF_CHECK: bool = False
+    VLLM_DS4_DSV4_HC_HEAD_REF_MAX_TOKENS: int = 8
+    VLLM_DS4_DSV4_HC_HEAD_REF_ATOL: float = 0.75
+    VLLM_DS4_DSV4_HC_HEAD_REF_MEAN_ATOL: float = 0.05
     VLLM_DS4_DSV4_CUTLASS_MXFP4_W13_LAYOUT: str = "swapped"
     VLLM_DS4_DSV4_WEIGHT_AUDIT: bool = False
     VLLM_DS4_DSV4_HASH_ROUTER_REF_CHECK: bool = False
@@ -1448,6 +1452,19 @@ environment_variables: dict[str, Callable[[], Any]] = {
     )
     .strip()
     .lower(),
+    "VLLM_DS4_DSV4_HC_HEAD_REF_CHECK": lambda: (
+        os.environ.get("VLLM_DS4_DSV4_HC_HEAD_REF_CHECK", "0").strip().lower()
+        in ("1", "true", "yes", "on")
+    ),
+    "VLLM_DS4_DSV4_HC_HEAD_REF_MAX_TOKENS": lambda: int(
+        os.environ.get("VLLM_DS4_DSV4_HC_HEAD_REF_MAX_TOKENS", "8")
+    ),
+    "VLLM_DS4_DSV4_HC_HEAD_REF_ATOL": lambda: float(
+        os.environ.get("VLLM_DS4_DSV4_HC_HEAD_REF_ATOL", "0.75")
+    ),
+    "VLLM_DS4_DSV4_HC_HEAD_REF_MEAN_ATOL": lambda: float(
+        os.environ.get("VLLM_DS4_DSV4_HC_HEAD_REF_MEAN_ATOL", "0.05")
+    ),
     # DS4 DSV4 native MXFP4 MoE correctness: FlashInfer gated kernels consume
     # their first GEMM in W31/up-gate order. Keep the production default
     # explicit so launches cannot drift between raw checkpoint W13 and the

@@ -9,6 +9,7 @@ envs = (root / "vllm/envs.py").read_text()
 mhc = (root / "vllm/model_executor/layers/mhc.py").read_text()
 launcher = (root / "tools/ds4_launch_dsv4_flash_pp8.sh").read_text()
 relaunch = (root / "tools/ds4_relaunch_spark_service.py").read_text()
+probe = (root / "tools/ds4_mhc_correctness_probe.py").read_text()
 
 checks = [
     (
@@ -34,6 +35,20 @@ checks = [
     (
         "Unknown HC head backend fails closed",
         "Unsupported VLLM_DS4_DSV4_HC_HEAD_BACKEND" in mhc,
+    ),
+    (
+        "HC head live reference check is env-gated",
+        "VLLM_DS4_DSV4_HC_HEAD_REF_CHECK: bool = False" in envs
+        and "\"VLLM_DS4_DSV4_HC_HEAD_REF_CHECK\": lambda:" in envs
+        and "_maybe_check_hc_head_ref(" in mhc
+        and "torch.cuda.is_current_stream_capturing()" in mhc
+        and "DS4 DSV4 hc_head reference check failed" in mhc,
+    ),
+    (
+        "MHC correctness probe does not require Triton head by default",
+        "--include-triton-head" in probe
+        and "DS4_MHC_CORRECTNESS_INCLUDE_TRITON_HEAD" in probe
+        and "include_triton_head: bool" in probe,
     ),
     (
         "launcher exposes and logs HC head backend",
