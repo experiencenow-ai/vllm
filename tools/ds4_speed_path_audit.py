@@ -123,6 +123,7 @@ check("rail TCP preflight discovers route rails like fast_copy", "ip\", \"route\
 check("rail TCP preflight uses iperf for the launch speed gate", "DS4_RAIL_TCP_PREFLIGHT_TOOL" in rail_tcp and "iperf" in rail_tcp and "--reportstyle C" not in rail_tcp and "-y" in rail_tcp)
 check("rail TCP iperf parser uses the aggregate summary row", 'fields[5] != "-1"' in rail_tcp)
 check("rail TCP iperf parser rejects zero-interval summaries", "DS4_RAIL_TCP_PREFLIGHT_MIN_REPORT_INTERVAL_S" in rail_tcp and "interval_s < min_interval_s" in rail_tcp)
+check("rail TCP background servers verify their own bandwidth summaries", "DS4_RAIL_TCP_PREFLIGHT_VERIFY_SERVER_SUMMARY" in rail_tcp and "_parse_background_server_bits_per_second" in rail_tcp and "rail TCP preflight server did not produce a verified summary" in rail_tcp)
 check("rail TCP preflight holds inbound servers for the measurement window", "DS4_RAIL_TCP_PREFLIGHT_SERVER_HOLD_EXTRA_S" in rail_tcp and "hold_until = server_started_at + duration_s + hold_extra_s" in rail_tcp)
 check("rail TCP preflight keeps servers alive long enough for slow ring ranks", 'DS4_RAIL_TCP_PREFLIGHT_SERVER_HOLD_EXTRA_S", "10.0"' in rail_tcp)
 check("rail TCP clients retry until peer servers are ready", "DS4_RAIL_TCP_PREFLIGHT_CLIENT_RETRY_SLEEP_S" in rail_tcp and "while time.monotonic() < deadline" in rail_tcp)
