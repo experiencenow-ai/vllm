@@ -54,6 +54,26 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--skip-build", action="store_true")
     parser.add_argument("--skip-stop", action="store_true")
     parser.add_argument(
+        "--static-fabric",
+        choices=("off", "verify", "apply"),
+        default=os.getenv("DS4_STATIC_FABRIC_MODE", "verify"),
+        help="verify or apply the fixed Spark fabric profile before stopping/running service",
+    )
+    parser.add_argument(
+        "--static-fabric-edge-rail",
+        default=os.getenv("DS4_STATIC_FABRIC_EDGE_RAIL", os.getenv("VLLM_DS4_PP_EDGE_RAIL", "enp")),
+    )
+    parser.add_argument(
+        "--static-fabric-route-scope",
+        choices=("all", "adjacent", "head"),
+        default=os.getenv("DS4_STATIC_FABRIC_ROUTE_SCOPE", "all"),
+    )
+    parser.add_argument(
+        "--static-fabric-timeout-s",
+        type=int,
+        default=int(os.getenv("DS4_STATIC_FABRIC_TIMEOUT_S", "8")),
+    )
+    parser.add_argument(
         "--skip-local-controller-cleanup",
         action="store_true",
         help="do not terminate stale local ds4_relaunch_spark_service.py controllers for this service",
@@ -225,6 +245,7 @@ def build_command(args: argparse.Namespace) -> str:
         "vllm/v1/simple_kv_offload/worker.py "
         "vllm/v1/worker/workspace.py "
         "tools/ds4_stop_spark_processes.py tools/ds4_relaunch_spark_service.py "
+        "tools/ds4_static_fabric.py "
         "tools/ds4_nccl_preflight.py tools/ds4_nccl_p2p_bench.py "
         "tools/ds4_run_nccl_p2p_bench.py "
         "tools/ds4_cudagraph_support_audit.py "
@@ -260,6 +281,7 @@ def stop_command(args: argparse.Namespace) -> str:
 
 
 def launch_env(args: argparse.Namespace, rank: int) -> dict[str, str]:
+    fabric_ifnames = static_fabric_ifnames(args.static_fabric_edge_rail)
     env = {
         "NODE_RANK": str(rank),
         "HEAD_ADDR": args.head_addr,
@@ -274,6 +296,15 @@ def launch_env(args: argparse.Namespace, rank: int) -> dict[str, str]:
         "DS4_VLLM_PYTHON": args.python.replace("~", f"/home/{node_user(rank)}", 1)
         if args.python.startswith("~/")
         else args.python,
+        "DS4_200G_IFNAME": fabric_ifnames,
+        "DS4_200G_SOCKET_IFNAME": fabric_ifnames,
+        "DS4_200G_NCCL_IFNAME": fabric_ifnames,
+        "DS4_CONTROL_IFNAME": "ds4ring0",
+        "DS4_GLOO_SOCKET_IFNAME": "enP7s7",
+        "DS4_200G_ADVERTISE_LOOPBACK": "1",
+        "DS4_200G_NCCL_TRANSPORT": "socket",
+        "VLLM_DS4_PP_EDGE_RAIL": args.static_fabric_edge_rail,
+        "DS4_NCCL_PREFLIGHT_PP_EDGE_RAIL": args.static_fabric_edge_rail,
     }
     for item in args.env:
         if "=" not in item:
@@ -284,6 +315,27 @@ def launch_env(args: argparse.Namespace, rank: int) -> dict[str, str]:
             raise SystemExit(f"--env has empty key: {item!r}")
         env[key] = value
     return env
+
+
+def static_fabric_ifnames(edge_rail: str) -> str:
+    rails = {
+        "enp": ("enp1s0f0np0", "enp1s0f1np1"),
+        "rail0": ("enp1s0f0np0", "enp1s0f1np1"),
+        "lower": ("enp1s0f0np0", "enp1s0f1np1"),
+        "enp2p": ("enP2p1s0f0np0", "enP2p1s0f1np1"),
+        "enP2p": ("enP2p1s0f0np0", "enP2p1s0f1np1"),
+        "rail1": ("enP2p1s0f0np0", "enP2p1s0f1np1"),
+        "upper": ("enP2p1s0f0np0", "enP2p1s0f1np1"),
+    }
+    if edge_rail in rails:
+        left, right = rails[edge_rail]
+    elif "," in edge_rail:
+        left, right = [item.strip() for item in edge_rail.split(",", 1)]
+    else:
+        return edge_rail
+    if left == right:
+        return left
+    return f"{left},{right}"
 
 
 def node_user(rank: int) -> str:
@@ -409,6 +461,37 @@ def run_on_nodes(args: argparse.Namespace, nodes: list[str], command_factory) ->
         raise SystemExit(f"failed on node(s): {', '.join(failed)}")
 
 
+def static_fabric_command(args: argparse.Namespace, mode: str) -> str:
+    py = shell_path(args.python)
+    return repo_command(
+        args,
+        f"{py} tools/ds4_static_fabric.py --fleet --{mode} "
+        f"--nodes {shlex.quote(','.join(nodes_from_arg(args.nodes)))} "
+        f"--nnodes {args.nnodes} "
+        f"--edge-rail {shlex.quote(args.static_fabric_edge_rail)} "
+        f"--route-scope {shlex.quote(args.static_fabric_route_scope)} "
+        f"--timeout-s {args.static_fabric_timeout_s}",
+    )
+
+
+def run_static_fabric(args: argparse.Namespace, nodes: list[str]) -> None:
+    if args.static_fabric == "off":
+        return
+    command = static_fabric_command(args, args.static_fabric)
+    if remote_run(args.head_node, command, args.dry_run) != 0:
+        if args.static_fabric == "verify":
+            bootstrap = static_fabric_command(args, "apply")
+            print(
+                "static fabric verification failed before service stop; "
+                "after a power cycle run this bootstrap once:",
+                file=sys.stderr,
+            )
+            print(f"ssh {args.head_node} {shlex.quote(bootstrap)}", file=sys.stderr)
+        raise SystemExit("static fabric setup failed")
+    if len(nodes) != args.nnodes:
+        raise SystemExit(f"--nodes has {len(nodes)} entries but --nnodes={args.nnodes}")
+
+
 def run_parallel_start(args: argparse.Namespace, nodes: list[str], log_tag: str) -> None:
     procs: list[tuple[str, subprocess.Popen[str]]] = []
     for rank, node in enumerate(nodes):
@@ -442,6 +525,7 @@ def main() -> int:
         run_on_nodes(args, nodes, lambda _rank, _node: pull_command(args))
     if not args.skip_build:
         run_on_nodes(args, nodes, lambda _rank, _node: build_command(args))
+    run_static_fabric(args, nodes)
     if not args.skip_stop:
         run_on_nodes(args, nodes, lambda _rank, _node: stop_command(args))
     run_parallel_start(args, nodes, log_tag)
