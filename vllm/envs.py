@@ -194,6 +194,7 @@ if TYPE_CHECKING:
     VLLM_DS4_PP_PREV_SOCKET_IFNAME: str = ""
     VLLM_DS4_PP_NEXT_SOCKET_IFNAME: str = ""
     VLLM_DS4_PP_SOCKET_IFNAME: str = ""
+    VLLM_DS4_PP_PYNCCL_PAIR_IFNAME_MODE: str = "process"
     VLLM_DS4_PP_PYNCCL_TENSOR_DICT_STRIPES: int = 1
     VLLM_DS4_PP_PYNCCL_TENSOR_DICT_STRIPE_MIN_BYTES: int = 1048576
     VLLM_DS4_PP_PYNCCL_P2P_CREDIT: bool = False
@@ -1571,6 +1572,9 @@ environment_variables: dict[str, Callable[[], Any]] = {
         .strip()
         .lower()
         in ("1", "true", "yes", "on")
+    ),
+    "VLLM_DS4_PP_PYNCCL_PAIR_IFNAME_MODE": lambda: os.environ.get(
+        "VLLM_DS4_PP_PYNCCL_PAIR_IFNAME_MODE", "process"
     ),
     "VLLM_DS4_PP_DIRECT_CUDA_TENSOR_DICT": lambda: (
         os.environ.get("VLLM_DS4_PP_DIRECT_CUDA_TENSOR_DICT", "0")

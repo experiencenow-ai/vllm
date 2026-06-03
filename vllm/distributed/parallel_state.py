@@ -967,6 +967,15 @@ class GroupCoordinator:
             return os.environ.get("VLLM_DS4_PP_PREV_SOCKET_IFNAME", "").strip()
         return ""
 
+    def _ds4_pp_pynccl_pair_ifname_mode(self) -> str:
+        mode = envs.VLLM_DS4_PP_PYNCCL_PAIR_IFNAME_MODE.strip().lower()
+        mode = mode.replace("-", "_")
+        if mode not in {"process", "edge"}:
+            raise RuntimeError(
+                "VLLM_DS4_PP_PYNCCL_PAIR_IFNAME_MODE must be process or edge"
+            )
+        return mode
+
     @contextmanager
     def _ds4_pp_pair_nccl_socket_ifname(self, pair_ifname: str):
         original_ifname = os.environ.get("NCCL_SOCKET_IFNAME")
@@ -1119,15 +1128,18 @@ class GroupCoordinator:
         from vllm.distributed.device_communicators.pynccl import PyNcclCommunicator
 
         communicators: dict[int, Any] = {}
+        pair_ifname_mode = self._ds4_pp_pynccl_pair_ifname_mode()
         for left_index in range(self.world_size - 1):
             right_index = left_index + 1
             active = self.rank_in_group in {left_index, right_index}
-            pair_ifname = self._ds4_pp_pair_ifname(left_index, right_index)
+            edge_ifname = self._ds4_pp_pair_ifname(left_index, right_index)
+            process_ifname = os.environ.get("NCCL_SOCKET_IFNAME", "").strip()
+            pair_ifname = edge_ifname if pair_ifname_mode == "edge" else process_ifname
             pair_ranks = [self.ranks[left_index], self.ranks[right_index]]
             logger.info(
                 "DS4 PP PyNCCL pair communicator create begin: unique_name=%s "
                 "pp_rank=%s pair=%s-%s active=%s ranks=%s pair_ifname=%s "
-                "previous_nccl_ifnames=%s",
+                "edge_ifname=%s ifname_mode=%s previous_nccl_ifnames=%s",
                 self.unique_name,
                 self.rank_in_group,
                 left_index,
@@ -1135,6 +1147,8 @@ class GroupCoordinator:
                 active,
                 pair_ranks,
                 pair_ifname or "<inactive>",
+                edge_ifname or "<inactive>",
+                pair_ifname_mode,
                 os.environ.get("NCCL_SOCKET_IFNAME", "<unset>"),
             )
             torch.distributed.barrier(group=self.cpu_group)
@@ -1151,13 +1165,20 @@ class GroupCoordinator:
                 if not pair_ifname:
                     raise RuntimeError(
                         "VLLM_DS4_PP_PYNCCL_PAIR_COMMUNICATORS requires "
-                        "VLLM_DS4_PP_PREV_SOCKET_IFNAME or "
-                        "VLLM_DS4_PP_NEXT_SOCKET_IFNAME for every active PP "
+                        "an explicit NCCL_SOCKET_IFNAME in process mode or "
+                        "VLLM_DS4_PP_PREV_SOCKET_IFNAME / "
+                        "VLLM_DS4_PP_NEXT_SOCKET_IFNAME in edge mode for active PP "
                         f"edge rank. pp_rank={self.rank_in_group} "
-                        f"pair={left_index}-{right_index}"
+                        f"pair={left_index}-{right_index} "
+                        f"ifname_mode={pair_ifname_mode}"
                     )
                 started = time.monotonic()
-                with self._ds4_pp_pair_nccl_socket_ifname(pair_ifname):
+                ctx = (
+                    self._ds4_pp_pair_nccl_socket_ifname(pair_ifname)
+                    if pair_ifname_mode == "edge"
+                    else nullcontext()
+                )
+                with ctx:
                     communicator = PyNcclCommunicator(
                         cpu_pair_group,
                         self.device,
@@ -1179,11 +1200,12 @@ class GroupCoordinator:
                 logger.info(
                     "DS4 PP PyNCCL pair communicator create done: "
                     "unique_name=%s pp_rank=%s peer=%s pair_ifname=%s "
-                    "elapsed_s=%.3f",
+                    "ifname_mode=%s elapsed_s=%.3f",
                     self.unique_name,
                     self.rank_in_group,
                     peer_index,
                     pair_ifname,
+                    pair_ifname_mode,
                     elapsed_s,
                 )
             elif cpu_pair_group != torch.distributed.GroupMember.NON_GROUP_MEMBER:

@@ -41,6 +41,10 @@ checks: list[tuple[str, bool]] = [
         "VLLM_DS4_PP_PYNCCL_TENSOR_DICT" in dsv4,
     ),
     (
+        "DSV4 launcher defaults PyNCCL pair ifname mode to process-wide",
+        'VLLM_DS4_PP_PYNCCL_PAIR_IFNAME_MODE:-process' in dsv4,
+    ),
+    (
         "DSV4 launcher defaults to PyNCCL tensor-dict path",
         'VLLM_DS4_PP_PYNCCL_TENSOR_DICT:-1' in dsv4,
     ),
