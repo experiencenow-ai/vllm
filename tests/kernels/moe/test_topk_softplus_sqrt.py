@@ -11,6 +11,7 @@ from vllm.model_executor.layers.fused_moe.config import (
     get_routing_method_type,
 )
 from vllm.model_executor.layers.fused_moe.router.fused_topk_bias_router import (
+    _ds4_slice_router_ref_rows,
     fused_topk_bias,
 )
 from vllm.platforms import current_platform
@@ -67,6 +68,38 @@ def test_sqrtsoftplus_bias_uses_deepseek_v4_routing_method():
         )
         == RoutingMethodType.Unspecified
     )
+
+
+def test_ds4_hash_router_reference_slices_graph_padded_rows():
+    gating_output = torch.arange(20, dtype=torch.float32).view(5, 4)
+    input_tokens = torch.arange(5, dtype=torch.int64)
+
+    sliced_gating, sliced_tokens = _ds4_slice_router_ref_rows(
+        gating_output, input_tokens, 1
+    )
+
+    assert sliced_gating.tolist() == [[16.0, 17.0, 18.0, 19.0]]
+    assert sliced_tokens.tolist() == [4]
+
+
+def test_ds4_hash_router_reference_keeps_exact_rows():
+    gating_output = torch.arange(8, dtype=torch.float32).view(2, 4)
+    input_tokens = torch.arange(2, dtype=torch.int64)
+
+    sliced_gating, sliced_tokens = _ds4_slice_router_ref_rows(
+        gating_output, input_tokens, 2
+    )
+
+    assert sliced_gating is gating_output
+    assert sliced_tokens is input_tokens
+
+
+def test_ds4_hash_router_reference_rejects_short_metadata():
+    gating_output = torch.arange(4, dtype=torch.float32).view(1, 4)
+    input_tokens = torch.arange(1, dtype=torch.int64)
+
+    with pytest.raises(ValueError, match="fewer metadata rows"):
+        _ds4_slice_router_ref_rows(gating_output, input_tokens, 2)
 
 
 @pytest.mark.skipif(
