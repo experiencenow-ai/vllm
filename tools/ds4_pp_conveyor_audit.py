@@ -93,6 +93,14 @@ def main() -> int:
         "VLLM_DS4_PP_DIRECT_CUDA_TENSOR_DICT" in parallel
         and "VLLM_DS4_PP_PYNCCL_TENSOR_DICT" in parallel,
     )
+    failures += check(
+        "parallel_state binds PyNCCL pair communicators to exact PP edge ifnames",
+        "_build_ds4_pp_pynccl_pair_communicators" in parallel
+        and "pair_ifname = self._ds4_pp_pair_ifname(left_index, right_index)"
+        in parallel
+        and "with self._ds4_pp_pair_nccl_socket_ifname(pair_ifname)"
+        in parallel,
+    )
     for script_name, script in (
         ("DSV4 PP", dsv4),
         ("Qwen NVFP4 PP", qwen_fast),

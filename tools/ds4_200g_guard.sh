@@ -443,12 +443,32 @@ ds4_require_200g_fabric()
 
 ds4_run_preflight_checked()
 {
-  local output status
-  set +e
-  output="$("$@" 2>&1)"
-  status=$?
-  set -e
-  printf "%s\n" "$output" >&2
+  local output status tmpfile child_pid tail_pid streamed
+  streamed=0
+  if [[ "${DS4_PREFLIGHT_STREAM_OUTPUT:-1}" =~ ^(1|true|TRUE|yes|YES|on|ON)$ ]]; then
+    tmpfile="$(mktemp "${TMPDIR:-/tmp}/ds4_preflight.XXXXXX")" || ds4_200g_die "could not create preflight output file"
+    streamed=1
+    set +e
+    "$@" >"$tmpfile" 2>&1 &
+    child_pid=$!
+    tail -n +1 -f "$tmpfile" >&2 &
+    tail_pid=$!
+    wait "$child_pid"
+    status=$?
+    kill "$tail_pid" >/dev/null 2>&1
+    wait "$tail_pid" >/dev/null 2>&1
+    output="$(cat "$tmpfile")"
+    rm -f "$tmpfile"
+    set -e
+  else
+    set +e
+    output="$("$@" 2>&1)"
+    status=$?
+    set -e
+  fi
+  if [[ "$streamed" != "1" ]]; then
+    printf "%s\n" "$output" >&2
+  fi
   if [[ "$output" == *"Could not get speed from"* || "$output" == *"Defaulting to 10 Gbps"* ]]; then
     ds4_200g_die "NCCL reported a link-speed fallback during preflight; refusing to launch on an ambiguous or slow fabric"
   fi

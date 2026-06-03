@@ -8,6 +8,7 @@ import os
 import subprocess
 import sys
 import time
+from contextlib import contextmanager
 
 import torch
 import torch.distributed as dist
@@ -237,6 +238,20 @@ def _pp_edge_dev_for_rank(rank: int, peer_rank: int) -> tuple[str, str]:
     if rail in {"enP2p", "enp2p", "rail1", "upper", "even"}:
         return ("enP2p1s0f1np1" if left_side else "enP2p1s0f0np0", rail)
     return (rail, rail)
+
+
+@contextmanager
+def _temporary_nccl_socket_ifname(ifname: str):
+    original_ifname = os.environ.get("NCCL_SOCKET_IFNAME")
+    if ifname:
+        os.environ["NCCL_SOCKET_IFNAME"] = ifname
+    try:
+        yield
+    finally:
+        if original_ifname is None:
+            os.environ.pop("NCCL_SOCKET_IFNAME", None)
+        else:
+            os.environ["NCCL_SOCKET_IFNAME"] = original_ifname
 
 
 def _new_nccl_pair_group(src: int, dst: int):
@@ -631,16 +646,28 @@ def _run_p2p_nccl_preflight(rank: int, world_size: int) -> int:
                 cpu_group = dist.new_group(ranks=[src, dst], backend="gloo")
                 pair_cpu_groups[(src, dst)] = cpu_group
                 if rank in {src, dst}:
+                    peer = dst if rank == src else src
+                    route_ifname, edge_rail = _pp_edge_dev_for_rank(rank, peer)
+                    if not route_ifname:
+                        raise RuntimeError(
+                            "DS4 NCCL P2P preflight pynccl_pair requires a "
+                            f"route interface for active pair={src}-{dst} "
+                            f"rank={rank} peer={peer}"
+                        )
                     print(
                         "DS4 NCCL P2P preflight adjacent PyNCCL create: "
                         f"pair={src}-{dst} rank={rank} "
-                        f"nccl_ifname={os.environ.get('NCCL_SOCKET_IFNAME', '<unset>')}",
+                        f"peer={peer} route_ifname={route_ifname} "
+                        f"edge_rail={edge_rail} "
+                        f"previous_nccl_ifname="
+                        f"{os.environ.get('NCCL_SOCKET_IFNAME', '<unset>')}",
                         file=sys.stderr,
                     )
-                    pair_pynccl_communicators[(src, dst)] = PyNcclCommunicator(
-                        cpu_group,
-                        torch.device("cuda:0"),
-                    )
+                    with _temporary_nccl_socket_ifname(route_ifname):
+                        pair_pynccl_communicators[(src, dst)] = PyNcclCommunicator(
+                            cpu_group,
+                            torch.device("cuda:0"),
+                        )
                 elif cpu_group != dist.GroupMember.NON_GROUP_MEMBER:
                     dist.destroy_process_group(cpu_group)
                 _store_barrier(rank, world_size, f"p2p-pair-{pair_index}-after-create")
