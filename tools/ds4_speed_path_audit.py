@@ -92,6 +92,8 @@ check("200G guard pins IB HCA from NCCL IFNAME, not the full route list", 'ds4_2
 check("200G guard supports explicit degraded-link bringup without hiding it", "DS4_200G_ALLOW_DEGRADED_LINKS" in guard and "excluding it from the effective DS4 fabric list" in guard)
 check("200G guard uses configurable link-speed floor before measured TCP preflight", "DS4_200G_LINK_MIN_MBPS" in guard and "below DS4_200G_LINK_MIN_MBPS" in guard)
 check("200G guard prints effective fabric list after degraded filtering", "effective DS4_200G_IFNAME" in guard and "effective DS4_200G_NCCL_IFNAME" in guard)
+check("200G guard auto-selects reboot-safe control interface", "ds4_200g_resolve_control_ifname" in guard and 'requested="${DS4_CONTROL_IFNAME:-auto}"' in guard and "DS4_200G_EFFECTIVE_CONTROL_IFNAME" in guard)
+check("DSV4 and Qwen launchers default to all physical rail names", all("enp1s0f0np0,enp1s0f1np1,enP2p1s0f0np0,enP2p1s0f1np1" in script and 'DS4_CONTROL_IFNAME:-auto' in script for script in (pp8, pp4, read("tools/ds4_launch_qwen27_nvfp4_pp8.sh"), read("tools/ds4_launch_qwen27_pp8.sh"))))
 check("NCCL preflight banner prints configured and effective interface lists", "configured_if=$DS4_200G_IFNAME" in guard and "effective_if=${DS4_200G_EFFECTIVE_IFNAME" in guard and "effective_nccl_if=${DS4_200G_EFFECTIVE_NCCL_IFNAME" in guard)
 check("NCCL preflight prints NCCL interface override", '"DS4_200G_NCCL_IFNAME"' in preflight)
 check("NCCL preflight has P2P bandwidth mode", "def _run_p2p_nccl_preflight(" in preflight and "DS4_NCCL_PREFLIGHT_P2P_PAIRS" in preflight)

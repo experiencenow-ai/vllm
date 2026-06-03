@@ -11,6 +11,7 @@ ds4_200g_print_diag()
     echo "DS4_200G_NCCL_IFNAME: ${DS4_200G_NCCL_IFNAME:-<unset>}"
     echo "DS4_200G_EFFECTIVE_NCCL_IFNAME: ${DS4_200G_EFFECTIVE_NCCL_IFNAME:-<unset>}"
     echo "DS4_CONTROL_IFNAME: ${DS4_CONTROL_IFNAME:-<unset>}"
+    echo "DS4_200G_EFFECTIVE_CONTROL_IFNAME: ${DS4_200G_EFFECTIVE_CONTROL_IFNAME:-<unset>}"
     echo "DS4_200G_ADVERTISE_LOOPBACK: ${DS4_200G_ADVERTISE_LOOPBACK:-<unset>}"
     echo "DS4_NODE_LOOPBACK: ${DS4_NODE_LOOPBACK:-<unset>}"
     echo "DS4_200G_PEER_LOOPBACKS: ${DS4_200G_PEER_LOOPBACKS:-<unset>}"
@@ -185,6 +186,36 @@ ds4_200g_peer_loopbacks()
   return 1
 }
 
+ds4_200g_resolve_control_ifname()
+{
+  local requested="${DS4_CONTROL_IFNAME:-auto}"
+  local advertise_ip bound_dev ifname
+  if [[ "$requested" == "auto" ]]; then
+    if [[ "${DS4_200G_ADVERTISE_LOOPBACK:-0}" =~ ^(1|true|TRUE|yes|YES|on|ON)$ ]]; then
+      advertise_ip="$(ds4_200g_rank_loopback 2>/dev/null || true)"
+      if [[ -n "$advertise_ip" ]]; then
+        bound_dev="$(ds4_200g_bound_dev "$advertise_ip")"
+        if [[ -n "$bound_dev" && -d "/sys/class/net/$bound_dev" ]]; then
+          echo "$bound_dev"
+          return 0
+        fi
+      fi
+    fi
+    if [[ -d "/sys/class/net/ds4ring0" ]]; then
+      echo "ds4ring0"
+      return 0
+    fi
+    echo "lo"
+    return 0
+  fi
+  IFS=',' read -r -a control_ifnames <<< "$requested"
+  for ifname in "${control_ifnames[@]}"; do
+    [[ -n "$ifname" ]] || ds4_200g_die "DS4_CONTROL_IFNAME contains an empty interface"
+    [[ -d "/sys/class/net/$ifname" ]] || ds4_200g_die "control interface '$ifname' does not exist"
+  done
+  echo "$requested"
+}
+
 ds4_require_routed_loopback_over_200g()
 {
   local ifnames_csv="$1"
@@ -273,12 +304,8 @@ ds4_require_200g_fabric()
   nccl_ifnames_csv="$usable_nccl_ifnames_csv"
   export DS4_200G_EFFECTIVE_NCCL_IFNAME="$nccl_ifnames_csv"
   [[ -n "$nccl_hcas_csv" ]] || ds4_200g_die "selected NCCL interface list has no RoCE HCA"
-  control_ifname="${DS4_CONTROL_IFNAME:-$ifnames_csv}"
-  IFS=',' read -r -a control_ifnames <<< "$control_ifname"
-  for ifname in "${control_ifnames[@]}"; do
-    [[ -n "$ifname" ]] || ds4_200g_die "DS4_CONTROL_IFNAME contains an empty interface"
-    [[ -d "/sys/class/net/$ifname" ]] || ds4_200g_die "control interface '$ifname' does not exist"
-  done
+  control_ifname="$(ds4_200g_resolve_control_ifname)"
+  export DS4_200G_EFFECTIVE_CONTROL_IFNAME="$control_ifname"
   ds4_200g_check_or_export GLOO_SOCKET_IFNAME "$control_ifname"
   nccl_transport="${DS4_200G_NCCL_TRANSPORT:-}"
   if [[ -z "$nccl_transport" ]]; then
