@@ -56,6 +56,11 @@ def main() -> int:
         and 'stage="swa_decode"' in flashmla,
     )
     failures += check(
+        "singleton decode index head axis is normalized",
+        "indices.dim() == 3 and indices.shape[1] == 1" in flashmla
+        and "indices = indices[:, 0, :]" in flashmla,
+    )
+    failures += check(
         "sparse MLA output finite checks are present",
         "_ds4_check_sparse_mla_output(" in flashmla
         and "torch.isfinite(active).all()" in flashmla,

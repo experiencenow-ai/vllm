@@ -99,9 +99,12 @@ def _ds4_validate_indexed_sparse_mla_inputs(
 ) -> None:
     if not (envs.VLLM_DS4_DSV4_SPARSE_MLA_VALIDATE or envs.VLLM_DS4_DSV4_SPARSE_MLA_TRACE):
         return
-    if indices.dim() != 2:
+    if indices.dim() == 3 and indices.shape[1] == 1:
+        indices = indices[:, 0, :]
+    elif indices.dim() != 2:
         raise RuntimeError(
-            f"DS4 sparse MLA {stage} expected 2D indices for {layer_prefix}, "
+            f"DS4 sparse MLA {stage} expected 2D indices or a singleton "
+            f"head axis for {layer_prefix}, "
             f"got shape={tuple(indices.shape)}"
         )
     if lens.dim() != 1 or lens.shape[0] != indices.shape[0]:
