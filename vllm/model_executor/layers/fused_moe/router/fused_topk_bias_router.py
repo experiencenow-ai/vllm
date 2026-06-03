@@ -103,7 +103,7 @@ def _topk_softplus_sqrt_torch(
     return topk_weights, topk_indices
 
 
-def _ds4_slice_router_ref_rows(
+def _ds4_slice_router_rows_for_output(
     gating_output: torch.Tensor,
     input_tokens: torch.Tensor,
     num_rows: int,
@@ -126,7 +126,7 @@ def _ds4_slice_router_ref_rows(
         )
     if gating_output.shape[0] == num_rows and input_tokens.shape[0] == num_rows:
         return gating_output, input_tokens
-    return gating_output[-num_rows:], input_tokens[-num_rows:]
+    return gating_output[:num_rows], input_tokens[:num_rows]
 
 
 @torch.compiler.disable
@@ -149,7 +149,7 @@ def _ds4_check_hash_softplus_sqrt_against_torch(
         except RuntimeError:
             return
     num_rows = topk_weights.shape[0]
-    gating_output, input_tokens = _ds4_slice_router_ref_rows(
+    gating_output, input_tokens = _ds4_slice_router_rows_for_output(
         gating_output, input_tokens, num_rows
     )
     ref_weights = torch.empty_like(topk_weights)
@@ -217,6 +217,10 @@ def vllm_topk_softplus_sqrt(
         )
 
     if hash_indices_table is not None and input_tokens is not None:
+        num_rows = topk_weights.shape[0]
+        gating_output, input_tokens = _ds4_slice_router_rows_for_output(
+            gating_output, input_tokens, num_rows
+        )
         # The CUDA hash-router dispatch specializes one integer type for both
         # input token ids and the token->expert table. vLLM input ids are often
         # int64 while DS4 hash MoE tables are int32; passing mixed dtypes makes
