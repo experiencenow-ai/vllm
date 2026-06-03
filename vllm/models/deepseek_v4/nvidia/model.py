@@ -1667,6 +1667,7 @@ class DeepseekV4ForCausalLM(nn.Module, SupportsPP):
         if not envs.VLLM_DS4_DSV4_WEIGHT_AUDIT:
             return
         pp_group = get_pp_group()
+        owned_params = set(dict(self.named_parameters()))
         required = []
         if pp_group.is_first_rank:
             required.append("model.embed_tokens.weight")
@@ -1693,24 +1694,38 @@ class DeepseekV4ForCausalLM(nn.Module, SupportsPP):
                 loaded_layers.add(int(match.group(1)))
         expected_layers = set(range(self.model.start_layer, self.model.end_layer))
         missing_required = sorted(name for name in required if name not in loaded_params)
+        missing_owned_params = sorted(owned_params - loaded_params)
+        unexpected_loaded_params = sorted(loaded_params - owned_params)
         missing_layers = sorted(expected_layers - loaded_layers)
         unexpected_layers = sorted(loaded_layers - expected_layers)
         logger.info(
             "DS4 DSV4 weight audit pp_rank=%d/%d layers=%d:%d "
-            "loaded_params=%d loaded_layers=%s required=%s",
+            "owned_params=%d loaded_params=%d loaded_layers=%s required=%s "
+            "missing_owned_params=%d unexpected_loaded_params=%d",
             pp_group.rank_in_group,
             pp_group.world_size,
             self.model.start_layer,
             self.model.end_layer,
+            len(owned_params),
             len(loaded_params),
             sorted(loaded_layers),
             required,
+            len(missing_owned_params),
+            len(unexpected_loaded_params),
         )
-        if missing_required or missing_layers or unexpected_layers:
+        if (
+            missing_required
+            or missing_owned_params
+            or unexpected_loaded_params
+            or missing_layers
+            or unexpected_layers
+        ):
             raise RuntimeError(
                 "DS4 DSV4 weight audit failed: "
                 f"pp_rank={pp_group.rank_in_group} "
                 f"missing_required={missing_required} "
+                f"missing_owned_params={missing_owned_params[:64]} "
+                f"unexpected_loaded_params={unexpected_loaded_params[:64]} "
                 f"missing_layers={missing_layers} "
                 f"unexpected_layers={unexpected_layers}"
             )

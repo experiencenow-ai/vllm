@@ -22,14 +22,14 @@ checks = [
         and "raise RuntimeError" in mxfp4,
     ),
     (
-        "gate-up layout preserves deinterleaved DSV4 reference order",
+        "gate-up layout remains available as explicit comparison mode",
         'if w13_layout == "gate-up":' in mxfp4
         and "w13_weight_cutlass = deinterleaved_w13_w" in mxfp4
         and "w13_bias_cutlass = deinterleaved_w13_b.to(torch.bfloat16)" in mxfp4
         and "w13_scale_cutlass = deinterleaved_w13_s" in mxfp4,
     ),
     (
-        "live DSV4 converter also preserves gate-up for CUTLASS",
+        "live DSV4 converter keeps gate-up as explicit comparison mode",
         "DS4 DSV4 live FlashInfer CUTLASS MXFP4 W13 layout" in mxfp4
         and "w13_weight = torch.cat([w1_weight, w3_weight], dim=1).contiguous()"
         in mxfp4
@@ -38,14 +38,14 @@ checks = [
         and "w13_bias = torch.cat([b1, b3], dim=1).contiguous()" in mxfp4,
     ),
     (
-        "legacy swapped layout remains explicit-only for comparison",
+        "FlashInfer W31/swapped layout is implemented",
         "w13_weight_cutlass = torch.cat([w3_w, w1_w], dim=1)" in mxfp4
         and "w13_bias_cutlass = torch.cat([b3, b1], dim=-1).to(torch.bfloat16)"
         in mxfp4
         and "w13_scale_cutlass = torch.cat([s3, s1], dim=1)" in mxfp4,
     ),
     (
-        "live DSV4 swapped layout remains explicit-only for comparison",
+        "live DSV4 FlashInfer W31/swapped layout is implemented",
         "w13_weight = torch.cat([w3_weight, w1_weight], dim=1).contiguous()"
         in mxfp4
         and "w13_weight_scale = torch.cat([w3_scale, w1_scale], dim=1).contiguous()"
@@ -53,8 +53,8 @@ checks = [
         and "w13_bias = torch.cat([b3, b1], dim=1).contiguous()" in mxfp4,
     ),
     (
-        "DSV4 production launcher defaults to gate-up",
-        'VLLM_DS4_DSV4_CUTLASS_MXFP4_W13_LAYOUT:-gate-up' in launcher,
+        "DSV4 production launcher defaults to FlashInfer W31/swapped",
+        'VLLM_DS4_DSV4_CUTLASS_MXFP4_W13_LAYOUT:-swapped' in launcher,
     ),
     (
         "relaunch build validates DSV4 MXFP4 layout audit",
