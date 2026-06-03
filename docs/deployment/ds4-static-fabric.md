@@ -47,6 +47,11 @@ python tools/ds4_static_fabric.py \
 The script uses `sudo -n`; if passwordless sudo is not configured on a Spark,
 it fails immediately instead of hanging.
 
+One-time root setup is required on each Spark. Use either a root-owned systemd
+unit that runs the static fabric apply command after boot, or a constrained
+sudoers rule for the Spark user that permits only the network setup commands.
+The script intentionally refuses interactive sudo prompts.
+
 Then verify:
 
 ```bash
