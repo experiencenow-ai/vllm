@@ -36,6 +36,7 @@ from vllm.distributed.kv_transfer import (
 )
 from vllm.distributed.parallel_state import (
     Handle,
+    ds4_log_pp_tensor_dict_boundary,
     get_pp_group,
     get_tp_group,
 )
@@ -160,6 +161,16 @@ class AsyncIntermediateTensors(IntermediateTensors):
             for fn in self._comm_postprocess:
                 fn()
         self._comm_waited = True
+        if envs.VLLM_DS4_PP_BOUNDARY_TRACE:
+            pp = get_pp_group()
+            ds4_log_pp_tensor_dict_boundary(
+                self.tensors,
+                direction="recv",
+                group_name=pp.unique_name,
+                rank=pp.rank_in_group,
+                world_size=pp.world_size,
+                peer=(pp.rank_in_group - 1) % pp.world_size,
+            )
         if ds4_timing_enabled:
             wait_ms = (time.perf_counter() - ds4_started) * 1000
             idx = _DS4_PP_COMM_TIMING_INDEX
