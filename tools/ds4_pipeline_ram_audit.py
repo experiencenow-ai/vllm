@@ -190,6 +190,21 @@ CHECKS = [
         "DSV4_FLASH_PP_LAYER_PARTITION must sum to 43 DSV4 decoder layers",
     ),
     (
+        "DSV4 prefix caching is an explicit launch choice",
+        "tools/ds4_launch_dsv4_flash_pp8.sh",
+        "DSV4_ENABLE_PREFIX_CACHING",
+    ),
+    (
+        "DSV4 prefix caching can be disabled for correctness isolation",
+        "tools/ds4_launch_dsv4_flash_pp8.sh",
+        "--no-enable-prefix-caching",
+    ),
+    (
+        "DSV4 launch banner records prefix caching state",
+        "tools/ds4_launch_dsv4_flash_pp8.sh",
+        "prefix_caching=$DSV4_ENABLE_PREFIX_CACHING",
+    ),
+    (
         "DSV4 skips MTP hidden buffer when speculation is disabled",
         "vllm/models/deepseek_v4/nvidia/model.py",
         "vllm_config.speculative_config is not None",
