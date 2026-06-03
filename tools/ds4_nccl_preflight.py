@@ -27,6 +27,23 @@ def _nccl_barrier(group=None) -> None:
     dist.barrier(group=group, device_ids=[0])
 
 
+def _store_barrier(rank: int, world_size: int, label: str) -> None:
+    store = dist.distributed_c10d._get_default_store()
+    prefix = f"ds4_nccl_preflight/{label}"
+    store.set(f"{prefix}/{rank}", b"1")
+    keys = [f"{prefix}/{idx}" for idx in range(world_size)]
+    timeout_s = int(
+        _env(
+            "DS4_NCCL_PREFLIGHT_STORE_BARRIER_TIMEOUT",
+            _env("DS4_NCCL_PREFLIGHT_TIMEOUT", "90"),
+        )
+    )
+    try:
+        store.wait(keys, _dt.timedelta(seconds=timeout_s))
+    except TypeError:
+        store.wait(keys)
+
+
 def _print_env() -> None:
     names = [
         "MASTER_ADDR",
@@ -358,12 +375,20 @@ def _run_p2p_nccl_preflight(rank: int, world_size: int) -> int:
             "DS4 NCCL P2P preflight stage: pairwise NCCL group probes complete",
             file=sys.stderr,
         )
-    for src, dst in pairs:
-        _nccl_barrier()
+    for pair_index, (src, dst) in enumerate(pairs):
+        print(
+            f"DS4 NCCL P2P preflight pair begin: pair={src}-{dst}",
+            file=sys.stderr,
+        )
+        _store_barrier(rank, world_size, f"p2p-{pair_index}-pre")
         status = _run_p2p_pair_probe(rank, src, dst)
-        _nccl_barrier()
+        _store_barrier(rank, world_size, f"p2p-{pair_index}-post")
         if status != 0:
             return status
+        print(
+            f"DS4 NCCL P2P preflight pair complete: pair={src}-{dst}",
+            file=sys.stderr,
+        )
     print(f"DS4 NCCL P2P preflight passed on rank {rank}", file=sys.stderr)
     return 0
 
@@ -391,7 +416,7 @@ def _run_pairwise_nccl_preflight(rank: int, world_size: int) -> int:
                 f"DS4 NCCL pairwise preflight: rank {rank} is not in any NCCL group",
                 file=sys.stderr,
             )
-            _nccl_barrier()
+            _store_barrier(rank, world_size, "pairwise-no-active-group")
             return 0
         group_rank = active_ranks.index(rank)
         value = torch.tensor([group_rank + 1], dtype=torch.float32, device="cuda")
@@ -419,7 +444,7 @@ def _run_pairwise_nccl_preflight(rank: int, world_size: int) -> int:
         )
         if bw_status != 0:
             return bw_status
-        _nccl_barrier()
+        _store_barrier(rank, world_size, "pairwise-complete")
         print(
             f"DS4 NCCL pairwise preflight passed on rank {rank}: group={label}",
             file=sys.stderr,
