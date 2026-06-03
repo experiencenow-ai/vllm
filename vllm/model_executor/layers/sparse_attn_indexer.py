@@ -362,7 +362,7 @@ def sparse_attn_indexer(
                     logits.stride(1),
                     topk_tokens,
                 )
-            if current_platform.is_cuda() and self.compress_ratio > 1:
+            if current_platform.is_cuda():
                 _localize_prefill_topk_indices(
                     topk_indices,
                     chunk.cu_seqlen_ks,
