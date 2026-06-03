@@ -46,6 +46,14 @@ checks = [
         < router.find("ref_weights = torch.empty_like(topk_weights)"),
     ),
     (
+        "hash router reference-check slices graph-padded rows",
+        "_ds4_slice_router_ref_rows(" in router
+        and "gating_output[-num_rows:]" in router
+        and "input_tokens[-num_rows:]" in router
+        and router.find("_ds4_slice_router_ref_rows(")
+        < router.find("ref_weights = torch.empty_like(topk_weights)"),
+    ),
+    (
         "DSV4 launcher logs hash router reference-check knobs",
         "hash_router_ref_check=$VLLM_DS4_DSV4_HASH_ROUTER_REF_CHECK" in launcher
         and "hash_router_ref_max_tokens=$VLLM_DS4_DSV4_HASH_ROUTER_REF_MAX_TOKENS"
