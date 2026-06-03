@@ -154,6 +154,7 @@ if TYPE_CHECKING:
     VLLM_DS4_DSV4_SPARSE_MLA_REF_CHECK: bool = False
     VLLM_DS4_DSV4_SPARSE_MLA_REF_MAX_TOKENS: int = 8
     VLLM_DS4_DSV4_SPARSE_MLA_REF_ATOL: float = 0.5
+    VLLM_DS4_DSV4_SPARSE_MLA_SELECTED_ABSMAX: float = 10000.0
     VLLM_DS4_MHC_TILELANG_MAX_TOKENS: int = 8192
     VLLM_DS4_MHC_ALLOW_TRITON_SM12X_FALLBACK: bool = False
     VLLM_DS4_MHC_NATIVE_PREFLIGHT_TOKENS: int = 8192
@@ -1468,6 +1469,9 @@ environment_variables: dict[str, Callable[[], Any]] = {
     ),
     "VLLM_DS4_DSV4_SPARSE_MLA_REF_ATOL": lambda: float(
         os.environ.get("VLLM_DS4_DSV4_SPARSE_MLA_REF_ATOL", "0.5")
+    ),
+    "VLLM_DS4_DSV4_SPARSE_MLA_SELECTED_ABSMAX": lambda: float(
+        os.environ.get("VLLM_DS4_DSV4_SPARSE_MLA_SELECTED_ABSMAX", "10000.0")
     ),
     # DS4 DSV4: TileLang mHC prefill slabs must be chunked well below the
     # 65K prefill scheduler budget on GB10. The live c256 run showed illegal
