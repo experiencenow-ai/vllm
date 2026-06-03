@@ -312,8 +312,6 @@ def launch_env(args: argparse.Namespace, rank: int) -> dict[str, str]:
         "DS4_GLOO_SOCKET_IFNAME": "enP7s7",
         "DS4_200G_ADVERTISE_LOOPBACK": "1",
         "DS4_200G_NCCL_TRANSPORT": "socket",
-        "VLLM_DS4_PP_EDGE_RAIL": args.static_fabric_edge_rail,
-        "DS4_NCCL_PREFLIGHT_PP_EDGE_RAIL": args.static_fabric_edge_rail,
     }
     for item in args.env:
         if "=" not in item:
