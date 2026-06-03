@@ -12,6 +12,7 @@ ds4_200g_print_diag()
     echo "DS4_200G_EFFECTIVE_NCCL_IFNAME: ${DS4_200G_EFFECTIVE_NCCL_IFNAME:-<unset>}"
     echo "DS4_CONTROL_IFNAME: ${DS4_CONTROL_IFNAME:-<unset>}"
     echo "DS4_200G_EFFECTIVE_CONTROL_IFNAME: ${DS4_200G_EFFECTIVE_CONTROL_IFNAME:-<unset>}"
+    echo "DS4_200G_EFFECTIVE_GLOO_IFNAME: ${DS4_200G_EFFECTIVE_GLOO_IFNAME:-<unset>}"
     echo "DS4_200G_ADVERTISE_LOOPBACK: ${DS4_200G_ADVERTISE_LOOPBACK:-<unset>}"
     echo "DS4_NODE_LOOPBACK: ${DS4_NODE_LOOPBACK:-<unset>}"
     echo "DS4_200G_PEER_LOOPBACKS: ${DS4_200G_PEER_LOOPBACKS:-<unset>}"
@@ -216,6 +217,35 @@ ds4_200g_resolve_control_ifname()
   echo "$requested"
 }
 
+ds4_200g_find_management_ifname()
+{
+  ip -o -4 addr show scope global 2>/dev/null | awk '$4 ~ /^10\.20\.0\./ { print $2; exit }'
+}
+
+ds4_200g_resolve_gloo_ifname()
+{
+  local control_ifname="$1"
+  local requested="${DS4_GLOO_SOCKET_IFNAME:-auto}"
+  local ifname management_ifname world_size
+  if [[ "$requested" != "auto" ]]; then
+    IFS=',' read -r -a gloo_ifnames <<< "$requested"
+    for ifname in "${gloo_ifnames[@]}"; do
+      [[ -n "$ifname" ]] || ds4_200g_die "DS4_GLOO_SOCKET_IFNAME contains an empty interface"
+      [[ -d "/sys/class/net/$ifname" ]] || ds4_200g_die "Gloo control interface '$ifname' does not exist"
+    done
+    echo "$requested"
+    return 0
+  fi
+  world_size="${NNODES:-${WORLD_SIZE:-1}}"
+  if [[ "$control_ifname" != "lo" || "$world_size" -le 1 ]]; then
+    echo "$control_ifname"
+    return 0
+  fi
+  management_ifname="$(ds4_200g_find_management_ifname)"
+  [[ -n "$management_ifname" ]] || ds4_200g_die "multi-node Gloo control cannot bind to lo; set DS4_GLOO_SOCKET_IFNAME to a real cross-node control interface"
+  echo "$management_ifname"
+}
+
 ds4_require_routed_loopback_over_200g()
 {
   local ifnames_csv="$1"
@@ -235,7 +265,7 @@ ds4_require_routed_loopback_over_200g()
 
 ds4_require_200g_fabric()
 {
-  local ifname ifnames_csv usable_ifnames_csv control_ifname socket_ifname speed carrier local_ip bound_dev route_dev hca hcas_csv advertise_ip advertise_bound nccl_transport nccl_ifname nccl_ifnames_csv usable_nccl_ifnames_csv nccl_hcas_csv
+  local ifname ifnames_csv usable_ifnames_csv control_ifname gloo_ifname socket_ifname speed carrier local_ip bound_dev route_dev hca hcas_csv advertise_ip advertise_bound nccl_transport nccl_ifname nccl_ifnames_csv usable_nccl_ifnames_csv nccl_hcas_csv
   : "${NODE_RANK:?set NODE_RANK before ds4_require_200g_fabric}"
   : "${HEAD_ADDR:?set HEAD_ADDR before ds4_require_200g_fabric}"
   if [[ -z "${DS4_200G_IFNAME:-}" ]]; then
@@ -305,8 +335,10 @@ ds4_require_200g_fabric()
   export DS4_200G_EFFECTIVE_NCCL_IFNAME="$nccl_ifnames_csv"
   [[ -n "$nccl_hcas_csv" ]] || ds4_200g_die "selected NCCL interface list has no RoCE HCA"
   control_ifname="$(ds4_200g_resolve_control_ifname)"
+  gloo_ifname="$(ds4_200g_resolve_gloo_ifname "$control_ifname")"
   export DS4_200G_EFFECTIVE_CONTROL_IFNAME="$control_ifname"
-  ds4_200g_check_or_export GLOO_SOCKET_IFNAME "$control_ifname"
+  export DS4_200G_EFFECTIVE_GLOO_IFNAME="$gloo_ifname"
+  ds4_200g_check_or_export GLOO_SOCKET_IFNAME "$gloo_ifname"
   nccl_transport="${DS4_200G_NCCL_TRANSPORT:-}"
   if [[ -z "$nccl_transport" ]]; then
     if [[ "${DS4_200G_ADVERTISE_LOOPBACK:-0}" =~ ^(1|true|TRUE|yes|YES|on|ON)$ ]]; then
