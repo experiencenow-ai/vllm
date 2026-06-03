@@ -29,11 +29,28 @@ checks = [
         and "w13_scale_cutlass = deinterleaved_w13_s" in mxfp4,
     ),
     (
+        "live DSV4 converter also preserves gate-up for CUTLASS",
+        "DS4 DSV4 live FlashInfer CUTLASS MXFP4 W13 layout" in mxfp4
+        and "w13_weight = torch.cat([w1_weight, w3_weight], dim=1).contiguous()"
+        in mxfp4
+        and "w13_weight_scale = torch.cat([w1_scale, w3_scale], dim=1).contiguous()"
+        in mxfp4
+        and "w13_bias = torch.cat([b1, b3], dim=1).contiguous()" in mxfp4,
+    ),
+    (
         "legacy swapped layout remains explicit-only for comparison",
         "w13_weight_cutlass = torch.cat([w3_w, w1_w], dim=1)" in mxfp4
         and "w13_bias_cutlass = torch.cat([b3, b1], dim=-1).to(torch.bfloat16)"
         in mxfp4
         and "w13_scale_cutlass = torch.cat([s3, s1], dim=1)" in mxfp4,
+    ),
+    (
+        "live DSV4 swapped layout remains explicit-only for comparison",
+        "w13_weight = torch.cat([w3_weight, w1_weight], dim=1).contiguous()"
+        in mxfp4
+        and "w13_weight_scale = torch.cat([w3_scale, w1_scale], dim=1).contiguous()"
+        in mxfp4
+        and "w13_bias = torch.cat([b3, b1], dim=1).contiguous()" in mxfp4,
     ),
     (
         "DSV4 production launcher defaults to gate-up",
