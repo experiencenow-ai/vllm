@@ -1353,6 +1353,7 @@ class DeepseekV4Model(nn.Module):
         ]
         params_dict = dict(self.named_parameters())
         loaded_params: set[str] = set()
+        ds4_expert_coverage: dict[int, dict[tuple[str, str], set[int]]] = {}
 
         # TP for attention
         tp_size = get_tensor_model_parallel_world_size()
@@ -1417,6 +1418,12 @@ class DeepseekV4Model(nn.Module):
                         )
                         if success:
                             loaded_expert_param = name_mapped
+                            self._record_ds4_expert_coverage(
+                                ds4_expert_coverage,
+                                name_mapped,
+                                expert_shard_id,
+                                expert_id,
+                            )
                             break
                     if loaded_expert_param is not None:
                         loaded_params.add(loaded_expert_param)
@@ -1439,8 +1446,98 @@ class DeepseekV4Model(nn.Module):
                     weight_loader(param, loaded_weight)
                     loaded_params.add(name)
                     continue
-
+        self._audit_ds4_expert_coverage(ds4_expert_coverage)
         return loaded_params
+
+    def _record_ds4_expert_coverage(
+        self,
+        coverage: dict[int, dict[tuple[str, str], set[int]]],
+        name_mapped: str,
+        shard_id: str,
+        expert_id: int,
+    ) -> None:
+        match = re.match(
+            r"model\.layers\.(\d+)\.ffn\.experts\.(w13|w2)_"
+            r"(weight_scale|weight)\b",
+            name_mapped,
+        )
+        if match is None:
+            return
+        layer_idx = int(match.group(1))
+        tensor_kind = match.group(3)
+        layer_coverage = coverage.setdefault(layer_idx, {})
+        layer_coverage.setdefault((tensor_kind, shard_id), set()).add(expert_id)
+
+    def _audit_ds4_expert_coverage(
+        self, coverage: dict[int, dict[tuple[str, str], set[int]]]
+    ) -> None:
+        if not envs.VLLM_DS4_DSV4_WEIGHT_AUDIT:
+            return
+        if self.use_mega_moe:
+            return
+        pp_group = get_pp_group()
+        required_tensors = [
+            ("weight", "w1"),
+            ("weight", "w2"),
+            ("weight", "w3"),
+        ]
+        if getattr(self.config, "expert_dtype", "fp4") == "fp4":
+            required_tensors.extend(
+                [
+                    ("weight_scale", "w1"),
+                    ("weight_scale", "w2"),
+                    ("weight_scale", "w3"),
+                ]
+            )
+        failures = []
+        for layer_idx, layer in zip(
+            range(self.start_layer, self.end_layer),
+            islice(self.layers, self.start_layer, self.end_layer),
+        ):
+            experts = layer.ffn.experts
+            expert_map = experts.expert_map
+            if expert_map is None:
+                expected_experts = set(range(self.config.n_routed_experts))
+            else:
+                expected_experts = set(
+                    torch.where(expert_map.detach().cpu() >= 0)[0].tolist()
+                )
+            layer_coverage = coverage.get(layer_idx, {})
+            for tensor_kind, shard_id in required_tensors:
+                loaded_experts = layer_coverage.get((tensor_kind, shard_id), set())
+                missing = sorted(expected_experts - loaded_experts)
+                unexpected = sorted(loaded_experts - expected_experts)
+                if missing or unexpected:
+                    failures.append(
+                        "layer={layer} tensor={tensor} shard={shard} "
+                        "loaded={loaded}/{expected} missing={missing} "
+                        "unexpected={unexpected}".format(
+                            layer=layer_idx,
+                            tensor=tensor_kind,
+                            shard=shard_id,
+                            loaded=len(loaded_experts & expected_experts),
+                            expected=len(expected_experts),
+                            missing=missing[:8],
+                            unexpected=unexpected[:8],
+                        )
+                    )
+        logger.info(
+            "DS4 DSV4 expert coverage audit pp_rank=%d/%d layers=%d:%d "
+            "n_routed_experts=%d required_tensors=%s failures=%d",
+            pp_group.rank_in_group,
+            pp_group.world_size,
+            self.start_layer,
+            self.end_layer,
+            self.config.n_routed_experts,
+            required_tensors,
+            len(failures),
+        )
+        if failures:
+            raise RuntimeError(
+                "DS4 DSV4 expert coverage audit failed: "
+                f"pp_rank={pp_group.rank_in_group} "
+                f"first_failures={failures[:12]}"
+            )
 
     def get_expert_mapping(self) -> list[tuple[str, str, int, str]]:
         first_layer = next(iter(islice(self.layers, self.start_layer, self.end_layer)))
