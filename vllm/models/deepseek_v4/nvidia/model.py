@@ -1194,12 +1194,29 @@ class DeepseekV4Model(nn.Module):
         # PP intermediate tensors carry the multi-stream hidden_states
         # of shape (num_tokens, hc_mult, hidden_size) — V4 expands the
         # token embedding to hc_mult streams before the first decoder
-        # layer and keeps that shape until hc_head() collapses it.
+        # layer and keeps that shape until hc_head() collapses it. The
+        # hyper-connection residual/mix tensors are also carried across PP
+        # boundaries so a boundary does not force an extra standalone hc_post.
         return IntermediateTensors(
             {
                 "hidden_states": torch.zeros(
                     (batch_size, self.hc_mult, self.config.hidden_size),
                     dtype=dtype,
+                    device=device,
+                ),
+                "residual": torch.zeros(
+                    (batch_size, self.hc_mult, self.config.hidden_size),
+                    dtype=dtype,
+                    device=device,
+                ),
+                "post_mix": torch.zeros(
+                    (batch_size, self.hc_mult, 1),
+                    dtype=torch.float32,
+                    device=device,
+                ),
+                "res_mix": torch.zeros(
+                    (batch_size, self.hc_mult, self.hc_mult),
+                    dtype=torch.float32,
                     device=device,
                 ),
             }
@@ -1218,14 +1235,27 @@ class DeepseekV4Model(nn.Module):
             else:
                 hidden_states = self.embed_input_ids(input_ids)
             hidden_states = hidden_states.unsqueeze(-2).repeat(1, self.hc_mult, 1)
+            residual, post_mix, res_mix = None, None, None
         else:
             assert intermediate_tensors is not None
             hidden_states = intermediate_tensors["hidden_states"]
+            missing = {
+                "residual",
+                "post_mix",
+                "res_mix",
+            } - set(intermediate_tensors.tensors)
+            if missing:
+                raise RuntimeError(
+                    "DeepSeek V4 PP boundary is missing hyper-connection "
+                    f"state tensors: {sorted(missing)}"
+                )
+            residual = intermediate_tensors["residual"]
+            post_mix = intermediate_tensors["post_mix"]
+            res_mix = intermediate_tensors["res_mix"]
 
         if self.use_mega_moe:
             input_ids = input_ids.to(torch.int64)
 
-        residual, post_mix, res_mix = None, None, None
         for layer in islice(self.layers, self.start_layer, self.end_layer):
             hidden_states, residual, post_mix, res_mix = layer(
                 hidden_states,
@@ -1235,11 +1265,27 @@ class DeepseekV4Model(nn.Module):
                 res_mix,
                 residual,
             )
-        if layer is not None and current_platform.is_cuda():
+        if (
+            layer is not None
+            and current_platform.is_cuda()
+            and get_pp_group().is_last_rank
+        ):
             hidden_states = layer.hc_post(hidden_states, residual, post_mix, res_mix)
 
         if not get_pp_group().is_last_rank:
-            return IntermediateTensors({"hidden_states": hidden_states})
+            if residual is None or post_mix is None or res_mix is None:
+                raise RuntimeError(
+                    "DeepSeek V4 PP stage finished without hyper-connection "
+                    "state tensors."
+                )
+            return IntermediateTensors(
+                {
+                    "hidden_states": hidden_states,
+                    "residual": residual,
+                    "post_mix": post_mix,
+                    "res_mix": res_mix,
+                }
+            )
 
         # Stash pre-hc_head residual for the MTP draft (captured copy_).
         if self._mtp_hidden_buffer is not None:

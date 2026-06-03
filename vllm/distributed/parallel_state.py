@@ -87,6 +87,8 @@ _DS4_PP_TENSOR_KEY_TO_ID = {
     "hidden_states": 1,
     "residual": 2,
     "aux_hidden_states": 3,
+    "post_mix": 4,
+    "res_mix": 5,
 }
 _DS4_PP_TENSOR_ID_TO_KEY = {v: k for k, v in _DS4_PP_TENSOR_KEY_TO_ID.items()}
 _DS4_PP_DTYPE_TO_ID = {
