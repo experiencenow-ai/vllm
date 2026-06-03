@@ -163,7 +163,7 @@ if TYPE_CHECKING:
     VLLM_DS4_DSV4_SPARSE_MLA_REF_MAX_TOKENS: int = 8
     VLLM_DS4_DSV4_SPARSE_MLA_REF_ATOL: float = 0.5
     VLLM_DS4_DSV4_SPARSE_MLA_SELECTED_ABSMAX: float = 10000.0
-    VLLM_DS4_DSV4_SPARSE_MLA_PREFILL_BACKEND: str = "indexed"
+    VLLM_DS4_DSV4_SPARSE_MLA_PREFILL_BACKEND: str = "gathered"
     VLLM_DS4_MHC_TILELANG_MAX_TOKENS: int = 8192
     VLLM_DS4_MHC_ALLOW_TRITON_SM12X_FALLBACK: bool = False
     VLLM_DS4_MHC_NATIVE_PREFLIGHT_TOKENS: int = 8192
@@ -1529,7 +1529,7 @@ environment_variables: dict[str, Callable[[], Any]] = {
         os.environ.get("VLLM_DS4_DSV4_SPARSE_MLA_SELECTED_ABSMAX", "10000.0")
     ),
     "VLLM_DS4_DSV4_SPARSE_MLA_PREFILL_BACKEND": lambda: os.environ.get(
-        "VLLM_DS4_DSV4_SPARSE_MLA_PREFILL_BACKEND", "indexed"
+        "VLLM_DS4_DSV4_SPARSE_MLA_PREFILL_BACKEND", "gathered"
     )
     .strip()
     .lower(),

@@ -1377,6 +1377,93 @@ def accumulate_indexed_sparse_mla_attention_chunk(
 
 
 @triton.jit
+def _gather_indexed_sparse_mla_kv_kernel(
+    out_ptr,
+    kv_flat_ptr,
+    indices_ptr,
+    stride_out_t: tl.constexpr,
+    stride_out_c: tl.constexpr,
+    stride_out_d: tl.constexpr,
+    stride_kv_t,
+    stride_kv_d: tl.constexpr,
+    stride_indices_t: tl.constexpr,
+    stride_indices_c: tl.constexpr,
+    num_candidates: tl.constexpr,
+    head_dim: tl.constexpr,
+    BLOCK_C: tl.constexpr,
+    BLOCK_D: tl.constexpr,
+):
+    token_idx = tl.program_id(0)
+    candidate_block = tl.program_id(1)
+    dim_block = tl.program_id(2)
+    candidate_offsets = candidate_block * BLOCK_C + tl.arange(0, BLOCK_C)
+    dim_offsets = dim_block * BLOCK_D + tl.arange(0, BLOCK_D)
+    candidate_mask = candidate_offsets < num_candidates
+    dim_mask = dim_offsets < head_dim
+    kv_indices = tl.load(
+        indices_ptr
+        + token_idx * stride_indices_t
+        + candidate_offsets * stride_indices_c,
+        mask=candidate_mask,
+        other=-1,
+    )
+    valid = candidate_mask & (kv_indices >= 0)
+    safe_indices = tl.where(valid, kv_indices, 0)
+    values = tl.load(
+        kv_flat_ptr
+        + safe_indices[:, None].to(tl.int64) * stride_kv_t
+        + dim_offsets[None, :] * stride_kv_d,
+        mask=valid[:, None] & dim_mask[None, :],
+        other=0.0,
+    )
+    tl.store(
+        out_ptr
+        + token_idx * stride_out_t
+        + candidate_offsets[:, None] * stride_out_c
+        + dim_offsets[None, :] * stride_out_d,
+        values,
+        mask=candidate_mask[:, None] & dim_mask[None, :],
+    )
+
+
+def gather_indexed_sparse_mla_kv(
+    kv_flat: torch.Tensor,
+    indices: torch.Tensor,
+    output: torch.Tensor,
+) -> None:
+    assert kv_flat.dim() == 2
+    assert indices.dim() == 2
+    assert output.dim() == 3
+    assert output.shape[:2] == indices.shape
+    assert output.shape[2] == kv_flat.shape[1]
+    assert indices.dtype == torch.int32
+    assert kv_flat.is_cuda and indices.is_cuda and output.is_cuda
+
+    num_tokens, num_candidates = indices.shape
+    head_dim = kv_flat.shape[1]
+    block_c = 16
+    block_d = min(128, triton.next_power_of_2(head_dim))
+    grid = (num_tokens, triton.cdiv(num_candidates, block_c), triton.cdiv(head_dim, block_d))
+    _gather_indexed_sparse_mla_kv_kernel[grid](
+        output,
+        kv_flat,
+        indices,
+        output.stride(0),
+        output.stride(1),
+        output.stride(2),
+        kv_flat.stride(0),
+        kv_flat.stride(1),
+        indices.stride(0),
+        indices.stride(1),
+        num_candidates,
+        head_dim,
+        BLOCK_C=block_c,
+        BLOCK_D=block_d,
+        num_warps=4,
+    )
+
+
+@triton.jit
 def _accumulate_fp8ds_global_slots_attention_chunk_kernel(
     q_ptr,
     k_cache_ptr,
