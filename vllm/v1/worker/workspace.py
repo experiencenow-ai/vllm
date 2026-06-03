@@ -157,6 +157,14 @@ class WorkspaceManager:
         current_size = self._workspace_size_bytes(current_workspace)
 
         if current_size < required_bytes:
+            if self._cuda_graph_capture_active():
+                raise RuntimeError(
+                    "Workspace growth during CUDA graph capture is forbidden. "
+                    f"required={required_bytes / _MB:.2f} MB current="
+                    f"{current_size / _MB:.2f} MB ubatch={ubatch_id}. "
+                    "Increase VLLM_WORKSPACE_PREALLOC_BYTES or warm/reserve this "
+                    "shape before CUDA graph capture."
+                )
 
             def get_caller_info() -> str:
                 """Find first frame outside WorkspaceManager."""
@@ -216,6 +224,15 @@ class WorkspaceManager:
                 )
 
         return current_workspace
+
+    @staticmethod
+    def _cuda_graph_capture_active() -> bool:
+        if not torch.cuda.is_available():
+            return False
+        try:
+            return bool(torch.cuda.is_current_stream_capturing())
+        except RuntimeError:
+            return False
 
 
 def is_workspace_manager_initialized() -> bool:

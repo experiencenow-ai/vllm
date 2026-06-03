@@ -210,7 +210,7 @@ from vllm.v1.worker.ubatch_utils import (
     split_attn_metadata,
 )
 from vllm.v1.worker.utils import is_residual_scattered_for_sp
-from vllm.v1.worker.workspace import lock_workspace
+from vllm.v1.worker.workspace import current_workspace_manager, lock_workspace
 
 from .utils import (
     AttentionGroup,
@@ -6590,6 +6590,11 @@ class GPUModelRunner(
         with self._freeze_gc(), graph_capture(device=self.device):
             torch.accelerator.synchronize()
             torch.accelerator.empty_cache()
+            if envs.VLLM_WORKSPACE_PREALLOC_BYTES > 0:
+                current_workspace_manager().reserve_bytes(
+                    envs.VLLM_WORKSPACE_PREALLOC_BYTES
+                )
+                torch.accelerator.synchronize()
             start_free_gpu_memory = torch.cuda.mem_get_info()[0]
 
             for (
