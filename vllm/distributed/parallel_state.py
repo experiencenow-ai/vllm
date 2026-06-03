@@ -2770,6 +2770,18 @@ def initialize_model_parallel(
             "DS4 PP group using Gloo ProcessGroup for control while CUDA "
             "payloads use adjacent PyNCCL pair communicators."
         )
+    elif (
+        pipeline_model_parallel_size > 1
+        and envs.VLLM_DS4_PP_DISABLE_DEVICE_COMMUNICATOR
+        and envs.VLLM_DS4_PP_CPU_STAGED_TENSOR_DICT
+    ):
+        pp_backend = "gloo"
+        logger.warning(
+            "DS4 PP group using explicit CPU-staged tensor transport: PP "
+            "ProcessGroup backend is Gloo and CUDA tensors are copied through "
+            "CPU buffers. This is a measured boot/eval path, not the final "
+            "NCCL performance transport."
+        )
     _PP = init_model_parallel_group(
         group_ranks,
         get_world_group().local_rank,
