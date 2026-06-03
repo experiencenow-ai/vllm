@@ -145,6 +145,7 @@ if TYPE_CHECKING:
     VLLM_DS4_ITERATION_TIMING: bool = False
     VLLM_DS4_ITERATION_TIMING_EVERY: int = 1
     VLLM_DS4_VALIDATE_INPUT_IDS: bool = False
+    VLLM_DS4_DSV4_PP_FLUSH_HC_BOUNDARY: bool = False
     VLLM_DS4_MHC_TILELANG_MAX_TOKENS: int = 8192
     VLLM_DS4_MHC_ALLOW_TRITON_SM12X_FALLBACK: bool = False
     VLLM_DS4_MHC_NATIVE_PREFLIGHT_TOKENS: int = 8192
@@ -1405,6 +1406,16 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # error instead of an asynchronous embedding-kernel device assert.
     "VLLM_DS4_VALIDATE_INPUT_IDS": lambda: (
         os.environ.get("VLLM_DS4_VALIDATE_INPUT_IDS", "0").strip().lower()
+        in ("1", "true", "yes", "on")
+    ),
+    # DS4 DSV4 PP correctness diagnostic: close the hyper-connection state at
+    # each pipeline boundary and send the canonical multi-stream hidden tensor
+    # only. This preserves the linear pipeline topology while isolating whether
+    # cross-rank fused MHC state carry is corrupting tiny-token decode.
+    "VLLM_DS4_DSV4_PP_FLUSH_HC_BOUNDARY": lambda: (
+        os.environ.get("VLLM_DS4_DSV4_PP_FLUSH_HC_BOUNDARY", "0")
+        .strip()
+        .lower()
         in ("1", "true", "yes", "on")
     ),
     # DS4 DSV4: TileLang mHC prefill slabs must be chunked well below the
