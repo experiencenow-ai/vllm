@@ -101,8 +101,23 @@ def main() -> int:
         and "with self._ds4_pp_pair_nccl_socket_ifname(pair_ifname)"
         in parallel,
     )
+    failures += check(
+        "DSV4 PP launcher defaults to explicit CPU-staged PP transport",
+        'DS4_PP_TRANSPORT="${DS4_PP_TRANSPORT:-cpu-staged}"' in dsv4
+        and 'VLLM_DS4_PP_CPU_STAGED_TENSOR_DICT="${VLLM_DS4_PP_CPU_STAGED_TENSOR_DICT:-1}"'
+        in dsv4
+        and 'DS4_NCCL_PREFLIGHT_MODE="${DS4_NCCL_PREFLIGHT_MODE:-skip}"'
+        in dsv4,
+    )
+    failures += check(
+        "DSV4 PP launcher keeps PyNCCL pair conveyor as explicit diagnostic mode",
+        "pynccl-pair|pynccl_pair" in dsv4
+        and 'VLLM_DS4_PP_PYNCCL_TENSOR_DICT="${VLLM_DS4_PP_PYNCCL_TENSOR_DICT:-1}"'
+        in dsv4
+        and 'VLLM_DS4_PP_PYNCCL_PAIR_COMMUNICATORS="${VLLM_DS4_PP_PYNCCL_PAIR_COMMUNICATORS:-1}"'
+        in dsv4,
+    )
     for script_name, script in (
-        ("DSV4 PP", dsv4),
         ("Qwen NVFP4 PP", qwen_fast),
         ("Qwen BF16 PP", qwen_bf16),
     ):
@@ -128,6 +143,14 @@ def main() -> int:
             and 'VLLM_DS4_PP_STRIPED_NCCL_TENSOR_DICT="${VLLM_DS4_PP_STRIPED_NCCL_TENSOR_DICT:-0}"'
             in script,
         )
+    failures += check(
+        "DSV4 PP launcher keeps PP conveyor overlap enabled",
+        'VLLM_DS4_PP_OVERLAP_SEND="${VLLM_DS4_PP_OVERLAP_SEND:-1}"' in dsv4
+        and 'VLLM_DS4_PP_SEND_BUFFER_SLOTS="${VLLM_DS4_PP_SEND_BUFFER_SLOTS:-4}"'
+        in dsv4
+        and 'VLLM_DS4_PP_STRIPED_NCCL_TENSOR_DICT="${VLLM_DS4_PP_STRIPED_NCCL_TENSOR_DICT:-0}"'
+        in dsv4,
+    )
     failures += check(
         "DSV4 PP launcher defaults to 8K mHC TileLang slabs",
         'VLLM_DS4_MHC_TILELANG_MAX_TOKENS="${VLLM_DS4_MHC_TILELANG_MAX_TOKENS:-8192}"'
