@@ -26,6 +26,7 @@ RAIL_DEVICES = {
     "rail1": ("enP2p1s0f0np0", "enP2p1s0f1np1"),
     "upper": ("enP2p1s0f0np0", "enP2p1s0f1np1"),
 }
+DEFAULT_ROOT_HELPER = "/usr/local/sbin/ds4-static-fabric-root"
 
 
 @dataclass(frozen=True)
@@ -191,6 +192,46 @@ def sudo_available(args: argparse.Namespace) -> bool:
     return False
 
 
+def root_helper_command(args: argparse.Namespace) -> list[str]:
+    rank = args.rank
+    if rank is None:
+        raise SystemExit("--local --apply requires --rank")
+    return [
+        args.root_helper,
+        "--rank",
+        str(rank),
+        "--nnodes",
+        str(args.nnodes),
+        "--route-scope",
+        args.route_scope,
+        "--edge-rail",
+        args.edge_rail,
+        "--loopback-dev",
+        args.loopback_dev,
+    ]
+
+
+def try_root_helper_apply(args: argparse.Namespace) -> int | None:
+    if args.no_sudo or args.disable_root_helper:
+        return None
+    check = run_local(["sudo", "-n", args.root_helper, "--check"], args.timeout_s)
+    if check.returncode != 0:
+        output = (check.stderr or check.stdout).strip()
+        print(
+            "FAIL static fabric root helper: "
+            f"{args.root_helper} is not installed or not allowed via sudo -n"
+            + (f": {output}" if output else ""),
+            file=sys.stderr,
+        )
+        return 1
+    command = ["sudo", "-n"] + root_helper_command(args)
+    result = run_local(command, max(args.timeout_s * 4, 20))
+    output = (result.stdout + result.stderr).strip()
+    if output:
+        print(output)
+    return result.returncode
+
+
 def apply_command(args: argparse.Namespace, specs: list[RouteSpec]) -> list[list[str]]:
     rank = args.rank
     if rank is None:
@@ -240,6 +281,9 @@ def local_apply(args: argparse.Namespace) -> int:
     rank = args.rank
     if rank is None:
         raise SystemExit("--local --apply requires --rank")
+    root_helper_status = try_root_helper_apply(args)
+    if root_helper_status is not None:
+        return root_helper_status
     if not sudo_available(args):
         return 1
     specs = build_specs(args.nnodes, args.route_scope, args.edge_rail)
@@ -452,6 +496,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--loopback-dev", default=os.getenv("DS4_STATIC_FABRIC_LOOPBACK_DEV", "ds4ring0"))
     parser.add_argument("--gloo-ifname", default=os.getenv("DS4_STATIC_FABRIC_GLOO_IFNAME", "enP7s7"))
+    parser.add_argument("--root-helper", default=os.getenv("DS4_STATIC_FABRIC_ROOT_HELPER", DEFAULT_ROOT_HELPER))
+    parser.add_argument("--disable-root-helper", action="store_true")
     parser.add_argument("--timeout-s", type=int, default=int(os.getenv("DS4_STATIC_FABRIC_TIMEOUT_S", "8")))
     parser.add_argument("--no-sudo", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
