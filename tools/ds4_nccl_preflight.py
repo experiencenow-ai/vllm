@@ -21,6 +21,12 @@ def _bool_env(name: str, default: bool = False) -> bool:
     return raw in {"1", "true", "yes", "on"}
 
 
+def _nccl_barrier(group=None) -> None:
+    # Each Spark rank owns local CUDA device 0.  Letting ProcessGroupNCCL guess
+    # from the global rank can select non-existent devices and hang the guard.
+    dist.barrier(group=group, device_ids=[0])
+
+
 def _print_env() -> None:
     names = [
         "MASTER_ADDR",
@@ -353,9 +359,9 @@ def _run_p2p_nccl_preflight(rank: int, world_size: int) -> int:
             file=sys.stderr,
         )
     for src, dst in pairs:
-        dist.barrier()
+        _nccl_barrier()
         status = _run_p2p_pair_probe(rank, src, dst)
-        dist.barrier()
+        _nccl_barrier()
         if status != 0:
             return status
     print(f"DS4 NCCL P2P preflight passed on rank {rank}", file=sys.stderr)
@@ -385,7 +391,7 @@ def _run_pairwise_nccl_preflight(rank: int, world_size: int) -> int:
                 f"DS4 NCCL pairwise preflight: rank {rank} is not in any NCCL group",
                 file=sys.stderr,
             )
-            dist.barrier()
+            _nccl_barrier()
             return 0
         group_rank = active_ranks.index(rank)
         value = torch.tensor([group_rank + 1], dtype=torch.float32, device="cuda")
@@ -413,7 +419,7 @@ def _run_pairwise_nccl_preflight(rank: int, world_size: int) -> int:
         )
         if bw_status != 0:
             return bw_status
-        dist.barrier()
+        _nccl_barrier()
         print(
             f"DS4 NCCL pairwise preflight passed on rank {rank}: group={label}",
             file=sys.stderr,
