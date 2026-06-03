@@ -176,6 +176,21 @@ def sudo_prefix(enabled: bool) -> list[str]:
     return ["sudo", "-n"]
 
 
+def sudo_available(args: argparse.Namespace) -> bool:
+    if args.no_sudo:
+        return True
+    result = run_local(["sudo", "-n", "true"], args.timeout_s)
+    if result.returncode == 0:
+        return True
+    print(
+        "FAIL static fabric sudo: passwordless sudo is required for ip/sysctl "
+        "setup; run as root, configure a constrained sudoers rule, or pass "
+        "--no-sudo only from a root-owned service",
+        file=sys.stderr,
+    )
+    return False
+
+
 def apply_command(args: argparse.Namespace, specs: list[RouteSpec]) -> list[list[str]]:
     rank = args.rank
     if rank is None:
@@ -225,6 +240,8 @@ def local_apply(args: argparse.Namespace) -> int:
     rank = args.rank
     if rank is None:
         raise SystemExit("--local --apply requires --rank")
+    if not sudo_available(args):
+        return 1
     specs = build_specs(args.nnodes, args.route_scope, args.edge_rail)
     commands = apply_command(args, specs)
     if args.dry_run:
