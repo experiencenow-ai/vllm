@@ -123,10 +123,25 @@ esac
 DEFAULT_COMPILATION_CONFIG="{\"cudagraph_mode\":\"FULL_AND_PIECEWISE\",\"custom_ops\":[\"all\"],\"cudagraph_capture_sizes\":[$DSV4_CUDAGRAPH_CAPTURE_SIZES],\"max_cudagraph_capture_size\":$DSV4_MAX_CUDAGRAPH_CAPTURE_SIZE,\"cudagraph_copy_inputs\":true}"
 DSV4_COMPILATION_CONFIG="${DSV4_COMPILATION_CONFIG:-$DEFAULT_COMPILATION_CONFIG}"
 ASYNC_SCHEDULING_ARGS=(--no-async-scheduling)
+PREFIX_CACHING_ARGS=()
 if [[ "${DSV4_ENABLE_ASYNC_SCHEDULING_EXPERIMENTAL:-0}" =~ ^(1|true|TRUE|yes|YES|on|ON)$ ]]; then
   echo "DSV4 PP async scheduling is disabled until the sync PP pipeline is stable; unset DSV4_ENABLE_ASYNC_SCHEDULING_EXPERIMENTAL." >&2
   exit 64
 fi
+case "${DSV4_ENABLE_PREFIX_CACHING:-1}" in
+  1|true|TRUE|yes|YES|on|ON)
+    export DSV4_ENABLE_PREFIX_CACHING=1
+    PREFIX_CACHING_ARGS=(--enable-prefix-caching)
+    ;;
+  0|false|FALSE|no|NO|off|OFF)
+    export DSV4_ENABLE_PREFIX_CACHING=0
+    PREFIX_CACHING_ARGS=(--no-enable-prefix-caching)
+    ;;
+  *)
+    echo "Unsupported DSV4_ENABLE_PREFIX_CACHING=${DSV4_ENABLE_PREFIX_CACHING}; expected 0/1 or true/false" >&2
+    exit 64
+    ;;
+esac
 SPECULATIVE_ARGS=()
 DSV4_MTP_REQUESTED=0
 if [[ "$DSV4_MTP_MODE" != "off" && "$DSV4_MTP_MODE" != "OFF" && "$DSV4_MTP_MODE" != "none" && "$DSV4_MTP_MODE" != "NONE" ]]; then
@@ -507,7 +522,7 @@ PY
   esac
 fi
 
-echo "DSV4 PP${NNODES} profile=$DS4_DSV4_PIPELINE_RAM_PROFILE served_model=$DSV4_SERVED_MODEL_NAME max_model_len=$DSV4_MAX_MODEL_LEN max_num_seqs=$DSV4_MAX_NUM_SEQS max_num_batched_tokens=$DSV4_MAX_NUM_BATCHED_TOKENS sched_max_new_reqs=$VLLM_DS4_SCHED_MAX_NEW_REQS_PER_STEP sched_max_new_prefill_tokens=$VLLM_DS4_SCHED_MAX_NEW_PREFILL_TOKENS_PER_STEP sched_kv_admission_max_usage=$VLLM_DS4_SCHED_KV_ADMISSION_MAX_USAGE sched_kv_hard_fail_usage=$VLLM_DS4_SCHED_KV_HARD_FAIL_USAGE kv_cache_memory_bytes_profile=$DSV4_KV_CACHE_MEMORY_BYTES_PROFILE kv_cache_memory_bytes_effective=$DSV4_KV_CACHE_MEMORY_BYTES_EFFECTIVE kv_cache_memory_bytes_min=${DSV4_MIN_KV_CACHE_MEMORY_BYTES:-0} kv_layer_scale=${DSV4_SCALE_KV_CACHE_BY_LOCAL_LAYERS:-1} local_layers=$DSV4_LOCAL_LAYER_COUNT max_stage_layers=$DSV4_MAX_LAYER_COUNT kv_offloading_size=$DSV4_KV_OFFLOADING_SIZE gpu_memory_utilization=$DSV4_GPU_MEMORY_UTILIZATION workspace_prealloc_bytes=$VLLM_WORKSPACE_PREALLOC_BYTES mq_max_chunks=$VLLM_MQ_MAX_CHUNKS mhc_tilelang_max_tokens=$VLLM_DS4_MHC_TILELANG_MAX_TOKENS mhc_triton_fallback=$VLLM_DS4_MHC_ALLOW_TRITON_SM12X_FALLBACK mhc_preflight_tokens=$VLLM_DS4_MHC_NATIVE_PREFLIGHT_TOKENS pp_layer_partition=${DSV4_FLASH_PP_LAYER_PARTITION:-auto} pp_transport=$DS4_PP_TRANSPORT pp_edge_rail=$VLLM_DS4_PP_EDGE_RAIL pp_pynccl=$VLLM_DS4_PP_PYNCCL_TENSOR_DICT pp_pynccl_pair=$VLLM_DS4_PP_PYNCCL_PAIR_COMMUNICATORS pp_cpu_staged=${VLLM_DS4_PP_CPU_STAGED_TENSOR_DICT:-0} pp_direct_cuda=$VLLM_DS4_PP_DIRECT_CUDA_TENSOR_DICT pp_torch_pg=$VLLM_DS4_PP_TORCH_PG_TENSOR_DICT pp_torch_pair_groups=$VLLM_DS4_PP_TORCH_PAIR_GROUPS pp_torch_group_warmup=$VLLM_DS4_PP_TORCH_GROUP_WARMUP pp_prev_if=${VLLM_DS4_PP_PREV_SOCKET_IFNAME:-none} pp_next_if=${VLLM_DS4_PP_NEXT_SOCKET_IFNAME:-none} pp_socket_if=${VLLM_DS4_PP_SOCKET_IFNAME:-none} pp_device_metadata=$VLLM_DS4_PP_DEVICE_TENSOR_DICT_METADATA pp_send_backlog=$VLLM_DS4_PP_SEND_BACKLOG pp_overlap_send=$VLLM_DS4_PP_OVERLAP_SEND pp_send_buffer_slots=$VLLM_DS4_PP_SEND_BUFFER_SLOTS pp_send_buffer_max_bytes=$VLLM_DS4_PP_SEND_BUFFER_MAX_BYTES pp_pynccl_stripes=$VLLM_DS4_PP_PYNCCL_TENSOR_DICT_STRIPES pp_pynccl_credit=$VLLM_DS4_PP_PYNCCL_P2P_CREDIT pp_striped_nccl=$VLLM_DS4_PP_STRIPED_NCCL_TENSOR_DICT pp_striped_nccl_stripes=$VLLM_DS4_PP_STRIPED_NCCL_STRIPES pp_striped_nccl_min_bytes=$VLLM_DS4_PP_STRIPED_NCCL_MIN_BYTES" >&2
+echo "DSV4 PP${NNODES} profile=$DS4_DSV4_PIPELINE_RAM_PROFILE served_model=$DSV4_SERVED_MODEL_NAME max_model_len=$DSV4_MAX_MODEL_LEN max_num_seqs=$DSV4_MAX_NUM_SEQS max_num_batched_tokens=$DSV4_MAX_NUM_BATCHED_TOKENS prefix_caching=$DSV4_ENABLE_PREFIX_CACHING sched_max_new_reqs=$VLLM_DS4_SCHED_MAX_NEW_REQS_PER_STEP sched_max_new_prefill_tokens=$VLLM_DS4_SCHED_MAX_NEW_PREFILL_TOKENS_PER_STEP sched_kv_admission_max_usage=$VLLM_DS4_SCHED_KV_ADMISSION_MAX_USAGE sched_kv_hard_fail_usage=$VLLM_DS4_SCHED_KV_HARD_FAIL_USAGE kv_cache_memory_bytes_profile=$DSV4_KV_CACHE_MEMORY_BYTES_PROFILE kv_cache_memory_bytes_effective=$DSV4_KV_CACHE_MEMORY_BYTES_EFFECTIVE kv_cache_memory_bytes_min=${DSV4_MIN_KV_CACHE_MEMORY_BYTES:-0} kv_layer_scale=${DSV4_SCALE_KV_CACHE_BY_LOCAL_LAYERS:-1} local_layers=$DSV4_LOCAL_LAYER_COUNT max_stage_layers=$DSV4_MAX_LAYER_COUNT kv_offloading_size=$DSV4_KV_OFFLOADING_SIZE gpu_memory_utilization=$DSV4_GPU_MEMORY_UTILIZATION workspace_prealloc_bytes=$VLLM_WORKSPACE_PREALLOC_BYTES mq_max_chunks=$VLLM_MQ_MAX_CHUNKS mhc_tilelang_max_tokens=$VLLM_DS4_MHC_TILELANG_MAX_TOKENS mhc_triton_fallback=$VLLM_DS4_MHC_ALLOW_TRITON_SM12X_FALLBACK mhc_preflight_tokens=$VLLM_DS4_MHC_NATIVE_PREFLIGHT_TOKENS pp_layer_partition=${DSV4_FLASH_PP_LAYER_PARTITION:-auto} pp_transport=$DS4_PP_TRANSPORT pp_edge_rail=$VLLM_DS4_PP_EDGE_RAIL pp_pynccl=$VLLM_DS4_PP_PYNCCL_TENSOR_DICT pp_pynccl_pair=$VLLM_DS4_PP_PYNCCL_PAIR_COMMUNICATORS pp_cpu_staged=${VLLM_DS4_PP_CPU_STAGED_TENSOR_DICT:-0} pp_direct_cuda=$VLLM_DS4_PP_DIRECT_CUDA_TENSOR_DICT pp_torch_pg=$VLLM_DS4_PP_TORCH_PG_TENSOR_DICT pp_torch_pair_groups=$VLLM_DS4_PP_TORCH_PAIR_GROUPS pp_torch_group_warmup=$VLLM_DS4_PP_TORCH_GROUP_WARMUP pp_prev_if=${VLLM_DS4_PP_PREV_SOCKET_IFNAME:-none} pp_next_if=${VLLM_DS4_PP_NEXT_SOCKET_IFNAME:-none} pp_socket_if=${VLLM_DS4_PP_SOCKET_IFNAME:-none} pp_device_metadata=$VLLM_DS4_PP_DEVICE_TENSOR_DICT_METADATA pp_send_backlog=$VLLM_DS4_PP_SEND_BACKLOG pp_overlap_send=$VLLM_DS4_PP_OVERLAP_SEND pp_send_buffer_slots=$VLLM_DS4_PP_SEND_BUFFER_SLOTS pp_send_buffer_max_bytes=$VLLM_DS4_PP_SEND_BUFFER_MAX_BYTES pp_pynccl_stripes=$VLLM_DS4_PP_PYNCCL_TENSOR_DICT_STRIPES pp_pynccl_credit=$VLLM_DS4_PP_PYNCCL_P2P_CREDIT pp_striped_nccl=$VLLM_DS4_PP_STRIPED_NCCL_TENSOR_DICT pp_striped_nccl_stripes=$VLLM_DS4_PP_STRIPED_NCCL_STRIPES pp_striped_nccl_min_bytes=$VLLM_DS4_PP_STRIPED_NCCL_MIN_BYTES" >&2
 
 KV_CACHE_MEMORY_ARGS=()
 case "$DSV4_KV_CACHE_MEMORY_BYTES_EFFECTIVE" in
@@ -541,7 +556,7 @@ COMMON_ARGS=(
   "${FLASHINFER_AUTOTUNE_ARGS[@]}"
   --block-size 256
   --kv-cache-dtype fp8
-  --enable-prefix-caching
+  "${PREFIX_CACHING_ARGS[@]}"
   "${ASYNC_SCHEDULING_ARGS[@]}"
   "${KV_OFFLOAD_ARGS[@]}"
   --kv-cache-metrics

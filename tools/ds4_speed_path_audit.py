@@ -90,6 +90,7 @@ check("PP8 throughput profile redlines cold-prefill KV pressure", "VLLM_DS4_SCHE
 check("PP8 launcher derives balanced 43-layer partitions by default", "base=$((43 / NNODES))" in pp8 and "rem=$((43 % NNODES))" in pp8 and 'DSV4_FLASH_PP_LAYER_PARTITION="$(IFS=,; echo "${parts[*]}")"' in pp8)
 check("PP8 launcher no longer hard-codes the thin-tail 8-node partition", 'DSV4_FLASH_PP_LAYER_PARTITION="8,8,8,8,8,1,1,1"' not in pp8)
 check("PP8 launcher does not accept stale default partition overrides", "DSV4_FLASH_PP_LAYER_PARTITION_DEFAULT" not in pp8)
+check("PP8 launcher makes prefix caching explicit and banner-visible", "DSV4_ENABLE_PREFIX_CACHING" in pp8 and "--no-enable-prefix-caching" in pp8 and "prefix_caching=$DSV4_ENABLE_PREFIX_CACHING" in pp8)
 check("PP8 launcher scales KV cache bytes by local layer ownership", "DSV4_SCALE_KV_CACHE_BY_LOCAL_LAYERS" in pp8 and "DSV4_KV_CACHE_MEMORY_BYTES_EFFECTIVE" in pp8 and "local_layers=$DSV4_LOCAL_LAYER_COUNT" in pp8)
 check("PP8 launcher keeps a per-profile KV floor for thin stages", "DSV4_MIN_KV_CACHE_MEMORY_BYTES" in pp8 and "kv_cache_memory_bytes_min=" in pp8)
 check("PP8 launcher passes the effective rank-local KV cap to vLLM", 'KV_CACHE_MEMORY_ARGS=(--kv-cache-memory-bytes "$DSV4_KV_CACHE_MEMORY_BYTES_EFFECTIVE")' in pp8)
