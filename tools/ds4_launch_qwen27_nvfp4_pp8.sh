@@ -21,7 +21,7 @@ RUNTIME_PYTHON="${DS4_VLLM_PYTHON:-/home/$USER/ds4-vllm-local/bin/python}"
 SOURCE_ROOT="${DS4_VLLM_SOURCE_ROOT:-/home/$USER/src/vllm}"
 DS4_NODE_ID="${DS4_NODE_ID:-spark${NODE_RANK}}"
 DS4_QWEN_PIPELINE_RAM_PROFILE="${DS4_QWEN_PIPELINE_RAM_PROFILE:-resident3}"
-DEFAULT_LMCACHE_ROOT="$HOME/ds4_lmcache/qwen27_nvfp4_pp${PP_SIZE}/${DS4_NODE_ID}"
+DEFAULT_LMCACHE_ROOT="$HOME/ds4_lmcache/qwen27_nvfp4_pp${PP_SIZE}_fp8kv/${DS4_NODE_ID}"
 
 if [[ "$PP_SIZE" != "$NNODES" ]]; then
   echo "Qwen PP launcher expects one PP rank per Spark: PP_SIZE=$PP_SIZE NNODES=$NNODES" >&2
