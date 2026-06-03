@@ -27,6 +27,7 @@ def main() -> int:
         "VLLM_DS4_DSV4_SPARSE_MLA_REF_CHECK",
         "VLLM_DS4_DSV4_SPARSE_MLA_REF_MAX_TOKENS",
         "VLLM_DS4_DSV4_SPARSE_MLA_REF_ATOL",
+        "VLLM_DS4_DSV4_SPARSE_MLA_SELECTED_ABSMAX",
     ):
         failures += check(
             f"{name} registered in envs",
@@ -64,6 +65,13 @@ def main() -> int:
         "sparse MLA output finite checks are present",
         "_ds4_check_sparse_mla_output(" in flashmla
         and "torch.isfinite(active).all()" in flashmla,
+    )
+    failures += check(
+        "prefill selected row ranges are validated",
+        "_ds4_validate_sparse_mla_prefill_selection(" in flashmla
+        and "bad_compressed_rows" in flashmla
+        and "bad_swa_rows" in flashmla
+        and "selected invalid KV values" in flashmla,
     )
     failures += check(
         "prefill reference check is diagnostic-only",

@@ -200,6 +200,151 @@ def _ds4_check_sparse_mla_output(
 
 
 @torch.compiler.disable
+def _ds4_validate_sparse_mla_prefill_selection(
+    *,
+    layer_prefix: str,
+    kv_flat: torch.Tensor,
+    combined_indices: torch.Tensor,
+    combined_lens: torch.Tensor,
+    query_start_loc_cpu: torch.Tensor,
+    seq_lens: torch.Tensor,
+    gather_lens: torch.Tensor,
+    top_k: int,
+    M: int,
+    N: int,
+    compress_ratio: int,
+    window_size: int,
+) -> None:
+    if not (envs.VLLM_DS4_DSV4_SPARSE_MLA_VALIDATE or envs.VLLM_DS4_DSV4_SPARSE_MLA_TRACE):
+        return
+    if _ds4_cuda_graph_capture_active():
+        return
+    if combined_indices.dim() == 3 and combined_indices.shape[1] == 1:
+        combined_indices = combined_indices[:, 0, :]
+    elif combined_indices.dim() != 2:
+        raise RuntimeError(
+            f"DS4 sparse MLA prefill row selection expected 2D indices for "
+            f"{layer_prefix}, got shape={tuple(combined_indices.shape)}"
+        )
+    if combined_lens.dim() != 1 or combined_lens.shape[0] != combined_indices.shape[0]:
+        raise RuntimeError(
+            f"DS4 sparse MLA prefill row selection lens mismatch for "
+            f"{layer_prefix}: indices_shape={tuple(combined_indices.shape)} "
+            f"lens_shape={tuple(combined_lens.shape)}"
+        )
+    qloc = query_start_loc_cpu.detach().cpu().to(torch.int64)
+    seq_cpu = seq_lens.detach().cpu().to(torch.int64)
+    gather_cpu = gather_lens.detach().cpu().to(torch.int64)
+    lens_cpu = combined_lens.detach().cpu().to(torch.int64)
+    indices_cpu = combined_indices.detach().cpu().to(torch.int64)
+    if qloc.numel() != seq_cpu.numel() + 1:
+        raise RuntimeError(
+            f"DS4 sparse MLA prefill row selection query offsets mismatch for "
+            f"{layer_prefix}: query_start_loc={tuple(qloc.shape)} "
+            f"seq_lens={tuple(seq_cpu.shape)}"
+        )
+    base = int(qloc[0].item())
+    bad: list[str] = []
+    max_tokens = indices_cpu.shape[0]
+    selected_masks = torch.arange(indices_cpu.shape[1]).view(1, -1) < lens_cpu.view(-1, 1)
+    selected_rows = combined_indices.detach()[selected_masks.to(combined_indices.device)]
+    for batch_idx in range(seq_cpu.numel()):
+        query_start = int(qloc[batch_idx].item()) - base
+        query_end = int(qloc[batch_idx + 1].item()) - base
+        if query_start < 0 or query_end < query_start or query_end > max_tokens:
+            bad.append(
+                f"batch={batch_idx} invalid_query_range={query_start}:{query_end} "
+                f"num_tokens={max_tokens}"
+            )
+            continue
+        query_len = query_end - query_start
+        seq_len = int(seq_cpu[batch_idx].item())
+        gather_len = int(gather_cpu[batch_idx].item())
+        gather_start = seq_len - gather_len
+        start_pos = seq_len - query_len
+        compressed_base = batch_idx * M
+        swa_base = compressed_base + N
+        for token_idx in range(query_start, query_end):
+            token_offset = token_idx - query_start
+            pos = start_pos + token_offset
+            expected_topk_len = min(max((pos + 1) // compress_ratio, 0), top_k)
+            expected_swa_len = min(max(pos + 1, 0), window_size)
+            expected_len = expected_topk_len + expected_swa_len
+            actual_len = int(lens_cpu[token_idx].item())
+            if actual_len != expected_len:
+                bad.append(
+                    f"token={token_idx} batch={batch_idx} pos={pos} "
+                    f"lens={actual_len} expected={expected_len} "
+                    f"topk={expected_topk_len} swa={expected_swa_len}"
+                )
+                if len(bad) >= 8:
+                    break
+            if actual_len <= 0:
+                continue
+            token_rows = indices_cpu[token_idx, :actual_len]
+            if expected_topk_len > 0:
+                compressed_end = compressed_base + min(
+                    (pos + 1) // compress_ratio,
+                    seq_len // compress_ratio,
+                )
+                compressed_rows = token_rows[: min(expected_topk_len, actual_len)]
+                compressed_bad = (
+                    (compressed_rows < compressed_base)
+                    | (compressed_rows >= compressed_end)
+                )
+                if bool(compressed_bad.any().item()):
+                    bad_values = compressed_rows[compressed_bad][:8].tolist()
+                    bad.append(
+                        f"token={token_idx} batch={batch_idx} bad_compressed_rows="
+                        f"{bad_values} allowed=[{compressed_base},{compressed_end})"
+                    )
+                    if len(bad) >= 8:
+                        break
+            if actual_len > expected_topk_len:
+                swa_start = swa_base + pos - expected_swa_len + 1 - gather_start
+                swa_end = swa_base + pos - gather_start + 1
+                swa_rows = token_rows[expected_topk_len:actual_len]
+                swa_bad = (swa_rows < swa_start) | (swa_rows >= swa_end)
+                if bool(swa_bad.any().item()):
+                    bad_values = swa_rows[swa_bad][:8].tolist()
+                    bad.append(
+                        f"token={token_idx} batch={batch_idx} bad_swa_rows="
+                        f"{bad_values} allowed=[{swa_start},{swa_end}) "
+                        f"gather_len={gather_len}"
+                    )
+                    if len(bad) >= 8:
+                        break
+        if len(bad) >= 8:
+            break
+    if bad:
+        raise RuntimeError(
+            f"DS4 sparse MLA prefill selected unpopulated KV rows for "
+            f"{layer_prefix}: " + "; ".join(bad)
+        )
+    if selected_rows.numel() > 0:
+        selected = kv_flat.index_select(0, selected_rows.long())
+        if selected.numel() > 0:
+            finite = torch.isfinite(selected).all()
+            absmax = float(selected.float().abs().max().item())
+            if (not bool(finite.item())) or (
+                absmax > envs.VLLM_DS4_DSV4_SPARSE_MLA_SELECTED_ABSMAX
+            ):
+                raise RuntimeError(
+                    f"DS4 sparse MLA prefill selected invalid KV values for "
+                    f"{layer_prefix}: absmax={absmax:.6g} "
+                    f"limit={envs.VLLM_DS4_DSV4_SPARSE_MLA_SELECTED_ABSMAX:.6g} "
+                    f"{_ds4_sparse_mla_tensor_stats(selected)}"
+                )
+            if envs.VLLM_DS4_DSV4_SPARSE_MLA_TRACE:
+                logger.info(
+                    "DS4 sparse MLA %s prefill selected rows=%d %s",
+                    layer_prefix,
+                    selected_rows.numel(),
+                    _ds4_sparse_mla_tensor_stats(selected),
+                )
+
+
+@torch.compiler.disable
 def _ds4_reference_check_sparse_mla_prefill(
     *,
     layer_prefix: str,
@@ -1113,6 +1258,22 @@ class DeepseekV4FlashMLASparseImpl(DeepseekV4SparseMLAAttentionImpl):
                 top_k,
                 M,
                 N,
+            )
+            _ds4_validate_sparse_mla_prefill_selection(
+                layer_prefix=layer.prefix,
+                kv_flat=kv[:chunk_size].reshape(-1, q.shape[-1]),
+                combined_indices=combined_indices,
+                combined_lens=combined_lens,
+                query_start_loc_cpu=query_start_loc_cpu[
+                    num_decodes + chunk_start : num_decodes + chunk_end + 1
+                ],
+                seq_lens=seq_lens[chunk_start:chunk_end],
+                gather_lens=gather_lens[chunk_start:chunk_end],
+                top_k=top_k,
+                M=M,
+                N=N,
+                compress_ratio=layer.compress_ratio,
+                window_size=layer.window_size,
             )
             if is_triton_sparse_mla_enabled(q.device):
                 cls._forward_sparse_mla_prefill_triton(
