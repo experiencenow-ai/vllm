@@ -21,6 +21,14 @@ checks = [
         and "read the int64 token buffer through an int32 pointer" in router,
     ),
     (
+        "CUDA hash-router slices graph-padded rows before CUDA op",
+        "_ds4_slice_router_rows_for_output(" in router
+        and router.find("_ds4_slice_router_rows_for_output(")
+        < router.find("ops.topk_hash_softplus_sqrt(")
+        and "gating_output[:num_rows]" in router
+        and "input_tokens[:num_rows]" in router,
+    ),
+    (
         "CUDA hash-router op is reached after dtype normalization",
         router.find("input_tokens = input_tokens.to(dtype=hash_indices_table.dtype)")
         < router.find("ops.topk_hash_softplus_sqrt("),
@@ -47,10 +55,10 @@ checks = [
     ),
     (
         "hash router reference-check slices graph-padded rows",
-        "_ds4_slice_router_ref_rows(" in router
-        and "gating_output[-num_rows:]" in router
-        and "input_tokens[-num_rows:]" in router
-        and router.find("_ds4_slice_router_ref_rows(")
+        "_ds4_slice_router_rows_for_output(" in router
+        and "gating_output[:num_rows]" in router
+        and "input_tokens[:num_rows]" in router
+        and router.find("_ds4_slice_router_rows_for_output(")
         < router.find("ref_weights = torch.empty_like(topk_weights)"),
     ),
     (
