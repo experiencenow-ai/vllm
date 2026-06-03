@@ -245,6 +245,7 @@ def build_command(args: argparse.Namespace) -> str:
         "vllm/v1/engine/core.py "
         "vllm/v1/core/sched/scheduler.py "
         "vllm/v1/worker/gpu_model_runner.py "
+        "vllm/models/deepseek_v4/nvidia/model.py "
         "vllm/config/compilation.py "
         "vllm/v1/attention/backends/mla/flashmla_sparse.py "
         "vllm/v1/attention/backends/mla/sparse_swa.py "
