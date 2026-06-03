@@ -266,6 +266,7 @@ def build_command(args: argparse.Namespace) -> str:
         "tools/ds4_pp_wave_admission_audit.py tools/ds4_speed_path_audit.py "
         "tools/ds4_nccl_p2p_bench_audit.py && "
         "bash -n tools/ds4_200g_guard.sh && "
+        "bash -n tools/ds4_install_static_fabric_sudoers.sh && "
         "bash -n tools/ds4_launch_dsv4_flash_pp8.sh && "
         "bash -n tools/ds4_launch_dsv4_flash_pp4_tp2_ep.sh && "
         f"{py} tools/ds4_workspace_prealloc_audit.py && "

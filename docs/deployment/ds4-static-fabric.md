@@ -52,6 +52,17 @@ unit that runs the static fabric apply command after boot, or a constrained
 sudoers rule for the Spark user that permits only the network setup commands.
 The script intentionally refuses interactive sudo prompts.
 
+To install the constrained sudo helper from the Mac checkout:
+
+```bash
+bash tools/ds4_install_static_fabric_sudoers.sh --fleet
+```
+
+This pulls the current repo on every Spark, installs a root-owned
+`/usr/local/sbin/ds4-static-fabric-root` helper, and adds a sudoers rule that
+allows only that helper to run without a password. It does not grant broad
+passwordless access to `ip` or `sysctl`.
+
 Then verify:
 
 ```bash
