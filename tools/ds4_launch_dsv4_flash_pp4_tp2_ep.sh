@@ -186,13 +186,13 @@ if [[ "${VLLM_TEST_FORCE_FP8_MARLIN:-}" =~ ^(1|true|TRUE|yes|YES)$ ]]; then
 fi
 export VLLM_TEST_FORCE_FP8_MARLIN=0
 export VLLM_DISABLED_KERNELS="${VLLM_DISABLED_KERNELS:-MarlinNvFp4LinearKernel,EmulationNvFp4LinearKernel,MarlinMxFp4LinearKernel,MarlinMxfp8LinearKernel,EmulationMxfp8LinearKernel,MarlinFP8ScaledMMLinearKernel}"
-export DS4_200G_IFNAME="${DS4_200G_IFNAME:-enP2p1s0f0np0,enP2p1s0f1np1}"
+export DS4_200G_IFNAME="${DS4_200G_IFNAME:-enp1s0f0np0,enp1s0f1np1,enP2p1s0f0np0,enP2p1s0f1np1}"
 export DS4_200G_ALLOW_DEGRADED_LINKS="${DS4_200G_ALLOW_DEGRADED_LINKS:-1}"
 if [[ "${DS4_200G_PAIR_LOCAL_NCCL:-0}" =~ ^(1|true|TRUE|yes|YES|on|ON)$ ]]; then
   echo "DSV4 PP4xTP2xEP refuses DS4_200G_PAIR_LOCAL_NCCL=1. The production fast path requires one all-rank NCCL/socket fabric so PP, TP, and EP cannot silently fall back to a pair-only view." >&2
   exit 64
 fi
-export DS4_CONTROL_IFNAME="${DS4_CONTROL_IFNAME:-ds4ring0}"
+export DS4_CONTROL_IFNAME="${DS4_CONTROL_IFNAME:-auto}"
 export DS4_200G_ADVERTISE_LOOPBACK="${DS4_200G_ADVERTISE_LOOPBACK:-1}"
 export DS4_200G_NCCL_TRANSPORT="${DS4_200G_NCCL_TRANSPORT:-socket}"
 export VLLM_DS4_DISTRIBUTED_BACKEND="${VLLM_DS4_DISTRIBUTED_BACKEND:-nccl}"
