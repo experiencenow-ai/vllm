@@ -4,6 +4,7 @@ import torch
 
 # this import will also register the custom ops
 import vllm.model_executor.kernels.mhc as mhc_kernels
+import vllm.envs as envs
 from vllm.model_executor.custom_op import CustomOp
 
 
@@ -190,17 +191,37 @@ class HCHeadOp(CustomOp):
         out = torch.empty(
             num_tokens, hidden_size, dtype=torch.bfloat16, device=hidden_states.device
         )
-        torch.ops.vllm.hc_head_fused_kernel_tilelang(
-            hs_flat,
-            hc_fn,
-            hc_scale,
-            hc_base,
-            out,
-            hidden_size,
-            rms_norm_eps,
-            hc_eps,
-            hc_mult,
-        )
+        backend = envs.VLLM_DS4_DSV4_HC_HEAD_BACKEND
+        if backend in ("", "tilelang"):
+            torch.ops.vllm.hc_head_fused_kernel_tilelang(
+                hs_flat,
+                hc_fn,
+                hc_scale,
+                hc_base,
+                out,
+                hidden_size,
+                rms_norm_eps,
+                hc_eps,
+                hc_mult,
+            )
+        elif backend == "triton-debug":
+            torch.ops.vllm.hc_head_triton(
+                hs_flat,
+                hc_fn,
+                hc_scale,
+                hc_base,
+                out,
+                hidden_size,
+                rms_norm_eps,
+                hc_eps,
+                hc_mult,
+            )
+        else:
+            raise RuntimeError(
+                "Unsupported VLLM_DS4_DSV4_HC_HEAD_BACKEND="
+                f"{backend!r}. Use 'tilelang' for production or "
+                "'triton-debug' for a correctness isolation run."
+            )
         return out.view(*outer_shape, hidden_size)
 
     def forward_hip(
