@@ -323,6 +323,44 @@ def _make_torch_pair_group(rank: int, src: int, dst: int):
             os.environ["NCCL_SOCKET_IFNAME"] = original_ifname
 
 
+def _warm_pynccl_pair_communicator(
+    rank: int,
+    src: int,
+    dst: int,
+    communicator,
+) -> None:
+    peer = dst if rank == src else src
+    group_peer = 1 if rank == src else 0
+    send = torch.tensor([rank + 1], dtype=torch.float32, device="cuda")
+    recv = torch.empty_like(send)
+    print(
+        "DS4 NCCL P2P preflight adjacent PyNCCL warmup begin: "
+        f"pair={src}-{dst} rank={rank} peer={peer} group_peer={group_peer}",
+        file=sys.stderr,
+    )
+    communicator.group_start()
+    if rank == src:
+        communicator.send(send, group_peer)
+        communicator.recv(recv, group_peer)
+    else:
+        communicator.recv(recv, group_peer)
+        communicator.send(send, group_peer)
+    communicator.group_end()
+    torch.cuda.synchronize()
+    expected = float(peer + 1)
+    actual = float(recv[0].item())
+    if actual != expected:
+        raise RuntimeError(
+            "DS4 NCCL P2P preflight adjacent PyNCCL warmup failed: "
+            f"pair={src}-{dst} rank={rank} recv {actual} != expected {expected}"
+        )
+    print(
+        "DS4 NCCL P2P preflight adjacent PyNCCL warmup complete: "
+        f"pair={src}-{dst} rank={rank}",
+        file=sys.stderr,
+    )
+
+
 def _run_p2p_pair_probe(
     rank: int,
     src: int,
@@ -664,10 +702,17 @@ def _run_p2p_nccl_preflight(rank: int, world_size: int) -> int:
                         file=sys.stderr,
                     )
                     with _temporary_nccl_socket_ifname(route_ifname):
-                        pair_pynccl_communicators[(src, dst)] = PyNcclCommunicator(
+                        communicator = PyNcclCommunicator(
                             cpu_group,
                             torch.device("cuda:0"),
                         )
+                        _warm_pynccl_pair_communicator(
+                            rank,
+                            src,
+                            dst,
+                            communicator,
+                        )
+                    pair_pynccl_communicators[(src, dst)] = communicator
                 elif cpu_group != dist.GroupMember.NON_GROUP_MEMBER:
                     dist.destroy_process_group(cpu_group)
                 _store_barrier(rank, world_size, f"p2p-pair-{pair_index}-after-create")
