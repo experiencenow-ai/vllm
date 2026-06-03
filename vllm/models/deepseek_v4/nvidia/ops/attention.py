@@ -121,6 +121,22 @@ def _pad_positions_to_q_kv_rows(
     return _pad_positions_to_num_rows(positions, num_rows)
 
 
+def _slice_slot_mapping_to_q_rows(
+    slot_mapping: torch.Tensor,
+    q: torch.Tensor,
+) -> torch.Tensor:
+    if slot_mapping.dim() != 1:
+        raise ValueError(
+            "DeepSeek V4 graph-padded slot_mapping must be 1-D; "
+            f"got shape={tuple(slot_mapping.shape)}"
+        )
+    num_rows = q.shape[0]
+    num_slots = slot_mapping.shape[0]
+    if num_slots > num_rows:
+        return slot_mapping[-num_rows:]
+    return slot_mapping
+
+
 def _select_v4_sparse_impl() -> "type[DeepseekV4SparseMLAAttentionImpl]":
     """Pick the platform-specific V4 sparse MLA impl class. Sole platform check."""
     if current_platform.is_rocm():
@@ -585,11 +601,12 @@ class DeepseekV4MultiHeadLatentAttentionWrapper(PluggableLayer):
         #   KV side: GPT-J RoPE + UE8M0 FP8 quant + paged cache insert
         # kv is unchanged; mla_attn reads kv solely via swa_kv_cache.
         positions = _pad_positions_to_q_kv_rows(positions, q, kv)
+        slot_mapping = _slice_slot_mapping_to_q_rows(swa_metadata.slot_mapping, q)
         torch.ops._C.fused_deepseek_v4_qnorm_rope_kv_rope_quant_insert(
             q,
             kv,
             swa_kv_cache_2d,
-            swa_metadata.slot_mapping,
+            slot_mapping,
             positions.to(torch.int64),
             self.rotary_emb.cos_sin_cache,
             self.eps,

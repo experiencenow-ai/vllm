@@ -37,4 +37,11 @@ require(
     "AttentionCGSupport.UNIFORM_SINGLE_TOKEN_DECODE",
 )
 
+require(
+    "vllm/models/deepseek_v4/nvidia/ops/attention.py",
+    "_slice_slot_mapping_to_q_rows",
+    "graph-padded slot_mapping must be 1-D",
+    "slot_mapping = _slice_slot_mapping_to_q_rows",
+)
+
 print("PASS: DS4 CUDA graph support audit")
