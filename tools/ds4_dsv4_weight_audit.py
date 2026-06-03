@@ -38,6 +38,28 @@ checks = [
         and "missing_layers = sorted(expected_layers - loaded_layers)" in model,
     ),
     (
+        "expert coverage is tracked by layer, tensor, shard, and expert id",
+        "ds4_expert_coverage: dict[int, dict[tuple[str, str], set[int]]]" in model
+        and "self._record_ds4_expert_coverage(" in model
+        and "layer_coverage.setdefault((tensor_kind, shard_id), set()).add(expert_id)"
+        in model,
+    ),
+    (
+        "FP4 expert weights and scales are required per owned layer",
+        '("weight", "w1")' in model
+        and '("weight", "w2")' in model
+        and '("weight", "w3")' in model
+        and '("weight_scale", "w1")' in model
+        and '("weight_scale", "w2")' in model
+        and '("weight_scale", "w3")' in model
+        and "expected_experts = set(range(self.config.n_routed_experts))" in model,
+    ),
+    (
+        "expert coverage audit fails closed",
+        "DS4 DSV4 expert coverage audit failed" in model
+        and "raise RuntimeError" in model,
+    ),
+    (
         "weight audit fails closed",
         "DS4 DSV4 weight audit failed" in model
         and "raise RuntimeError" in model,
