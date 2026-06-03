@@ -78,6 +78,27 @@ if TYPE_CHECKING:
 logger = init_logger(__name__)
 
 
+def _pad_positions_to_num_rows(
+    positions: torch.Tensor,
+    num_rows: int,
+) -> torch.Tensor:
+    if positions.dim() != 1:
+        raise ValueError(
+            "DeepSeek V4 graph-padded positions must be 1-D; "
+            f"got shape={tuple(positions.shape)}"
+        )
+    num_positions = positions.shape[0]
+    if num_positions == num_rows:
+        return positions
+    if num_positions > num_rows:
+        raise ValueError(
+            "DeepSeek V4 positions exceed hidden-state rows: "
+            f"positions={num_positions} rows={num_rows}"
+        )
+    padding = positions.new_zeros((num_rows - num_positions,))
+    return torch.cat((positions, padding), dim=0)
+
+
 def _select_v4_sparse_impl() -> "type[DeepseekV4SparseMLAAttentionImpl]":
     """Pick the platform-specific V4 sparse MLA impl class. Sole platform check."""
     if current_platform.is_rocm():
@@ -298,6 +319,11 @@ class DeepseekV4MultiHeadLatentAttentionWrapper(PluggableLayer):
         # Pre-allocate attention output with FlashMLA-padded head count.
         # The op writes into `o_padded`; we slice to n_local_heads after.
         num_tokens = hidden_states.shape[0]
+        # CUDA graph input padding can make hidden_states contain graph rows
+        # beyond the live scheduled tokens. The fused Q/KV insert kernel
+        # accepts shorter slot_mapping, but q, kv, and position_ids must have
+        # the same row count.
+        positions = _pad_positions_to_num_rows(positions, num_tokens)
         o_padded = torch.empty(
             (num_tokens, self.padded_heads, self.head_dim),
             dtype=hidden_states.dtype,
