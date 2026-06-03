@@ -243,6 +243,7 @@ def build_command(args: argparse.Namespace) -> str:
         "vllm/entrypoints/openai/chat_completion/protocol.py "
         "vllm/distributed/parallel_state.py "
         "vllm/distributed/ds4_high_speed_channel.py "
+        "vllm/distributed/ds4_tcp_tensor_channel.py "
         "vllm/v1/engine/core.py "
         "vllm/v1/core/sched/scheduler.py "
         "vllm/v1/worker/gpu_worker.py "
