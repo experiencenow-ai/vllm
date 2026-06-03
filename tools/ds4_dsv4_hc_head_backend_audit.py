@@ -41,6 +41,7 @@ checks = [
         "VLLM_DS4_DSV4_HC_HEAD_REF_CHECK: bool = False" in envs
         and "\"VLLM_DS4_DSV4_HC_HEAD_REF_CHECK\": lambda:" in envs
         and "_maybe_check_hc_head_ref(" in mhc
+        and "torch.compiler.is_compiling()" in mhc
         and "torch.cuda.is_current_stream_capturing()" in mhc
         and "DS4 DSV4 hc_head reference check failed" in mhc,
     ),
