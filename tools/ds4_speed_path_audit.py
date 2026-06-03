@@ -156,7 +156,7 @@ check("DSV4 PP8 allows disconnected endpoint rails while measured open-line rail
 check("DSV4 PP8 rail TCP default fails below 10 Gbit/s and warns below old floor", "DS4_RAIL_TCP_PREFLIGHT_MIN_GBIT_S:-10" in pp8 and "DS4_RAIL_TCP_PREFLIGHT_WARN_GBIT_S:-64" in pp8)
 check("DSV4 PP8 rail TCP default uses the open 8-node line, not a missing 7-0 ring edge", "0-1;1-2;2-3;3-4;4-5;5-6;6-7" in pp8 and "6-7;7-0" not in pp8)
 check("DSV4 PP8 defaults NCCL preflight to the same PyNCCL PP send/recv path used at runtime", "DS4_NCCL_PREFLIGHT_MODE:-p2p_nccl" in pp8 and "DS4_NCCL_PREFLIGHT_P2P_METHOD:-pynccl" in pp8 and "DS4_NCCL_PREFLIGHT_P2P_SKIP_WORLD_ALLREDUCE:-1" in pp8 and "DS4_NCCL_PREFLIGHT_P2P_STRIPES" in pp8 and "DS4_NCCL_PREFLIGHT_P2P_CREDIT" in pp8 and "DS4_NCCL_PREFLIGHT_P2P_PAIRS" in pp8)
-check("DSV4 PP8 defaults PyNCCL preflight to bidirectional no-credit exchange", 'DS4_NCCL_PREFLIGHT_P2P_DIRECTION="${DS4_NCCL_PREFLIGHT_P2P_DIRECTION:-bidirectional}"' in pp8 and 'VLLM_DS4_PP_PYNCCL_P2P_CREDIT="${VLLM_DS4_PP_PYNCCL_P2P_CREDIT:-0}"' in pp8)
+check("DSV4 PP8 defaults PyNCCL preflight to unidirectional PP edge exchange", 'DS4_NCCL_PREFLIGHT_P2P_DIRECTION="${DS4_NCCL_PREFLIGHT_P2P_DIRECTION:-unidirectional}"' in pp8 and 'VLLM_DS4_PP_PYNCCL_P2P_CREDIT="${VLLM_DS4_PP_PYNCCL_P2P_CREDIT:-0}"' in pp8)
 check("DSV4 PP4xTP2 enables rail TCP physical fabric preflight", "DS4_RAIL_TCP_PREFLIGHT_ACTIVE" in pp4 and "DS4_RAIL_TCP_PREFLIGHT_PAIRS" in pp4)
 check("DSV4 PP4xTP2 allows disconnected endpoint rails while measured open-line rails remain fail-closed", 'DS4_200G_ALLOW_DEGRADED_LINKS:-1' in pp4)
 check("DSV4 PP4xTP2 rail TCP default uses the open 8-node line, not a missing 7-0 ring edge", "0-1;1-2;2-3;3-4;4-5;5-6;6-7" in pp4 and "6-7;7-0" not in pp4)
