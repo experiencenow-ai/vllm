@@ -10,6 +10,14 @@ BRANCH="${DS4_VLLM_BRANCH:-main}"
 HELPER_PATH="${DS4_STATIC_FABRIC_ROOT_HELPER:-/usr/local/sbin/ds4-static-fabric-root}"
 INSTALL_USER="${DS4_STATIC_FABRIC_USER:-}"
 DRY_RUN=0
+DS4_INSTALL_TMPDIR=""
+
+cleanup_tmpdir()
+{
+	if [[ -n "${DS4_INSTALL_TMPDIR:-}" ]]; then
+		rm -rf "$DS4_INSTALL_TMPDIR"
+	fi
+}
 
 usage()
 {
@@ -272,7 +280,8 @@ install_local()
 		return 0
 	fi
 	tmpdir="$(mktemp -d)"
-	trap 'rm -rf "$tmpdir"' EXIT
+	DS4_INSTALL_TMPDIR="$tmpdir"
+	trap cleanup_tmpdir EXIT
 	helper_tmp="$tmpdir/ds4-static-fabric-root"
 	sudoers_tmp="$tmpdir/ds4-static-fabric-sudoers"
 	write_helper "$helper_tmp"
