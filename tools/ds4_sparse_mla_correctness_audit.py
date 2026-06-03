@@ -105,17 +105,46 @@ def main() -> int:
         "_ds4_reference_check_sparse_mla_prefill(" in matmul_debug_body,
     )
     failures += check(
-        "prefill indexer localizes packed topk rows before attention",
+        "prefill indexer can rebase packed absolute topk rows",
         "_localize_prefill_topk_indices_kernel" in indexer
         and "idx - start" in indexer
         and "idx >= start" in indexer
         and "idx < end" in indexer,
     )
     failures += check(
-        "direct native topk path cannot bypass localization",
+        "direct native topk path is localized before attention",
         "used_direct_topk = fp8_fp4_mqa_topk_indices(" in indexer
         and "if not used_direct_topk:" in indexer
-        and "_localize_prefill_topk_indices(" in indexer
+        and "if current_platform.is_cuda() and used_direct_topk:" in indexer
+        and "_localize_prefill_topk_indices(" in indexer,
+    )
+    failures += check(
+        "materialized CUDA top_k_per_row_prefill is not localized twice",
+        "ops.top_k_per_row_prefill(" in indexer
+        and "if current_platform.is_cuda() and used_direct_topk:" in indexer
+        and "if current_platform.is_cuda():\n                _localize_prefill_topk_indices("
+        not in indexer,
+    )
+    failures += check(
+        "prefill topk local-index contract is validated",
+        "_validate_prefill_topk_indices_are_local(" in indexer
+        and "DS4 sparse indexer produced non-local prefill top-k indices"
+        in indexer
+        and "view >= local_lens.view(-1, 1)" in indexer
+        and "direct-localized" in indexer
+        and "materialized" in indexer,
+    )
+    failures += check(
+        "prefill topk contract validation skips CUDA graph capture",
+        "_validate_prefill_topk_indices_are_local(" in indexer
+        and "torch.cuda.is_current_stream_capturing()" in indexer
+        and indexer.find("torch.cuda.is_current_stream_capturing()")
+        < indexer.find("bad.any()"),
+    )
+    failures += check(
+        "direct native topk path cannot bypass validation",
+        "used_direct_topk = fp8_fp4_mqa_topk_indices(" in indexer
+        and "_validate_prefill_topk_indices_are_local(" in indexer
         and "continue\n            if current_platform.is_xpu()" not in indexer,
     )
     failures += check(
