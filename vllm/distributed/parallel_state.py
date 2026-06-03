@@ -665,49 +665,51 @@ class GroupCoordinator:
         for left_index in range(self.world_size - 1):
             right_index = left_index + 1
             pair_ifname = self._ds4_pp_pair_ifname(left_index, right_index)
+            active = self.rank_in_group in {left_index, right_index}
+            pair_ranks = [self.ranks[left_index], self.ranks[right_index]]
             torch.distributed.barrier(group=self.cpu_group)
-            if self.rank_in_group in {left_index, right_index}:
-                if not pair_ifname:
-                    raise RuntimeError(
-                        "VLLM_DS4_PP_TORCH_PAIR_GROUPS requires "
-                        "VLLM_DS4_PP_PREV_SOCKET_IFNAME or "
-                        "VLLM_DS4_PP_NEXT_SOCKET_IFNAME for every "
-                        "active PP edge rank."
-                    )
-                pair_ranks = [self.ranks[left_index], self.ranks[right_index]]
-                with self._ds4_pp_pair_nccl_socket_ifname(pair_ifname):
-                    pair_group = self._new_ds4_pp_torch_pair_group(
-                        pair_ranks, torch_distributed_backend
-                    )
-                    self._warm_ds4_pp_torch_pair_group(
-                        pair_group,
-                        pair_ifname,
-                        self.ranks[right_index]
-                        if self.rank_in_group == left_index
-                        else self.ranks[left_index],
-                    )
-                    peer_index = (
-                        right_index
-                        if self.rank_in_group == left_index
-                        else left_index
-                    )
+            if active and not pair_ifname:
+                raise RuntimeError(
+                    "VLLM_DS4_PP_TORCH_PAIR_GROUPS requires "
+                    "VLLM_DS4_PP_PREV_SOCKET_IFNAME or "
+                    "VLLM_DS4_PP_NEXT_SOCKET_IFNAME for every "
+                    "active PP edge rank."
+                )
+            with self._ds4_pp_pair_nccl_socket_ifname(
+                pair_ifname if active else ""
+            ):
+                pair_group = self._new_ds4_pp_torch_pair_group(
+                    pair_ranks, torch_distributed_backend
+                )
+            if active:
+                self._warm_ds4_pp_torch_pair_group(
+                    pair_group,
+                    pair_ifname,
+                    self.ranks[right_index]
+                    if self.rank_in_group == left_index
+                    else self.ranks[left_index],
+                )
+                peer_index = (
+                    right_index
+                    if self.rank_in_group == left_index
+                    else left_index
+                )
                 groups[peer_index] = pair_group
+            else:
+                if pair_group != torch.distributed.GroupMember.NON_GROUP_MEMBER:
+                    torch.distributed.destroy_process_group(pair_group)
             torch.distributed.barrier(group=self.cpu_group)
         return groups
 
     def _new_ds4_pp_torch_pair_group(
         self, pair_ranks: list[int], torch_distributed_backend: str | Backend
     ) -> ProcessGroup:
-        try:
-            return torch.distributed.new_group(
-                pair_ranks,
-                backend=torch_distributed_backend,
-                use_local_synchronization=True,
-            )
-        except TypeError:
-            return torch.distributed.new_group(
-                pair_ranks, backend=torch_distributed_backend
-            )
+        # Build adjacent NCCL pair groups collectively across the full PP group.
+        # The local-synchronization shortcut can deadlock on the Spark line when
+        # the group sequence advances from one adjacent pair to the next.
+        return torch.distributed.new_group(
+            pair_ranks, backend=torch_distributed_backend
+        )
 
     def _warm_ds4_pp_torch_pair_group(
         self, pair_group: ProcessGroup, pair_ifname: str, peer_global_rank: int

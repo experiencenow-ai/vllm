@@ -239,26 +239,37 @@ def _pp_edge_dev_for_rank(rank: int, peer_rank: int) -> tuple[str, str]:
 
 
 def _new_nccl_pair_group(src: int, dst: int):
-    try:
-        return dist.new_group(
-            ranks=[src, dst],
-            backend="nccl",
-            use_local_synchronization=True,
-        )
-    except TypeError:
-        return dist.new_group(ranks=[src, dst], backend="nccl")
+    # Create every adjacent pair group collectively across the world.  The
+    # local-synchronization shortcut can hang once the probe advances from
+    # pair 0-1 to the overlapping pair 1-2 on this Spark topology.
+    return dist.new_group(ranks=[src, dst], backend="nccl")
 
 
 def _make_torch_pair_group(rank: int, src: int, dst: int):
-    if rank not in {src, dst}:
-        return None
+    active = rank in {src, dst}
     peer = dst if rank == src else src
-    route_ifname, edge_rail = _pp_edge_dev_for_rank(rank, peer)
+    route_ifname = ""
+    edge_rail = _env(
+        "DS4_NCCL_PREFLIGHT_PP_EDGE_RAIL",
+        _env("VLLM_DS4_PP_EDGE_RAIL", "enp"),
+    ).strip() or "enp"
+    if active:
+        route_ifname, edge_rail = _pp_edge_dev_for_rank(rank, peer)
     original_ifname = os.environ.get("NCCL_SOCKET_IFNAME")
     try:
-        if route_ifname:
+        if active and route_ifname:
             os.environ["NCCL_SOCKET_IFNAME"] = route_ifname
         pair_group = _new_nccl_pair_group(src, dst)
+        if not active:
+            print(
+                "DS4 NCCL P2P preflight torch pair group created on "
+                f"non-member rank: pair={src}-{dst} rank={rank} "
+                f"edge_rail={edge_rail}",
+                file=sys.stderr,
+            )
+            if pair_group != dist.GroupMember.NON_GROUP_MEMBER:
+                dist.destroy_process_group(pair_group)
+            return None
         send = torch.tensor([rank + 1], dtype=torch.float32, device="cuda")
         recv = torch.empty_like(send)
         print(
