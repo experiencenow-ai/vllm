@@ -97,6 +97,13 @@ def main() -> int:
         and "valid_tokens = offsets < combined_lens.view(-1, 1)" in flashmla
         and "kv_flat.index_select" in flashmla,
     )
+    matmul_debug_body = flashmla.split(
+        "def _forward_sparse_mla_prefill_matmul_debug(", 1
+    )[1].split("\n    @classmethod", 1)[0]
+    failures += check(
+        "matmul-debug prefill path also runs reference check",
+        "_ds4_reference_check_sparse_mla_prefill(" in matmul_debug_body,
+    )
     failures += check(
         "prefill indexer localizes packed topk rows before attention",
         "_localize_prefill_topk_indices_kernel" in indexer
