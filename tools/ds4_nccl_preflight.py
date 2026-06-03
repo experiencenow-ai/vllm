@@ -309,20 +309,31 @@ def _run_p2p_nccl_preflight(rank: int, world_size: int) -> int:
         + ";".join(f"{src}-{dst}" for src, dst in pairs),
         file=sys.stderr,
     )
-    value = torch.tensor([rank + 1], dtype=torch.float32, device="cuda")
-    print("DS4 NCCL P2P preflight stage: communicator all_reduce begin", file=sys.stderr)
-    dist.all_reduce(value, op=dist.ReduceOp.SUM)
-    torch.cuda.synchronize()
-    print("DS4 NCCL P2P preflight stage: communicator all_reduce complete", file=sys.stderr)
-    expected = float((world_size * (world_size + 1)) // 2)
-    actual = float(value.item())
-    if actual != expected:
+    skip_world_all_reduce = _bool_env(
+        "DS4_NCCL_PREFLIGHT_P2P_SKIP_WORLD_ALLREDUCE",
+        False,
+    )
+    if skip_world_all_reduce:
         print(
-            "DS4 NCCL P2P preflight failed: "
-            f"all_reduce sum {actual} != expected {expected}",
+            "DS4 NCCL P2P preflight stage: communicator all_reduce skipped "
+            "by DS4_NCCL_PREFLIGHT_P2P_SKIP_WORLD_ALLREDUCE=1",
             file=sys.stderr,
         )
-        return 66
+    else:
+        value = torch.tensor([rank + 1], dtype=torch.float32, device="cuda")
+        print("DS4 NCCL P2P preflight stage: communicator all_reduce begin", file=sys.stderr)
+        dist.all_reduce(value, op=dist.ReduceOp.SUM)
+        torch.cuda.synchronize()
+        print("DS4 NCCL P2P preflight stage: communicator all_reduce complete", file=sys.stderr)
+        expected = float((world_size * (world_size + 1)) // 2)
+        actual = float(value.item())
+        if actual != expected:
+            print(
+                "DS4 NCCL P2P preflight failed: "
+                f"all_reduce sum {actual} != expected {expected}",
+                file=sys.stderr,
+            )
+            return 66
     rank_groups = _env("DS4_NCCL_PREFLIGHT_GROUPS", "")
     if rank_groups and rank_groups != "<unused>":
         print(
