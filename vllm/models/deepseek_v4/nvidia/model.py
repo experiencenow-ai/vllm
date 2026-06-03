@@ -1102,6 +1102,7 @@ class DeepseekV4Model(nn.Module):
         self.use_mega_moe = (
             vllm_config.kernel_config.moe_backend == "deep_gemm_mega_moe"
         )
+        self._ds4_expert_coverage: dict[int, dict[tuple[str, str], set[int]]] = {}
         if self.use_mega_moe and not vllm_config.parallel_config.enable_expert_parallel:
             raise NotImplementedError(
                 "DeepSeek V4 MegaMoE currently requires expert parallel. "
@@ -1353,7 +1354,6 @@ class DeepseekV4Model(nn.Module):
         ]
         params_dict = dict(self.named_parameters())
         loaded_params: set[str] = set()
-        ds4_expert_coverage: dict[int, dict[tuple[str, str], set[int]]] = {}
 
         # TP for attention
         tp_size = get_tensor_model_parallel_world_size()
@@ -1419,7 +1419,6 @@ class DeepseekV4Model(nn.Module):
                         if success:
                             loaded_expert_param = name_mapped
                             self._record_ds4_expert_coverage(
-                                ds4_expert_coverage,
                                 name_mapped,
                                 expert_shard_id,
                                 expert_id,
@@ -1446,12 +1445,10 @@ class DeepseekV4Model(nn.Module):
                     weight_loader(param, loaded_weight)
                     loaded_params.add(name)
                     continue
-        self._audit_ds4_expert_coverage(ds4_expert_coverage)
         return loaded_params
 
     def _record_ds4_expert_coverage(
         self,
-        coverage: dict[int, dict[tuple[str, str], set[int]]],
         name_mapped: str,
         shard_id: str,
         expert_id: int,
@@ -1465,12 +1462,10 @@ class DeepseekV4Model(nn.Module):
             return
         layer_idx = int(match.group(1))
         tensor_kind = match.group(3)
-        layer_coverage = coverage.setdefault(layer_idx, {})
+        layer_coverage = self._ds4_expert_coverage.setdefault(layer_idx, {})
         layer_coverage.setdefault((tensor_kind, shard_id), set()).add(expert_id)
 
-    def _audit_ds4_expert_coverage(
-        self, coverage: dict[int, dict[tuple[str, str], set[int]]]
-    ) -> None:
+    def _audit_ds4_expert_coverage(self) -> None:
         if not envs.VLLM_DS4_DSV4_WEIGHT_AUDIT:
             return
         if self.use_mega_moe:
@@ -1502,7 +1497,7 @@ class DeepseekV4Model(nn.Module):
                 expected_experts = set(
                     torch.where(expert_map.detach().cpu() >= 0)[0].tolist()
                 )
-            layer_coverage = coverage.get(layer_idx, {})
+            layer_coverage = self._ds4_expert_coverage.get(layer_idx, {})
             for tensor_kind, shard_id in required_tensors:
                 loaded_experts = layer_coverage.get((tensor_kind, shard_id), set())
                 missing = sorted(expected_experts - loaded_experts)
@@ -1659,6 +1654,7 @@ class DeepseekV4ForCausalLM(nn.Module, SupportsPP):
     def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
         loader = AutoWeightsLoader(self, skip_substrs=["mtp."])
         loaded_params = loader.load_weights(weights, mapper=self.hf_to_vllm_mapper)
+        self.model._audit_ds4_expert_coverage()
         self._audit_loaded_weights(loaded_params)
         self.model.finalize_mega_moe_weights()
         return loaded_params
