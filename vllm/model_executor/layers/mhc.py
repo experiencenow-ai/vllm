@@ -8,7 +8,6 @@ import vllm.envs as envs
 from vllm.model_executor.custom_op import CustomOp
 
 
-@torch.compiler.disable
 def _maybe_check_hc_head_ref(
     got: torch.Tensor,
     residual: torch.Tensor,
@@ -19,6 +18,8 @@ def _maybe_check_hc_head_ref(
     hc_eps: float,
 ) -> None:
     if not envs.VLLM_DS4_DSV4_HC_HEAD_REF_CHECK:
+        return
+    if torch.compiler.is_compiling():
         return
     if torch.cuda.is_current_stream_capturing():
         return
@@ -42,7 +43,10 @@ def _maybe_check_hc_head_ref(
         diff = (got.detach().to(torch.float32) - ref.to(torch.float32)).abs()
         max_abs = float(diff.max().item()) if diff.numel() else 0.0
         mean_abs = float(diff.mean().item()) if diff.numel() else 0.0
-        finite = bool(torch.isfinite(got).all().item() and torch.isfinite(ref).all().item())
+        finite = bool(
+            torch.isfinite(got).all().item()
+            and torch.isfinite(ref).all().item()
+        )
     if (
         not finite
         or max_abs > envs.VLLM_DS4_DSV4_HC_HEAD_REF_ATOL
