@@ -25,6 +25,7 @@ If you only need to use the distributed environment without model/pipeline
 
 import contextlib
 import gc
+import os
 import pickle
 import weakref
 from collections import namedtuple
@@ -533,14 +534,22 @@ class GroupCoordinator:
 
         self_device_group = None
         self_cpu_group = None
+        ds4_pp_torch_pair_groups = (
+            group_name == "pp"
+            and envs.VLLM_DS4_PP_TORCH_PG_TENSOR_DICT
+            and envs.VLLM_DS4_PP_TORCH_PAIR_GROUPS
+        )
 
         from vllm.distributed.utils import get_cpu_distributed_timeout_or_none
 
         timeout = get_cpu_distributed_timeout_or_none()
 
         for ranks in group_ranks:
+            device_backend = (
+                "gloo" if ds4_pp_torch_pair_groups else torch_distributed_backend
+            )
             device_group = torch.distributed.new_group(
-                ranks, backend=torch_distributed_backend
+                ranks, backend=device_backend
             )
             # a group with `gloo` backend, to allow direct coordination between
             # processes through the CPU.
@@ -575,7 +584,16 @@ class GroupCoordinator:
         self.use_device_communicator = use_device_communicator
         self.device_communicator = None
         self.ds4_pp_striped_nccl_channel = None
-        if use_device_communicator and self.world_size > 1:
+        self.ds4_pp_torch_pair_groups: dict[int, ProcessGroup] = {}
+        if ds4_pp_torch_pair_groups and self.world_size > 1:
+            self.ds4_pp_torch_pair_groups = self._build_ds4_pp_torch_pair_groups(
+                torch_distributed_backend
+            )
+        if (
+            use_device_communicator
+            and self.world_size > 1
+            and not ds4_pp_torch_pair_groups
+        ):
             device_comm_cls = resolve_obj_by_qualname(
                 current_platform.get_device_communicator_cls()
             )
@@ -614,6 +632,98 @@ class GroupCoordinator:
             and self.device_communicator
             and getattr(self.device_communicator, "supports_tensor_dict", False)
         )
+
+    def _ds4_pp_pair_ifname(self, left_index: int, right_index: int) -> str:
+        if self.rank_in_group == left_index:
+            return os.environ.get("VLLM_DS4_PP_NEXT_SOCKET_IFNAME", "").strip()
+        if self.rank_in_group == right_index:
+            return os.environ.get("VLLM_DS4_PP_PREV_SOCKET_IFNAME", "").strip()
+        return ""
+
+    def _build_ds4_pp_torch_pair_groups(
+        self, torch_distributed_backend: str | Backend
+    ) -> dict[int, ProcessGroup]:
+        if str(torch_distributed_backend).lower() == "gloo":
+            raise RuntimeError(
+                "VLLM_DS4_PP_TORCH_PAIR_GROUPS requires a CUDA/NCCL "
+                "backend for adjacent PP tensor payload groups."
+            )
+        groups: dict[int, ProcessGroup] = {}
+        original_ifname = os.environ.get("NCCL_SOCKET_IFNAME")
+        try:
+            for left_index in range(self.world_size - 1):
+                right_index = left_index + 1
+                pair_ifname = self._ds4_pp_pair_ifname(left_index, right_index)
+                if self.rank_in_group in {left_index, right_index}:
+                    if not pair_ifname:
+                        raise RuntimeError(
+                            "VLLM_DS4_PP_TORCH_PAIR_GROUPS requires "
+                            "VLLM_DS4_PP_PREV_SOCKET_IFNAME or "
+                            "VLLM_DS4_PP_NEXT_SOCKET_IFNAME for every "
+                            "active PP edge rank."
+                        )
+                    os.environ["NCCL_SOCKET_IFNAME"] = pair_ifname
+                elif original_ifname is None:
+                    os.environ.pop("NCCL_SOCKET_IFNAME", None)
+                else:
+                    os.environ["NCCL_SOCKET_IFNAME"] = original_ifname
+                pair_ranks = [self.ranks[left_index], self.ranks[right_index]]
+                pair_group = torch.distributed.new_group(
+                    pair_ranks, backend=torch_distributed_backend
+                )
+                if self.rank_in_group == left_index:
+                    self._warm_ds4_pp_torch_pair_group(pair_group, pair_ifname)
+                    groups[right_index] = pair_group
+                elif self.rank_in_group == right_index:
+                    self._warm_ds4_pp_torch_pair_group(pair_group, pair_ifname)
+                    groups[left_index] = pair_group
+                torch.distributed.barrier(group=self.cpu_group)
+        finally:
+            if original_ifname is None:
+                os.environ.pop("NCCL_SOCKET_IFNAME", None)
+            else:
+                os.environ["NCCL_SOCKET_IFNAME"] = original_ifname
+        return groups
+
+    def _warm_ds4_pp_torch_pair_group(
+        self, pair_group: ProcessGroup, pair_ifname: str
+    ) -> None:
+        if not torch.cuda.is_available():
+            raise RuntimeError(
+                "VLLM_DS4_PP_TORCH_PAIR_GROUPS requires CUDA for NCCL "
+                "adjacent PP payload groups."
+            )
+        value = torch.tensor(
+            [self.rank_in_group + 1],
+            dtype=torch.float32,
+            device=self.device,
+        )
+        torch.distributed.all_reduce(
+            value, op=torch.distributed.ReduceOp.SUM, group=pair_group
+        )
+        torch.cuda.synchronize(self.device)
+        logger.info(
+            "DS4 PP torch pair group warmed: unique_name=%s pp_rank=%s "
+            "ifname=%s",
+            self.unique_name,
+            self.rank_in_group,
+            pair_ifname,
+        )
+
+    def _ds4_pp_torch_pair_group(self, peer: int) -> ProcessGroup:
+        if (
+            envs.VLLM_DS4_PP_TORCH_PG_TENSOR_DICT
+            and envs.VLLM_DS4_PP_TORCH_PAIR_GROUPS
+            and "pp" in self.unique_name
+        ):
+            pair_group = self.ds4_pp_torch_pair_groups.get(peer)
+            if pair_group is None:
+                raise RuntimeError(
+                    f"missing DS4 PP torch pair group for peer {peer}; "
+                    "refusing broad PP ProcessGroup fallback."
+                )
+            return pair_group
+        return self.device_group
 
     def create_mq_broadcaster(
         self, writer_rank=0, external_writer_handle=None, blocking=True
@@ -701,9 +811,10 @@ class GroupCoordinator:
         with torch.cuda.stream(comm_stream):
             metadata_tensor = _encode_ds4_pp_device_metadata(metadata_list, "cuda")
         if envs.VLLM_DS4_PP_TORCH_PG_TENSOR_DICT:
+            pair_group = self._ds4_pp_torch_pair_group(dst)
             with torch.cuda.stream(comm_stream):
                 handle = torch.distributed.isend(
-                    metadata_tensor, dst=self.ranks[dst], group=self.device_group
+                    metadata_tensor, dst=self.ranks[dst], group=pair_group
                 )
                 metadata_tensor.record_stream(comm_stream)
             handle.wait()
@@ -729,9 +840,10 @@ class GroupCoordinator:
                 _DS4_PP_DEVICE_METADATA_LEN, dtype=torch.int64, device="cuda"
             )
         if envs.VLLM_DS4_PP_TORCH_PG_TENSOR_DICT:
+            pair_group = self._ds4_pp_torch_pair_group(src)
             with torch.cuda.stream(comm_stream):
                 handle = torch.distributed.irecv(
-                    metadata_tensor, src=self.ranks[src], group=self.device_group
+                    metadata_tensor, src=self.ranks[src], group=pair_group
                 )
             handle.wait()
             return _decode_ds4_pp_device_metadata(metadata_tensor)
@@ -1364,7 +1476,7 @@ class GroupCoordinator:
             0 if all_gather_group is None else all_gather_group.rank_in_group
         )
 
-        group = self.device_group
+        group = self._ds4_pp_torch_pair_group(dst)
         metadata_group = self.cpu_group
 
         cpu_stage_cuda = self._should_cpu_stage_ds4_pp_tensor_dict()
@@ -1485,7 +1597,7 @@ class GroupCoordinator:
             0 if all_gather_group is None else all_gather_group.rank_in_group
         )
 
-        group = self.device_group
+        group = self._ds4_pp_torch_pair_group(src)
         metadata_group = self.cpu_group
 
         if self._should_use_ds4_pp_device_metadata():

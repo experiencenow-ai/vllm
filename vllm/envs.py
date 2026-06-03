@@ -153,6 +153,7 @@ if TYPE_CHECKING:
     VLLM_DS4_PP_PYNCCL_TENSOR_DICT: bool = False
     VLLM_DS4_PP_DIRECT_CUDA_TENSOR_DICT: bool = False
     VLLM_DS4_PP_TORCH_PG_TENSOR_DICT: bool = False
+    VLLM_DS4_PP_TORCH_PAIR_GROUPS: bool = False
     VLLM_DS4_PP_DIRECT_CUDA_MIN_BYTES: int = 262144
     VLLM_DS4_PP_DEVICE_TENSOR_DICT_METADATA: bool = False
     VLLM_DS4_PP_SEND_BACKLOG: int = 1
@@ -1417,6 +1418,12 @@ environment_variables: dict[str, Callable[[], Any]] = {
     ),
     "VLLM_DS4_PP_TORCH_PG_TENSOR_DICT": lambda: (
         os.environ.get("VLLM_DS4_PP_TORCH_PG_TENSOR_DICT", "0")
+        .strip()
+        .lower()
+        in ("1", "true", "yes", "on")
+    ),
+    "VLLM_DS4_PP_TORCH_PAIR_GROUPS": lambda: (
+        os.environ.get("VLLM_DS4_PP_TORCH_PAIR_GROUPS", "0")
         .strip()
         .lower()
         in ("1", "true", "yes", "on")
