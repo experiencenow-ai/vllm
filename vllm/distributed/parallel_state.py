@@ -27,6 +27,7 @@ import contextlib
 import gc
 import os
 import pickle
+import time
 import weakref
 from collections import namedtuple
 from collections.abc import Callable
@@ -543,20 +544,32 @@ class GroupCoordinator:
         from vllm.distributed.utils import get_cpu_distributed_timeout_or_none
 
         timeout = get_cpu_distributed_timeout_or_none()
+        if envs.VLLM_DS4_COMM_GROUP_TIMEOUT_SECONDS > 0:
+            timeout = timedelta(seconds=envs.VLLM_DS4_COMM_GROUP_TIMEOUT_SECONDS)
 
-        for ranks in group_ranks:
+        for group_index, ranks in enumerate(group_ranks):
             device_backend = (
                 "gloo" if ds4_pp_torch_pair_groups else torch_distributed_backend
             )
-            device_group = torch.distributed.new_group(
-                ranks, backend=device_backend
+            device_group = self._new_ds4_process_group(
+                ranks=ranks,
+                backend=device_backend,
+                timeout=timeout,
+                group_name=group_name,
+                group_index=group_index,
+                kind="device",
             )
             # a group with `gloo` backend, to allow direct coordination between
             # processes through the CPU.
-            with suppress_stdout():
-                cpu_group = torch.distributed.new_group(
-                    ranks, backend="gloo", timeout=timeout
-                )
+            cpu_group = self._new_ds4_process_group(
+                ranks=ranks,
+                backend="gloo",
+                timeout=timeout,
+                group_name=group_name,
+                group_index=group_index,
+                kind="cpu",
+                suppress_output=True,
+            )
             if self.rank in ranks:
                 self.ranks = ranks
                 self.world_size = len(ranks)
@@ -605,11 +618,9 @@ class GroupCoordinator:
             device_comm_cls = resolve_obj_by_qualname(
                 current_platform.get_device_communicator_cls()
             )
-            self.device_communicator = device_comm_cls(
-                cpu_group=self.cpu_group,
-                device=self.device,
-                device_group=self.device_group,
-                unique_name=self.unique_name,
+            self.device_communicator = self._new_ds4_device_communicator(
+                device_comm_cls=device_comm_cls,
+                group_name=group_name,
             )
             from vllm.distributed.ds4_high_speed_channel import (
                 build_ds4_pp_striped_nccl_channel,
@@ -640,6 +651,142 @@ class GroupCoordinator:
             and self.device_communicator
             and getattr(self.device_communicator, "supports_tensor_dict", False)
         )
+
+    def _ds4_group_timeout_s(self, timeout: timedelta | None) -> str:
+        if timeout is None:
+            return "<default>"
+        return f"{timeout.total_seconds():.1f}"
+
+    def _new_ds4_process_group(
+        self,
+        *,
+        ranks: list[int],
+        backend: str | Backend,
+        timeout: timedelta | None,
+        group_name: str,
+        group_index: int,
+        kind: str,
+        suppress_output: bool = False,
+    ) -> ProcessGroup:
+        trace = envs.VLLM_DS4_COMM_GROUP_TRACE
+        active = self.rank in ranks
+        backend_name = str(backend)
+        if trace:
+            logger.info(
+                "DS4 comm group create begin: name=%s unique=%s index=%s "
+                "kind=%s rank=%s active=%s ranks=%s backend=%s timeout_s=%s "
+                "nccl_if=%s gloo_if=%s vllm_host_ip=%s",
+                group_name,
+                self.unique_name,
+                group_index,
+                kind,
+                self.rank,
+                active,
+                ranks,
+                backend_name,
+                self._ds4_group_timeout_s(timeout),
+                os.environ.get("NCCL_SOCKET_IFNAME", "<unset>"),
+                os.environ.get("GLOO_SOCKET_IFNAME", "<unset>"),
+                os.environ.get("VLLM_HOST_IP", "<unset>"),
+            )
+        kwargs: dict[str, Any] = {"backend": backend}
+        if timeout is not None:
+            kwargs["timeout"] = timeout
+        started = time.monotonic()
+        try:
+            ctx = suppress_stdout() if suppress_output else nullcontext()
+            with ctx:
+                group = torch.distributed.new_group(ranks, **kwargs)
+        except Exception:
+            elapsed_s = (time.monotonic() - started)
+            logger.exception(
+                "DS4 comm group create failed: name=%s unique=%s index=%s "
+                "kind=%s rank=%s active=%s ranks=%s backend=%s elapsed_s=%.3f",
+                group_name,
+                self.unique_name,
+                group_index,
+                kind,
+                self.rank,
+                active,
+                ranks,
+                backend_name,
+                elapsed_s,
+            )
+            raise
+        elapsed_s = (time.monotonic() - started)
+        if trace or elapsed_s >= envs.VLLM_DS4_COMM_GROUP_WARN_SECONDS:
+            logger.info(
+                "DS4 comm group create done: name=%s unique=%s index=%s "
+                "kind=%s rank=%s active=%s ranks=%s backend=%s elapsed_s=%.3f",
+                group_name,
+                self.unique_name,
+                group_index,
+                kind,
+                self.rank,
+                active,
+                ranks,
+                backend_name,
+                elapsed_s,
+            )
+        return group
+
+    def _new_ds4_device_communicator(
+        self,
+        *,
+        device_comm_cls: type[DeviceCommunicatorBase],
+        group_name: str,
+    ) -> DeviceCommunicatorBase:
+        trace = envs.VLLM_DS4_COMM_GROUP_TRACE
+        started = time.monotonic()
+        if trace:
+            logger.info(
+                "DS4 device communicator create begin: name=%s unique=%s "
+                "rank=%s rank_in_group=%s world_size=%s cls=%s device=%s "
+                "nccl_if=%s gloo_if=%s skip_warmup=%s",
+                group_name,
+                self.unique_name,
+                self.rank,
+                self.rank_in_group,
+                self.world_size,
+                getattr(device_comm_cls, "__name__", str(device_comm_cls)),
+                self.device,
+                os.environ.get("NCCL_SOCKET_IFNAME", "<unset>"),
+                os.environ.get("GLOO_SOCKET_IFNAME", "<unset>"),
+                os.environ.get("VLLM_DS4_SKIP_PYNCCL_WARMUP_ALLREDUCE", "<unset>"),
+            )
+        try:
+            comm = device_comm_cls(
+                cpu_group=self.cpu_group,
+                device=self.device,
+                device_group=self.device_group,
+                unique_name=self.unique_name,
+            )
+        except Exception:
+            elapsed_s = (time.monotonic() - started)
+            logger.exception(
+                "DS4 device communicator create failed: name=%s unique=%s "
+                "rank=%s rank_in_group=%s world_size=%s elapsed_s=%.3f",
+                group_name,
+                self.unique_name,
+                self.rank,
+                self.rank_in_group,
+                self.world_size,
+                elapsed_s,
+            )
+            raise
+        elapsed_s = (time.monotonic() - started)
+        if trace or elapsed_s >= envs.VLLM_DS4_COMM_GROUP_WARN_SECONDS:
+            logger.info(
+                "DS4 device communicator create done: name=%s unique=%s "
+                "rank=%s rank_in_group=%s world_size=%s elapsed_s=%.3f",
+                group_name,
+                self.unique_name,
+                self.rank,
+                self.rank_in_group,
+                self.world_size,
+                elapsed_s,
+            )
+        return comm
 
     def _warm_ds4_pp_torch_device_group(self) -> None:
         if not torch.cuda.is_available():

@@ -5,6 +5,7 @@
 # ===================== import region =====================
 import os
 import threading
+import time
 
 import torch
 import torch.distributed as dist
@@ -120,7 +121,33 @@ class PyNcclCommunicator:
             tensor = torch.ByteTensor(list(self.unique_id.internal))
             ranks = dist.get_process_group_ranks(group)
             # arg `src` in `broadcast` is the global rank
+            trace = envs.VLLM_DS4_COMM_GROUP_TRACE
+            started = time.monotonic()
+            if trace:
+                logger.info(
+                    "DS4 PyNCCL unique-id broadcast begin: rank=%s "
+                    "rank_in_group=%s world_size=%s src=%s ranks=%s "
+                    "gloo_if=%s nccl_if=%s",
+                    dist.get_rank(),
+                    self.rank,
+                    self.world_size,
+                    ranks[0],
+                    ranks,
+                    os.environ.get("GLOO_SOCKET_IFNAME", "<unset>"),
+                    os.environ.get("NCCL_SOCKET_IFNAME", "<unset>"),
+                )
             dist.broadcast(tensor, src=ranks[0], group=group)
+            elapsed_s = (time.monotonic() - started)
+            if trace or elapsed_s >= envs.VLLM_DS4_COMM_GROUP_WARN_SECONDS:
+                logger.info(
+                    "DS4 PyNCCL unique-id broadcast done: rank=%s "
+                    "rank_in_group=%s world_size=%s src=%s elapsed_s=%.3f",
+                    dist.get_rank(),
+                    self.rank,
+                    self.world_size,
+                    ranks[0],
+                    elapsed_s,
+                )
             byte_list = tensor.tolist()
             for i, byte in enumerate(byte_list):
                 self.unique_id.internal[i] = byte
@@ -135,9 +162,31 @@ class PyNcclCommunicator:
         self.device = device
         # nccl communicator and stream will use this device
         with torch.accelerator.device_index(device.index):
+            trace = envs.VLLM_DS4_COMM_GROUP_TRACE
+            started = time.monotonic()
+            if trace:
+                logger.info(
+                    "DS4 PyNCCL ncclCommInitRank begin: rank_in_group=%s "
+                    "world_size=%s device=%s nccl_if=%s skip_warmup=%s",
+                    self.rank,
+                    self.world_size,
+                    device,
+                    os.environ.get("NCCL_SOCKET_IFNAME", "<unset>"),
+                    os.environ.get("VLLM_DS4_SKIP_PYNCCL_WARMUP_ALLREDUCE", "<unset>"),
+                )
             self.comm: ncclComm_t = self.nccl.ncclCommInitRank(
                 self.world_size, self.unique_id, self.rank
             )
+            elapsed_s = (time.monotonic() - started)
+            if trace or elapsed_s >= envs.VLLM_DS4_COMM_GROUP_WARN_SECONDS:
+                logger.info(
+                    "DS4 PyNCCL ncclCommInitRank done: rank_in_group=%s "
+                    "world_size=%s device=%s elapsed_s=%.3f",
+                    self.rank,
+                    self.world_size,
+                    device,
+                    elapsed_s,
+                )
 
             skip_warmup = os.getenv(
                 "VLLM_DS4_SKIP_PYNCCL_WARMUP_ALLREDUCE", ""

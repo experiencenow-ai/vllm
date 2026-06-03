@@ -163,6 +163,13 @@ if TYPE_CHECKING:
     VLLM_DS4_PP_SEND_BUFFER_MAX_BYTES: int = 1073741824
     VLLM_DS4_PP_GANTT_TRACE: bool = False
     VLLM_DS4_PP_GANTT_TRACE_EVERY: int = 1
+    VLLM_DS4_COMM_GROUP_TRACE: bool = False
+    VLLM_DS4_COMM_GROUP_TIMEOUT_SECONDS: int = 0
+    VLLM_DS4_COMM_GROUP_WARN_SECONDS: float = 10.0
+    VLLM_DS4_PP_EDGE_RAIL: str = ""
+    VLLM_DS4_PP_PREV_SOCKET_IFNAME: str = ""
+    VLLM_DS4_PP_NEXT_SOCKET_IFNAME: str = ""
+    VLLM_DS4_PP_SOCKET_IFNAME: str = ""
     VLLM_DS4_PP_PYNCCL_TENSOR_DICT_STRIPES: int = 1
     VLLM_DS4_PP_PYNCCL_TENSOR_DICT_STRIPE_MIN_BYTES: int = 1048576
     VLLM_DS4_PP_PYNCCL_P2P_CREDIT: bool = False
@@ -1361,6 +1368,32 @@ environment_variables: dict[str, Callable[[], Any]] = {
     ),
     "VLLM_DS4_ITERATION_TIMING_EVERY": lambda: int(
         os.environ.get("VLLM_DS4_ITERATION_TIMING_EVERY", "1")
+    ),
+    # DS4 distributed communicator startup tracing. Static route setup happens
+    # before launch, but process-local Torch/Gloo/NCCL/PyNCCL communicators are
+    # built inside vLLM on every start; these knobs make that unavoidable phase
+    # visible and bounded.
+    "VLLM_DS4_COMM_GROUP_TRACE": lambda: (
+        os.environ.get("VLLM_DS4_COMM_GROUP_TRACE", "0").strip().lower()
+        in ("1", "true", "yes", "on")
+    ),
+    "VLLM_DS4_COMM_GROUP_TIMEOUT_SECONDS": lambda: int(
+        os.environ.get("VLLM_DS4_COMM_GROUP_TIMEOUT_SECONDS", "0")
+    ),
+    "VLLM_DS4_COMM_GROUP_WARN_SECONDS": lambda: float(
+        os.environ.get("VLLM_DS4_COMM_GROUP_WARN_SECONDS", "10")
+    ),
+    "VLLM_DS4_PP_EDGE_RAIL": lambda: os.environ.get(
+        "VLLM_DS4_PP_EDGE_RAIL", ""
+    ),
+    "VLLM_DS4_PP_PREV_SOCKET_IFNAME": lambda: os.environ.get(
+        "VLLM_DS4_PP_PREV_SOCKET_IFNAME", ""
+    ),
+    "VLLM_DS4_PP_NEXT_SOCKET_IFNAME": lambda: os.environ.get(
+        "VLLM_DS4_PP_NEXT_SOCKET_IFNAME", ""
+    ),
+    "VLLM_DS4_PP_SOCKET_IFNAME": lambda: os.environ.get(
+        "VLLM_DS4_PP_SOCKET_IFNAME", ""
     ),
     # DS4 fail-closed integrity guard: validate first-rank scheduled input IDs
     # before H2D copy so a bad scheduler/staging lane produces an actionable
