@@ -13,7 +13,27 @@ service. It does not repair routes unless explicitly requested.
 
 ## Post-Power-Cycle Bootstrap
 
-Run from the vLLM checkout on `spark0`:
+Preferred: run from the Mac vLLM checkout after a Spark power cycle:
+
+```bash
+python tools/ds4_relaunch_spark_service.py \
+    --service dsv4-pp8 \
+    --static-fabric apply \
+    --static-fabric-edge-rail enp \
+    --static-fabric-route-scope all \
+    --setup-only
+```
+
+That performs the zero-drift setup path:
+
+```text
+git pull on every Spark
+build/static audits on every Spark
+apply the fixed fabric profile once
+exit without stopping or launching a model
+```
+
+Lower-level direct bootstrap, from the vLLM checkout on `spark0`:
 
 ```bash
 python tools/ds4_static_fabric.py \

@@ -6,9 +6,14 @@ routes through the repo checkout on each node:
 
 1. git pull the selected branch,
 2. run the repo build/validation step,
-3. stop old matching service processes with escalation,
-4. start all ranks with one coherent launch profile,
-5. poll the head service until it is ready.
+3. verify/apply the fixed static Spark fabric profile,
+4. stop old matching service processes with escalation,
+5. start all ranks with one coherent launch profile,
+6. poll the head service until it is ready.
+
+Use --setup-only after a Spark power cycle when the nodes need the checked-in
+repo, build validation, and static fabric restored, but no model should be
+started yet.
 """
 
 from __future__ import annotations
@@ -53,6 +58,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--skip-pull", action="store_true")
     parser.add_argument("--skip-build", action="store_true")
     parser.add_argument("--skip-stop", action="store_true")
+    parser.add_argument(
+        "--setup-only",
+        action="store_true",
+        help="pull/build and run static-fabric setup, then exit before stopping or launching service",
+    )
     parser.add_argument(
         "--static-fabric",
         choices=("off", "verify", "apply"),
@@ -526,6 +536,9 @@ def main() -> int:
     if not args.skip_build:
         run_on_nodes(args, nodes, lambda _rank, _node: build_command(args))
     run_static_fabric(args, nodes)
+    if args.setup_only:
+        print("setup-only complete: pull/build/static fabric finished; service was not stopped or launched")
+        return 0
     if not args.skip_stop:
         run_on_nodes(args, nodes, lambda _rank, _node: stop_command(args))
     run_parallel_start(args, nodes, log_tag)
