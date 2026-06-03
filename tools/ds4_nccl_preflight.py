@@ -238,20 +238,32 @@ def _temporary_nccl_socket_ifname(ifname: str):
             os.environ["NCCL_SOCKET_IFNAME"] = original
 
 
+def _new_nccl_pair_group(src: int, dst: int):
+    try:
+        return dist.new_group(
+            ranks=[src, dst],
+            backend="nccl",
+            use_local_synchronization=True,
+        )
+    except TypeError:
+        return dist.new_group(ranks=[src, dst], backend="nccl")
+
+
 def _make_torch_pair_group(rank: int, src: int, dst: int):
+    if rank not in {src, dst}:
+        return None
     peer = dst if rank == src else src
-    pair_ifname = _route_dev_for_rank(peer) if rank in {src, dst} else ""
+    pair_ifname = _route_dev_for_rank(peer)
     with _temporary_nccl_socket_ifname(pair_ifname):
-        pair_group = dist.new_group(ranks=[src, dst], backend="nccl")
-        if rank in {src, dst}:
-            value = torch.tensor([rank + 1], dtype=torch.float32, device="cuda")
-            print(
-                "DS4 NCCL P2P preflight torch pair group warmup: "
-                f"pair={src}-{dst} rank={rank} ifname={pair_ifname}",
-                file=sys.stderr,
-            )
-            dist.all_reduce(value, op=dist.ReduceOp.SUM, group=pair_group)
-            torch.cuda.synchronize()
+        pair_group = _new_nccl_pair_group(src, dst)
+        value = torch.tensor([rank + 1], dtype=torch.float32, device="cuda")
+        print(
+            "DS4 NCCL P2P preflight torch pair group warmup: "
+            f"pair={src}-{dst} rank={rank} ifname={pair_ifname}",
+            file=sys.stderr,
+        )
+        dist.all_reduce(value, op=dist.ReduceOp.SUM, group=pair_group)
+        torch.cuda.synchronize()
     return pair_group
 
 
