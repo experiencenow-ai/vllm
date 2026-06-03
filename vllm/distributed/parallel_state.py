@@ -270,6 +270,21 @@ class _Ds4CompositeHandle:
         self._handles = []
 
 
+class _Ds4TensorLifetimeHandle:
+    """Retain P2P payload tensors until their async work has completed."""
+
+    def __init__(self, handle: Handle, tensors: list[torch.Tensor]) -> None:
+        self._handle = handle
+        self._tensors = tensors
+
+    def is_completed(self) -> bool:
+        return self._handle.is_completed()
+
+    def wait(self) -> None:
+        self._handle.wait()
+        self._tensors = []
+
+
 def _split_tensor_dict(
     tensor_dict: dict[str, torch.Tensor | Any],
     *,
@@ -1889,7 +1904,7 @@ class GroupCoordinator:
             )
             if tensor.is_cuda:
                 tensor.record_stream(torch.cuda.current_stream(tensor.device))
-            handles.append(handle)
+            handles.append(_Ds4TensorLifetimeHandle(handle, [tensor]))
 
         cuda_handle = self._enqueue_ds4_pynccl_p2p(
             cuda_p2p_tensors,
