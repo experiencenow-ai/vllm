@@ -214,8 +214,8 @@ if [[ "$VLLM_DS4_PP_CPU_STAGED_TENSOR_DICT" =~ ^(1|true|TRUE|yes|YES|on|ON)$ ]];
   echo "DSV4 PP4xTP2xEP refuses VLLM_DS4_PP_CPU_STAGED_TENSOR_DICT=1. CPU-staged PP tensors are a slow fallback, not a production path." >&2
   exit 64
 fi
-export VLLM_DS4_PP_PYNCCL_TENSOR_DICT="${VLLM_DS4_PP_PYNCCL_TENSOR_DICT:-0}"
-export VLLM_DS4_PP_TORCH_PG_TENSOR_DICT="${VLLM_DS4_PP_TORCH_PG_TENSOR_DICT:-1}"
+export VLLM_DS4_PP_PYNCCL_TENSOR_DICT="${VLLM_DS4_PP_PYNCCL_TENSOR_DICT:-1}"
+export VLLM_DS4_PP_TORCH_PG_TENSOR_DICT="${VLLM_DS4_PP_TORCH_PG_TENSOR_DICT:-0}"
 if [[ ! "$VLLM_DS4_PP_TORCH_PG_TENSOR_DICT" =~ ^(1|true|TRUE|yes|YES|on|ON)$ && ! "$VLLM_DS4_PP_PYNCCL_TENSOR_DICT" =~ ^(1|true|TRUE|yes|YES|on|ON)$ ]]; then
   echo "DSV4 PP4xTP2xEP requires a CUDA PP tensor-dict path: VLLM_DS4_PP_TORCH_PG_TENSOR_DICT=1 or explicit VLLM_DS4_PP_PYNCCL_TENSOR_DICT=1." >&2
   exit 64
