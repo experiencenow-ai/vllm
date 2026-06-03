@@ -164,6 +164,10 @@ if TYPE_CHECKING:
     VLLM_DS4_PP_SEND_BUFFER_MAX_BYTES: int = 1073741824
     VLLM_DS4_PP_GANTT_TRACE: bool = False
     VLLM_DS4_PP_GANTT_TRACE_EVERY: int = 1
+    VLLM_DS4_PP_BOUNDARY_TRACE: bool = False
+    VLLM_DS4_PP_BOUNDARY_TRACE_EVERY: int = 1
+    VLLM_DS4_PP_BOUNDARY_TRACE_MAX_ELEMS: int = 4096
+    VLLM_DS4_PP_BOUNDARY_TRACE_SYNC: bool = True
     VLLM_DS4_COMM_GROUP_TRACE: bool = False
     VLLM_DS4_COMM_GROUP_TIMEOUT_SECONDS: int = 0
     VLLM_DS4_COMM_GROUP_WARN_SECONDS: float = 10.0
@@ -1516,6 +1520,20 @@ environment_variables: dict[str, Callable[[], Any]] = {
     ),
     "VLLM_DS4_PP_GANTT_TRACE_EVERY": lambda: int(
         os.environ.get("VLLM_DS4_PP_GANTT_TRACE_EVERY", "1")
+    ),
+    "VLLM_DS4_PP_BOUNDARY_TRACE": lambda: (
+        os.environ.get("VLLM_DS4_PP_BOUNDARY_TRACE", "0").strip().lower()
+        in ("1", "true", "yes", "on")
+    ),
+    "VLLM_DS4_PP_BOUNDARY_TRACE_EVERY": lambda: int(
+        os.environ.get("VLLM_DS4_PP_BOUNDARY_TRACE_EVERY", "1")
+    ),
+    "VLLM_DS4_PP_BOUNDARY_TRACE_MAX_ELEMS": lambda: int(
+        os.environ.get("VLLM_DS4_PP_BOUNDARY_TRACE_MAX_ELEMS", "4096")
+    ),
+    "VLLM_DS4_PP_BOUNDARY_TRACE_SYNC": lambda: (
+        os.environ.get("VLLM_DS4_PP_BOUNDARY_TRACE_SYNC", "1").strip().lower()
+        in ("1", "true", "yes", "on")
     ),
     "VLLM_DS4_PP_PYNCCL_TENSOR_DICT_STRIPES": lambda: int(
         os.environ.get("VLLM_DS4_PP_PYNCCL_TENSOR_DICT_STRIPES", "1")

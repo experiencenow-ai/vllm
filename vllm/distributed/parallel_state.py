@@ -108,6 +108,117 @@ for _dtype_name, _dtype_id in (
     if _dtype is not None:
         _DS4_PP_DTYPE_TO_ID[_dtype] = _dtype_id
 _DS4_PP_ID_TO_DTYPE = {v: k for k, v in _DS4_PP_DTYPE_TO_ID.items()}
+_DS4_PP_BOUNDARY_TRACE_COUNTS: dict[str, int] = {}
+
+
+def _ds4_format_float(value: float) -> str:
+    return f"{value:.6g}"
+
+
+def _ds4_tensor_boundary_stats(
+    key: str,
+    tensor: torch.Tensor,
+    *,
+    max_elems: int,
+    sync: bool,
+) -> str:
+    try:
+        if sync and tensor.is_cuda:
+            torch.cuda.synchronize(tensor.device)
+        detached = tensor.detach()
+        flat = detached.reshape(-1)
+        sample_count = min(max(0, max_elems), flat.numel())
+        base = (
+            f"{key}:shape={tuple(tensor.shape)} dtype={tensor.dtype} "
+            f"device={tensor.device} contiguous={tensor.is_contiguous()} "
+            f"numel={tensor.numel()} sample={sample_count}"
+        )
+        if sample_count == 0:
+            return f"{base} finite=0 mean=nan std=nan absmax=nan checksum=0 prefix=[]"
+        sample = flat[:sample_count].to(torch.float32)
+        finite = torch.isfinite(sample)
+        finite_count = int(finite.sum().item())
+        safe_sample = torch.where(finite, sample, torch.zeros_like(sample))
+        weights = torch.arange(
+            1,
+            sample_count + 1,
+            dtype=torch.float32,
+            device=safe_sample.device,
+        )
+        checksum = float((safe_sample * weights).sum().item())
+        prefix_count = min(8, sample_count)
+        prefix = [
+            _ds4_format_float(float(v))
+            for v in safe_sample[:prefix_count].cpu().tolist()
+        ]
+        if finite_count == 0:
+            return (
+                f"{base} finite=0 mean=nan std=nan absmax=nan "
+                f"checksum={_ds4_format_float(checksum)} prefix={prefix}"
+            )
+        finite_values = sample[finite]
+        mean = float(finite_values.mean().item())
+        if finite_count > 1:
+            std = float(finite_values.std(unbiased=False).item())
+        else:
+            std = 0.0
+        absmax = float(finite_values.abs().max().item())
+        return (
+            f"{base} finite={finite_count} mean={_ds4_format_float(mean)} "
+            f"std={_ds4_format_float(std)} absmax={_ds4_format_float(absmax)} "
+            f"checksum={_ds4_format_float(checksum)} prefix={prefix}"
+        )
+    except Exception as exc:
+        return f"{key}:stats_error={type(exc).__name__}:{exc}"
+
+
+def ds4_log_pp_tensor_dict_boundary(
+    tensor_dict: dict[str, torch.Tensor | Any],
+    *,
+    direction: str,
+    group_name: str,
+    rank: int,
+    world_size: int,
+    peer: int | None,
+) -> None:
+    if not envs.VLLM_DS4_PP_BOUNDARY_TRACE:
+        return
+    if not group_name.startswith("pp"):
+        return
+    every = max(1, int(envs.VLLM_DS4_PP_BOUNDARY_TRACE_EVERY))
+    count_key = f"{group_name}:{rank}:{direction}"
+    count = _DS4_PP_BOUNDARY_TRACE_COUNTS.get(count_key, 0) + 1
+    _DS4_PP_BOUNDARY_TRACE_COUNTS[count_key] = count
+    if (count - 1) % every != 0:
+        return
+    max_elems = max(0, int(envs.VLLM_DS4_PP_BOUNDARY_TRACE_MAX_ELEMS))
+    sync = bool(envs.VLLM_DS4_PP_BOUNDARY_TRACE_SYNC)
+    tensor_stats = []
+    for key in sorted(tensor_dict):
+        value = tensor_dict[key]
+        if isinstance(value, torch.Tensor):
+            tensor_stats.append(
+                _ds4_tensor_boundary_stats(
+                    key,
+                    value,
+                    max_elems=max_elems,
+                    sync=sync,
+                )
+            )
+    if not tensor_stats:
+        tensor_stats.append("no_tensors")
+    logger.warning(
+        "DS4 PP boundary trace: dir=%s group=%s rank=%d/%d peer=%s "
+        "index=%d keys=%s stats=[%s]",
+        direction,
+        group_name,
+        rank,
+        world_size,
+        "none" if peer is None else str(peer),
+        count,
+        ",".join(sorted(tensor_dict.keys())),
+        "; ".join(tensor_stats),
+    )
 
 
 def _encode_ds4_pp_device_metadata(
@@ -1896,6 +2007,7 @@ class GroupCoordinator:
 
         handles: list[Handle] = []
         cuda_p2p_tensors: list[torch.Tensor] = []
+        ds4_trace_tensors: dict[str, torch.Tensor | Any] = {}
         for key, tensor in zip(tensor_keys, tensor_list):
             if tensor.numel() == 0:
                 continue
@@ -1905,6 +2017,7 @@ class GroupCoordinator:
             ):
                 tensor = tensor.reshape(all_gather_size, -1)[all_gather_rank]
 
+            ds4_trace_tensors[key] = tensor
             if tensor.is_cuda and self._can_use_ds4_pynccl_tensor_dict():
                 cuda_p2p_tensors.append(tensor)
                 continue
@@ -1917,6 +2030,14 @@ class GroupCoordinator:
                 tensor.record_stream(torch.cuda.current_stream(tensor.device))
             handles.append(_Ds4TensorLifetimeHandle(handle, [tensor]))
 
+        ds4_log_pp_tensor_dict_boundary(
+            ds4_trace_tensors,
+            direction="send",
+            group_name=self.unique_name,
+            rank=self.rank_in_group,
+            world_size=self.world_size,
+            peer=dst,
+        )
         cuda_handle = self._enqueue_ds4_pynccl_p2p(
             cuda_p2p_tensors,
             dst,
@@ -1967,6 +2088,14 @@ class GroupCoordinator:
             handle.wait()
         for fn in postprocess:
             fn()
+        ds4_log_pp_tensor_dict_boundary(
+            tensor_dict,
+            direction="recv",
+            group_name=self.unique_name,
+            rank=self.rank_in_group,
+            world_size=self.world_size,
+            peer=src,
+        )
         return tensor_dict
 
     def irecv_tensor_dict(
