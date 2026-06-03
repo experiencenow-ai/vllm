@@ -222,27 +222,36 @@ ds4_200g_find_management_ifname()
   ip -o -4 addr show scope global 2>/dev/null | awk '$4 ~ /^10\.20\.0\./ { print $2; exit }'
 }
 
+ds4_200g_is_gloo_loopback_like_ifname()
+{
+  local ifname="$1"
+  [[ "$ifname" == "lo" || "$ifname" == ds4ring* ]]
+}
+
 ds4_200g_resolve_gloo_ifname()
 {
   local control_ifname="$1"
   local requested="${DS4_GLOO_SOCKET_IFNAME:-auto}"
   local ifname management_ifname world_size
+  world_size="${NNODES:-${WORLD_SIZE:-1}}"
   if [[ "$requested" != "auto" ]]; then
     IFS=',' read -r -a gloo_ifnames <<< "$requested"
     for ifname in "${gloo_ifnames[@]}"; do
       [[ -n "$ifname" ]] || ds4_200g_die "DS4_GLOO_SOCKET_IFNAME contains an empty interface"
       [[ -d "/sys/class/net/$ifname" ]] || ds4_200g_die "Gloo control interface '$ifname' does not exist"
+      if [[ "$world_size" -gt 1 ]] && ds4_200g_is_gloo_loopback_like_ifname "$ifname"; then
+        ds4_200g_die "multi-node Gloo control cannot bind to '$ifname'; use DS4_GLOO_SOCKET_IFNAME with the 10.20.0.x management interface"
+      fi
     done
     echo "$requested"
     return 0
   fi
-  world_size="${NNODES:-${WORLD_SIZE:-1}}"
-  if [[ "$control_ifname" != "lo" || "$world_size" -le 1 ]]; then
+  if [[ "$world_size" -le 1 ]] || ! ds4_200g_is_gloo_loopback_like_ifname "$control_ifname"; then
     echo "$control_ifname"
     return 0
   fi
   management_ifname="$(ds4_200g_find_management_ifname)"
-  [[ -n "$management_ifname" ]] || ds4_200g_die "multi-node Gloo control cannot bind to lo; set DS4_GLOO_SOCKET_IFNAME to a real cross-node control interface"
+  [[ -n "$management_ifname" ]] || ds4_200g_die "multi-node Gloo control cannot bind to '$control_ifname'; set DS4_GLOO_SOCKET_IFNAME to the 10.20.0.x management interface"
   echo "$management_ifname"
 }
 
