@@ -106,13 +106,28 @@ class FlashInferExperts(mk.FusedMoEExpertsModular):
             )
 
         if quant_config.weight_quant_dtype == "mxfp4":
-            # This value is used specifically for gpt-oss,
-            # Need to revisit this for other models
+            # GPT-OSS passes an explicit OpenAI SwiGLU alpha through its
+            # quant config. Other MXFP4 models such as DSV4 use standard
+            # silu(gate) * up, so their implicit alpha/beta must be 1.0.
+            gemm1_alpha = (
+                quant_config.gemm1_alpha
+                if quant_config.gemm1_alpha is not None
+                else 1.0
+            )
+            gemm1_beta = (
+                quant_config.gemm1_beta
+                if quant_config.gemm1_beta is not None
+                else 1.0
+            )
             self.gemm1_alpha = torch.tensor(
-                [1.702] * self.num_experts, dtype=torch.float32, device=self.device
+                [gemm1_alpha] * self.num_experts,
+                dtype=torch.float32,
+                device=self.device,
             )
             self.gemm1_beta = torch.tensor(
-                [1.0] * self.num_experts, dtype=torch.float32, device=self.device
+                [gemm1_beta] * self.num_experts,
+                dtype=torch.float32,
+                device=self.device,
             )
             if self.gemm1_clamp_limit is None:
                 self.gemm1_clamp_limit = torch.tensor(
