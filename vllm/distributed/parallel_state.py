@@ -2302,6 +2302,8 @@ def init_distributed_environment(
                 distributed_init_method,
             )
     if not torch.distributed.is_initialized():
+        if envs.VLLM_DS4_COMM_GROUP_TIMEOUT_SECONDS > 0:
+            timeout = timedelta(seconds=envs.VLLM_DS4_COMM_GROUP_TIMEOUT_SECONDS)
         logger.info(
             "world_size=%d rank=%d local_rank=%d distributed_init_method=%s backend=%s",
             world_size,
@@ -2324,13 +2326,55 @@ def init_distributed_environment(
             )
             backend = "gloo"
         # this backend is used for WORLD
-        torch.distributed.init_process_group(
-            backend=backend,
-            init_method=distributed_init_method,
-            world_size=world_size,
-            rank=rank,
-            timeout=timeout,
-        )
+        trace = envs.VLLM_DS4_COMM_GROUP_TRACE
+        started = time.monotonic()
+        if trace:
+            logger.info(
+                "DS4 world init begin: rank=%s local_rank=%s world_size=%s "
+                "backend=%s init_method=%s timeout_s=%s nccl_if=%s "
+                "gloo_if=%s vllm_host_ip=%s",
+                rank,
+                local_rank,
+                world_size,
+                backend,
+                distributed_init_method,
+                "<default>" if timeout is None else f"{timeout.total_seconds():.1f}",
+                os.environ.get("NCCL_SOCKET_IFNAME", "<unset>"),
+                os.environ.get("GLOO_SOCKET_IFNAME", "<unset>"),
+                os.environ.get("VLLM_HOST_IP", "<unset>"),
+            )
+        try:
+            torch.distributed.init_process_group(
+                backend=backend,
+                init_method=distributed_init_method,
+                world_size=world_size,
+                rank=rank,
+                timeout=timeout,
+            )
+        except Exception:
+            elapsed_s = (time.monotonic() - started)
+            logger.exception(
+                "DS4 world init failed: rank=%s local_rank=%s world_size=%s "
+                "backend=%s init_method=%s elapsed_s=%.3f",
+                rank,
+                local_rank,
+                world_size,
+                backend,
+                distributed_init_method,
+                elapsed_s,
+            )
+            raise
+        elapsed_s = (time.monotonic() - started)
+        if trace or elapsed_s >= envs.VLLM_DS4_COMM_GROUP_WARN_SECONDS:
+            logger.info(
+                "DS4 world init done: rank=%s local_rank=%s world_size=%s "
+                "backend=%s elapsed_s=%.3f",
+                rank,
+                local_rank,
+                world_size,
+                backend,
+                elapsed_s,
+            )
         if enable_elastic_ep:
             tp_pp_cpu_group = torch.distributed.new_group(
                 backend="gloo", timeout=timeout

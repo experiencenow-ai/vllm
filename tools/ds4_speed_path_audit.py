@@ -52,6 +52,7 @@ check("distributed startup trace envs are registered", "VLLM_DS4_COMM_GROUP_TRAC
 check("parallel_state has DS4 PP PyNCCL tensor-dict gate", "_can_use_ds4_pynccl_tensor_dict" in ps or "_can_use_ds4_pp_pynccl_tensor_dict" in ps)
 check("parallel_state logs Torch group creation begin/done", "DS4 comm group create begin" in ps and "DS4 comm group create done" in ps and "_new_ds4_process_group" in ps)
 check("parallel_state logs device communicator creation begin/done", "DS4 device communicator create begin" in ps and "DS4 device communicator create done" in ps and "_new_ds4_device_communicator" in ps)
+check("parallel_state logs and bounds initial world init", "DS4 world init begin" in ps and "DS4 world init done" in ps and "VLLM_DS4_COMM_GROUP_TIMEOUT_SECONDS" in ps and "init_process_group(" in ps)
 check("PyNCCL logs unique-id broadcast and ncclCommInitRank", "DS4 PyNCCL unique-id broadcast begin" in read("vllm/distributed/device_communicators/pynccl.py") and "DS4 PyNCCL ncclCommInitRank begin" in read("vllm/distributed/device_communicators/pynccl.py"))
 check("parallel_state has DS4 PP CUDA metadata header path", "_send_ds4_pp_device_metadata" in ps and "_recv_ds4_pp_device_metadata" in ps)
 check("parallel_state builds route-local adjacent torch NCCL pair groups", "_build_ds4_pp_torch_pair_groups" in ps and "VLLM_DS4_PP_NEXT_SOCKET_IFNAME" in ps and "VLLM_DS4_PP_PREV_SOCKET_IFNAME" in ps and "_warm_ds4_pp_torch_pair_group" in ps)
