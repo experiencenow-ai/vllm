@@ -18,6 +18,7 @@ def check(name: str, ok: bool) -> int:
 def main() -> int:
     envs = read("vllm/envs.py")
     worker = read("vllm/v1/worker/gpu_worker.py")
+    runner = read("vllm/v1/worker/gpu_model_runner.py")
     parallel = read("vllm/distributed/parallel_state.py")
     dsv4 = read("tools/ds4_launch_dsv4_flash_pp8.sh")
     qwen_fast = read("tools/ds4_launch_qwen27_nvfp4_pp8.sh")
@@ -85,6 +86,13 @@ def main() -> int:
         and "recv_post" in worker
         and "forward_done_intermediate" in worker
         and "send_enqueue_buffered" in worker,
+    )
+    failures += check(
+        "model runner lazily allocates PP receive intermediate buffers",
+        "def sync_and_gather_intermediate_tensors" in runner
+        and "if self.intermediate_tensors is None:" in runner
+        and "self.model.make_empty_intermediate_tensors" in runner
+        and "batch_size=self.max_num_tokens" in runner,
     )
     failures += check(
         "parallel_state keeps send waits stream-ordered in conveyor mode",
