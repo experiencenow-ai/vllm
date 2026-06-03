@@ -55,6 +55,7 @@ from vllm.model_executor.models.utils import (
     maybe_prefix,
 )
 from vllm.model_executor.utils import set_weight_attrs
+from vllm.logger import init_logger
 from vllm.models.deepseek_v4.nvidia.ops.attention import (
     DeepseekV4Indexer,
     DeepseekV4MLAModules,
@@ -64,6 +65,9 @@ from vllm.models.deepseek_v4.nvidia.ops.prepare_megamoe import prepare_megamoe_i
 from vllm.platforms import current_platform
 from vllm.sequence import IntermediateTensors
 from vllm.utils.torch_utils import direct_register_custom_op
+
+
+logger = init_logger(__name__)
 
 
 class DeepseekV4MLP(nn.Module):
@@ -1370,6 +1374,7 @@ class DeepseekV4Model(nn.Module):
                         and loaded_weight.dtype == torch.float8_e8m0fnu
                     ):
                         loaded_weight = loaded_weight.view(torch.uint8)
+                    loaded_expert_param = None
                     for mapping in expert_mapping:
                         param_name, weight_name, expert_id, expert_shard_id = mapping
                         if weight_name not in name:
@@ -1393,9 +1398,10 @@ class DeepseekV4Model(nn.Module):
                             return_success=True,
                         )
                         if success:
-                            name = name_mapped
+                            loaded_expert_param = name_mapped
                             break
-                    loaded_params.add(name_mapped)
+                    if loaded_expert_param is not None:
+                        loaded_params.add(loaded_expert_param)
                     continue
                 elif "attn_sink" in name:
                     if is_pp_missing_parameter(name, self):
@@ -1538,8 +1544,55 @@ class DeepseekV4ForCausalLM(nn.Module, SupportsPP):
     def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
         loader = AutoWeightsLoader(self, skip_substrs=["mtp."])
         loaded_params = loader.load_weights(weights, mapper=self.hf_to_vllm_mapper)
+        self._audit_loaded_weights(loaded_params)
         self.model.finalize_mega_moe_weights()
         return loaded_params
+
+    def _audit_loaded_weights(self, loaded_params: set[str]) -> None:
+        if not envs.VLLM_DS4_DSV4_WEIGHT_AUDIT:
+            return
+        pp_group = get_pp_group()
+        required = []
+        if pp_group.is_first_rank:
+            required.append("model.embed_tokens.weight")
+        if pp_group.is_last_rank:
+            required.extend(
+                [
+                    "lm_head.weight",
+                    "model.norm.weight",
+                    "model.hc_head_fn",
+                    "model.hc_head_base",
+                    "model.hc_head_scale",
+                ]
+            )
+        loaded_layers = set()
+        for name in loaded_params:
+            match = re.match(r"model\.layers\.(\d+)\.", name)
+            if match is not None:
+                loaded_layers.add(int(match.group(1)))
+        expected_layers = set(range(self.model.start_layer, self.model.end_layer))
+        missing_required = sorted(name for name in required if name not in loaded_params)
+        missing_layers = sorted(expected_layers - loaded_layers)
+        unexpected_layers = sorted(loaded_layers - expected_layers)
+        logger.info(
+            "DS4 DSV4 weight audit pp_rank=%d/%d layers=%d:%d "
+            "loaded_params=%d loaded_layers=%s required=%s",
+            pp_group.rank_in_group,
+            pp_group.world_size,
+            self.model.start_layer,
+            self.model.end_layer,
+            len(loaded_params),
+            sorted(loaded_layers),
+            required,
+        )
+        if missing_required or missing_layers or unexpected_layers:
+            raise RuntimeError(
+                "DS4 DSV4 weight audit failed: "
+                f"pp_rank={pp_group.rank_in_group} "
+                f"missing_required={missing_required} "
+                f"missing_layers={missing_layers} "
+                f"unexpected_layers={unexpected_layers}"
+            )
 
     def get_expert_mapping(self) -> list[tuple[str, str, int, str]]:
         return self.model.get_expert_mapping()
