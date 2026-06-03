@@ -150,9 +150,9 @@ CHECKS = [
         "@_compile_disabled",
     ),
     (
-        "DSV4 PP launcher defaults to resident3 RAM profile",
+        "DSV4 PP launcher defaults to max-kv RAM profile",
         "tools/ds4_launch_dsv4_flash_pp8.sh",
-        'DS4_DSV4_PIPELINE_RAM_PROFILE="${DS4_DSV4_PIPELINE_RAM_PROFILE:-resident3}"',
+        'DS4_DSV4_PIPELINE_RAM_PROFILE="${DS4_DSV4_PIPELINE_RAM_PROFILE:-max-kv}"',
     ),
     (
         "DSV4 resident3 KV cap is compact",
@@ -170,9 +170,14 @@ CHECKS = [
         "DSV4_KV_OFFLOADING_SIZE:=2",
     ),
     (
-        "DSV4 PP8 default shifts layers away from slow late ranks",
+        "DSV4 PP default derives balanced layer partition",
         "tools/ds4_launch_dsv4_flash_pp8.sh",
-        'DSV4_FLASH_PP_LAYER_PARTITION="8,8,8,8,8,1,1,1"',
+        "base=$((43 / NNODES))",
+    ),
+    (
+        "DSV4 PP default spreads partition remainder across early stages",
+        "tools/ds4_launch_dsv4_flash_pp8.sh",
+        "rem=$((43 % NNODES))",
     ),
     (
         "DSV4 throughput profiles cannot silently fall back to auto partition",
