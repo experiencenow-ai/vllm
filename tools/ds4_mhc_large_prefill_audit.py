@@ -34,6 +34,10 @@ checks = [
         and "residual_cur[start:end].copy_(" in tilelang,
     ),
     (
+        "mHC small-token fused path passes split count to TileLang kernel",
+        "split_k=n_splits" in tilelang and "n_splits=n_splits" not in tilelang,
+    ),
+    (
         "DSV4 PP launcher sets chunk default",
         'export VLLM_DS4_MHC_TILELANG_MAX_TOKENS="${VLLM_DS4_MHC_TILELANG_MAX_TOKENS:-8192}"'
         in dsv4_pp8,

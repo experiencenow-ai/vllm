@@ -245,6 +245,7 @@ def build_command(args: argparse.Namespace) -> str:
         "vllm/v1/engine/core.py "
         "vllm/v1/core/sched/scheduler.py "
         "vllm/v1/worker/gpu_model_runner.py "
+        "vllm/model_executor/kernels/mhc/tilelang.py "
         "vllm/models/deepseek_v4/nvidia/model.py "
         "vllm/config/compilation.py "
         "vllm/v1/attention/backends/mla/flashmla_sparse.py "
@@ -265,6 +266,7 @@ def build_command(args: argparse.Namespace) -> str:
         "tools/ds4_cohort_admission_audit.py "
         "tools/ds4_high_speed_channel_audit.py "
         "tools/ds4_pp_wave_admission_audit.py tools/ds4_speed_path_audit.py "
+        "tools/ds4_mhc_large_prefill_audit.py "
         "tools/ds4_nccl_p2p_bench_audit.py && "
         "bash -n tools/ds4_200g_guard.sh && "
         "bash -n tools/ds4_install_static_fabric_sudoers.sh && "
@@ -277,6 +279,7 @@ def build_command(args: argparse.Namespace) -> str:
         f"{py} tools/ds4_high_speed_channel_audit.py && "
         f"{py} tools/ds4_pp_wave_admission_audit.py && "
         f"{py} tools/ds4_speed_path_audit.py && "
+        f"{py} tools/ds4_mhc_large_prefill_audit.py && "
         f"{py} tools/ds4_nccl_p2p_bench_audit.py && "
         f"{py} tools/ds4_no_marlin_static_audit.py; "
         "fi",
