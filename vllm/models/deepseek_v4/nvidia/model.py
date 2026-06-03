@@ -1457,7 +1457,7 @@ class DeepseekV4Model(nn.Module):
         expert_id: int,
     ) -> None:
         match = re.match(
-            r"model\.layers\.(\d+)\.ffn\.experts\.(w13|w2)_"
+            r"(?:model\.)?layers\.(\d+)\.ffn\.experts\.(w13|w2)_"
             r"(weight_scale|weight)\b",
             name_mapped,
         )
