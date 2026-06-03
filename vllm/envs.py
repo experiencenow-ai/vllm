@@ -146,6 +146,7 @@ if TYPE_CHECKING:
     VLLM_DS4_ITERATION_TIMING_EVERY: int = 1
     VLLM_DS4_VALIDATE_INPUT_IDS: bool = False
     VLLM_DS4_DSV4_PP_FLUSH_HC_BOUNDARY: bool = False
+    VLLM_DS4_DSV4_LAYER_BACKEND: str = "cuda"
     VLLM_DS4_DSV4_HC_HEAD_BACKEND: str = "tilelang"
     VLLM_DS4_DSV4_WEIGHT_AUDIT: bool = False
     VLLM_DS4_MHC_TILELANG_MAX_TOKENS: int = 8192
@@ -1420,6 +1421,14 @@ environment_variables: dict[str, Callable[[], Any]] = {
         .lower()
         in ("1", "true", "yes", "on")
     ),
+    # DS4 DSV4 PP correctness diagnostic: production uses the fused CUDA layer
+    # path. The explicit native-debug mode closes HC state after each sublayer
+    # and is only for semantic isolation on tiny prompts.
+    "VLLM_DS4_DSV4_LAYER_BACKEND": lambda: os.environ.get(
+        "VLLM_DS4_DSV4_LAYER_BACKEND", "cuda"
+    )
+    .strip()
+    .lower(),
     # DS4 DSV4 PP correctness diagnostic: keep TileLang as the production
     # HC head backend, but allow an explicit Triton head isolation run. This is
     # not a silent fallback; production scripts should log the chosen backend.

@@ -1071,6 +1071,18 @@ class DeepseekV4DecoderLayer(nn.Module):
     ) -> tuple[
         torch.Tensor, torch.Tensor | None, torch.Tensor | None, torch.Tensor | None
     ]:
+        backend = envs.VLLM_DS4_DSV4_LAYER_BACKEND
+        if backend in ("", "cuda"):
+            pass
+        elif backend == "native-debug":
+            return self._forward_native(
+                x, positions, input_ids, post_mix, res_mix, residual
+            )
+        else:
+            raise RuntimeError(
+                "Unsupported VLLM_DS4_DSV4_LAYER_BACKEND="
+                f"{backend!r}; expected 'cuda' or 'native-debug'."
+            )
         if current_platform.is_rocm() or current_platform.is_xpu():
             return self._forward_native(
                 x, positions, input_ids, post_mix, res_mix, residual
@@ -1196,7 +1208,10 @@ class DeepseekV4Model(nn.Module):
         dtype: torch.dtype,
         device: torch.device,
     ) -> IntermediateTensors:
-        if envs.VLLM_DS4_DSV4_PP_FLUSH_HC_BOUNDARY:
+        if (
+            envs.VLLM_DS4_DSV4_PP_FLUSH_HC_BOUNDARY
+            or envs.VLLM_DS4_DSV4_LAYER_BACKEND == "native-debug"
+        ):
             return IntermediateTensors(
                 {
                     "hidden_states": torch.zeros(
@@ -1244,6 +1259,8 @@ class DeepseekV4Model(nn.Module):
         inputs_embeds: torch.Tensor | None = None,
     ) -> torch.Tensor | IntermediateTensors:
         flush_hc_boundary = envs.VLLM_DS4_DSV4_PP_FLUSH_HC_BOUNDARY
+        native_layer_debug = envs.VLLM_DS4_DSV4_LAYER_BACKEND == "native-debug"
+        close_hc_boundary = flush_hc_boundary or native_layer_debug
         if get_pp_group().is_first_rank:
             if inputs_embeds is not None:
                 hidden_states = inputs_embeds
@@ -1254,7 +1271,7 @@ class DeepseekV4Model(nn.Module):
         else:
             assert intermediate_tensors is not None
             hidden_states = intermediate_tensors["hidden_states"]
-            if flush_hc_boundary:
+            if close_hc_boundary:
                 residual, post_mix, res_mix = None, None, None
             else:
                 missing = {
@@ -1286,12 +1303,13 @@ class DeepseekV4Model(nn.Module):
         if (
             layer is not None
             and current_platform.is_cuda()
+            and not native_layer_debug
             and (get_pp_group().is_last_rank or flush_hc_boundary)
         ):
             hidden_states = layer.hc_post(hidden_states, residual, post_mix, res_mix)
 
         if not get_pp_group().is_last_rank:
-            if flush_hc_boundary:
+            if close_hc_boundary:
                 return IntermediateTensors({"hidden_states": hidden_states})
             if residual is None or post_mix is None or res_mix is None:
                 raise RuntimeError(
