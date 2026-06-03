@@ -41,6 +41,7 @@ checks = [
         "expert coverage is tracked by layer, tensor, shard, and expert id",
         "ds4_expert_coverage: dict[int, dict[tuple[str, str], set[int]]]" in model
         and "self._record_ds4_expert_coverage(" in model
+        and r"(?:model\.)?layers\." in model
         and "layer_coverage.setdefault((tensor_kind, shard_id), set()).add(expert_id)"
         in model,
     ),
