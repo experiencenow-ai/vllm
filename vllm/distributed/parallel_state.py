@@ -985,16 +985,19 @@ class GroupCoordinator:
         for left_index in range(self.world_size - 1):
             right_index = left_index + 1
             active = self.rank_in_group in {left_index, right_index}
+            pair_ifname = self._ds4_pp_pair_ifname(left_index, right_index)
             pair_ranks = [self.ranks[left_index], self.ranks[right_index]]
             logger.info(
                 "DS4 PP PyNCCL pair communicator create begin: unique_name=%s "
-                "pp_rank=%s pair=%s-%s active=%s ranks=%s nccl_ifnames=%s",
+                "pp_rank=%s pair=%s-%s active=%s ranks=%s pair_ifname=%s "
+                "previous_nccl_ifnames=%s",
                 self.unique_name,
                 self.rank_in_group,
                 left_index,
                 right_index,
                 active,
                 pair_ranks,
+                pair_ifname or "<inactive>",
                 os.environ.get("NCCL_SOCKET_IFNAME", "<unset>"),
             )
             torch.distributed.barrier(group=self.cpu_group)
@@ -1008,29 +1011,42 @@ class GroupCoordinator:
                 suppress_output=True,
             )
             if active:
+                if not pair_ifname:
+                    raise RuntimeError(
+                        "VLLM_DS4_PP_PYNCCL_PAIR_COMMUNICATORS requires "
+                        "VLLM_DS4_PP_PREV_SOCKET_IFNAME or "
+                        "VLLM_DS4_PP_NEXT_SOCKET_IFNAME for every active PP "
+                        f"edge rank. pp_rank={self.rank_in_group} "
+                        f"pair={left_index}-{right_index}"
+                    )
                 started = time.monotonic()
-                communicator = PyNcclCommunicator(
-                    cpu_pair_group,
-                    self.device,
-                )
+                with self._ds4_pp_pair_nccl_socket_ifname(pair_ifname):
+                    communicator = PyNcclCommunicator(
+                        cpu_pair_group,
+                        self.device,
+                    )
+                    self._warm_ds4_pp_pynccl_pair_communicator(
+                        communicator,
+                        right_index
+                        if self.rank_in_group == left_index
+                        else left_index,
+                    )
                 peer_index = (
                     right_index
                     if self.rank_in_group == left_index
                     else left_index
                 )
                 self.ds4_pp_pynccl_pair_cpu_groups[peer_index] = cpu_pair_group
-                self._warm_ds4_pp_pynccl_pair_communicator(
-                    communicator,
-                    peer_index,
-                )
                 communicators[peer_index] = communicator
                 elapsed_s = time.monotonic() - started
                 logger.info(
                     "DS4 PP PyNCCL pair communicator create done: "
-                    "unique_name=%s pp_rank=%s peer=%s elapsed_s=%.3f",
+                    "unique_name=%s pp_rank=%s peer=%s pair_ifname=%s "
+                    "elapsed_s=%.3f",
                     self.unique_name,
                     self.rank_in_group,
                     peer_index,
+                    pair_ifname,
                     elapsed_s,
                 )
             elif cpu_pair_group != torch.distributed.GroupMember.NON_GROUP_MEMBER:
