@@ -76,6 +76,15 @@ def _hc_head_torch(
     return out.to(torch.bfloat16).view(*residual.shape[:-2], hidden_size)
 
 
+def _rms_norm_torch(x, weight, eps: float):
+    import torch
+
+    x_f = x.to(torch.float32)
+    w_f = weight.to(torch.float32)
+    scale = torch.rsqrt(x_f.square().mean(dim=-1, keepdim=True) + eps)
+    return (x_f * scale * w_f).to(torch.bfloat16)
+
+
 def _run_case(
     num_tokens: int,
     hidden_size: int,
@@ -109,6 +118,10 @@ def _run_case(
     head_scale = torch.randn(1, dtype=torch.float32, device=device).abs() + 0.25
     hc_base = torch.randn(hc_mult3, dtype=torch.float32, device=device) * 0.1
     head_base = torch.randn(hc_mult, dtype=torch.float32, device=device) * 0.1
+    norm_weight = (
+        torch.randn(hidden_size, dtype=torch.bfloat16, device=device).abs() + 0.25
+    )
+    norm_eps = 1.0e-6
 
     post_mix, comb_mix, layer_input = torch.ops.vllm.mhc_pre_tilelang(
         residual,
@@ -135,6 +148,21 @@ def _run_case(
         hc_post_alpha,
         sinkhorn_repeat,
     )
+    post_mix_norm, comb_mix_norm, layer_input_norm = torch.ops.vllm.mhc_pre_tilelang(
+        residual,
+        fn,
+        hc_scale,
+        hc_base,
+        rms_eps,
+        hc_eps,
+        sinkhorn_eps,
+        hc_post_alpha,
+        sinkhorn_repeat,
+        1,
+        norm_weight,
+        norm_eps,
+    )
+    ref_input_norm = _rms_norm_torch(ref_input, norm_weight, norm_eps)
 
     post_out = torch.ops.vllm.mhc_post_tilelang(x, residual, post_mix, comb_mix)
     ref_post_out = mhc_kernels.mhc_post_torch(x, residual, post_mix, comb_mix)
@@ -157,6 +185,29 @@ def _run_case(
         None,
         0.0,
     )
+    (
+        fused_res_norm,
+        fused_post_norm,
+        fused_comb_norm,
+        fused_input_norm,
+    ) = torch.ops.vllm.mhc_fused_post_pre_tilelang(
+        x,
+        residual,
+        post_mix,
+        comb_mix,
+        fn,
+        hc_scale,
+        hc_base,
+        rms_eps,
+        hc_eps,
+        sinkhorn_eps,
+        hc_post_alpha,
+        sinkhorn_repeat,
+        1,
+        1,
+        norm_weight,
+        norm_eps,
+    )
     ref_fused_res = mhc_kernels.mhc_post_torch(x, residual, post_mix, comb_mix)
     ref_fused_post, ref_fused_comb, ref_fused_input = mhc_kernels.mhc_pre_torch(
         ref_fused_res,
@@ -169,6 +220,7 @@ def _run_case(
         hc_post_alpha,
         sinkhorn_repeat,
     )
+    ref_fused_input_norm = _rms_norm_torch(ref_fused_input, norm_weight, norm_eps)
 
     head_tilelang = torch.empty(
         num_tokens, hidden_size, dtype=torch.bfloat16, device=device
@@ -213,11 +265,26 @@ def _run_case(
         _metric(f"{prefix}:mhc_pre:post_mix", post_mix, ref_post),
         _metric(f"{prefix}:mhc_pre:comb_mix", comb_mix, ref_comb),
         _metric(f"{prefix}:mhc_pre:layer_input", layer_input, ref_input),
+        _metric(f"{prefix}:mhc_pre_norm:post_mix", post_mix_norm, ref_post),
+        _metric(f"{prefix}:mhc_pre_norm:comb_mix", comb_mix_norm, ref_comb),
+        _metric(
+            f"{prefix}:mhc_pre_norm:layer_input",
+            layer_input_norm,
+            ref_input_norm,
+        ),
         _metric(f"{prefix}:mhc_post", post_out, ref_post_out),
         _metric(f"{prefix}:mhc_fused:residual", fused_res, ref_fused_res),
         _metric(f"{prefix}:mhc_fused:post_mix", fused_post, ref_fused_post),
         _metric(f"{prefix}:mhc_fused:comb_mix", fused_comb, ref_fused_comb),
         _metric(f"{prefix}:mhc_fused:layer_input", fused_input, ref_fused_input),
+        _metric(f"{prefix}:mhc_fused_norm:residual", fused_res_norm, ref_fused_res),
+        _metric(f"{prefix}:mhc_fused_norm:post_mix", fused_post_norm, ref_fused_post),
+        _metric(f"{prefix}:mhc_fused_norm:comb_mix", fused_comb_norm, ref_fused_comb),
+        _metric(
+            f"{prefix}:mhc_fused_norm:layer_input",
+            fused_input_norm,
+            ref_fused_input_norm,
+        ),
         _metric(f"{prefix}:hc_head_tilelang", head_tilelang, ref_head),
     ]
     if head_triton is not None:
