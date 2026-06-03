@@ -116,6 +116,12 @@ def _ds4_check_hash_softplus_sqrt_against_torch(
     max_tokens = envs.VLLM_DS4_DSV4_HASH_ROUTER_REF_MAX_TOKENS
     if max_tokens <= 0 or gating_output.shape[0] > max_tokens:
         return
+    if torch.cuda.is_available():
+        try:
+            if torch.cuda.is_current_stream_capturing():
+                return
+        except RuntimeError:
+            return
     ref_weights = torch.empty_like(topk_weights)
     ref_indices = torch.empty_like(topk_indices)
     token_expert_indices = torch.empty_like(
