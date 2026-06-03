@@ -19,6 +19,7 @@ def check(name: str, ok: bool) -> int:
 def main() -> int:
     envs = read("vllm/envs.py")
     flashmla = read("vllm/models/deepseek_v4/nvidia/flashmla.py")
+    indexer = read("vllm/model_executor/layers/sparse_attn_indexer.py")
     launcher = read("tools/ds4_launch_dsv4_flash_pp8.sh")
     failures = 0
     for name in (
@@ -92,6 +93,20 @@ def main() -> int:
         and "matmul_sparse_mla_attention_with_sink(" in flashmla
         and "valid_tokens = offsets < combined_lens.view(-1, 1)" in flashmla
         and "kv_flat.index_select" in flashmla,
+    )
+    failures += check(
+        "prefill indexer localizes packed topk rows before attention",
+        "_localize_prefill_topk_indices_kernel" in indexer
+        and "idx - start" in indexer
+        and "idx >= start" in indexer
+        and "idx < end" in indexer,
+    )
+    failures += check(
+        "direct native topk path cannot bypass localization",
+        "used_direct_topk = fp8_fp4_mqa_topk_indices(" in indexer
+        and "if not used_direct_topk:" in indexer
+        and "_localize_prefill_topk_indices(" in indexer
+        and "continue\n            if current_platform.is_xpu()" not in indexer,
     )
     failures += check(
         "launcher logs prefill backend",
