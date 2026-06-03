@@ -41,12 +41,12 @@ checks: list[tuple[str, bool]] = [
         "VLLM_DS4_PP_PYNCCL_TENSOR_DICT" in dsv4,
     ),
     (
-        "DSV4 launcher keeps PyNCCL tensor-dict opt-in",
-        'VLLM_DS4_PP_PYNCCL_TENSOR_DICT:-0' in dsv4,
+        "DSV4 launcher defaults to PyNCCL tensor-dict path",
+        'VLLM_DS4_PP_PYNCCL_TENSOR_DICT:-1' in dsv4,
     ),
     (
-        "DSV4 launcher defaults to measured torch ProcessGroup tensor-dict path",
-        'VLLM_DS4_PP_TORCH_PG_TENSOR_DICT:-1' in dsv4,
+        "DSV4 launcher keeps torch ProcessGroup tensor-dict diagnostic opt-in",
+        'VLLM_DS4_PP_TORCH_PG_TENSOR_DICT:-0' in dsv4,
     ),
     (
         "DSV4 launcher stripes tensor-dict transfers by default",
