@@ -462,8 +462,6 @@ def print_env(args: argparse.Namespace) -> int:
         ifnames = f"{prev_dev},{next_dev}"
     env = {
         "DS4_200G_IFNAME": ifnames,
-        "DS4_200G_SOCKET_IFNAME": ifnames,
-        "DS4_200G_NCCL_IFNAME": ifnames,
         "DS4_CONTROL_IFNAME": args.loopback_dev,
         "DS4_GLOO_SOCKET_IFNAME": args.gloo_ifname,
         "DS4_200G_ADVERTISE_LOOPBACK": "1",

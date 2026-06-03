@@ -238,7 +238,8 @@ checks = [
     ),
     (
         "DS4 200G guard binds NCCL socket to real 200G NICs and hardfails speed fallback",
-        "socket_ifname=\"${DS4_200G_SOCKET_IFNAME:-$ifnames_csv}\"" in guard
+        'DS4_200G_SOCKET_IFNAME:-}" == "$original_ifnames_csv"' in guard
+        and 'socket_ifname="$ifnames_csv"' in guard
         and "ds4_200g_require_link_200g \"$ifname\" \"NCCL socket\"" in guard
         and "ds4_200g_check_or_export NCCL_ALGO \"Ring\"" in guard
         and "DS4_200G_VERIFIED_ROUTED_LOOPBACK_NCCL" not in guard

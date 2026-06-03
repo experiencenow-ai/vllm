@@ -274,13 +274,14 @@ ds4_require_routed_loopback_over_200g()
 
 ds4_require_200g_fabric()
 {
-  local ifname ifnames_csv usable_ifnames_csv control_ifname gloo_ifname socket_ifname speed carrier local_ip bound_dev route_dev hca hcas_csv advertise_ip advertise_bound nccl_transport nccl_ifname nccl_ifnames_csv usable_nccl_ifnames_csv nccl_hcas_csv
+  local ifname ifnames_csv original_ifnames_csv usable_ifnames_csv control_ifname gloo_ifname socket_ifname speed carrier local_ip bound_dev route_dev hca hcas_csv advertise_ip advertise_bound nccl_transport nccl_ifname nccl_ifnames_csv usable_nccl_ifnames_csv nccl_hcas_csv
   : "${NODE_RANK:?set NODE_RANK before ds4_require_200g_fabric}"
   : "${HEAD_ADDR:?set HEAD_ADDR before ds4_require_200g_fabric}"
   if [[ -z "${DS4_200G_IFNAME:-}" ]]; then
     ds4_200g_die "DS4_200G_IFNAME is unset; set it to this rank's 200GbE/RoCE interface list"
   fi
   ifnames_csv="$DS4_200G_IFNAME"
+  original_ifnames_csv="$ifnames_csv"
   hcas_csv=""
   usable_ifnames_csv=""
   local_ip=""
@@ -313,7 +314,11 @@ ds4_require_200g_fabric()
   ifnames_csv="$usable_ifnames_csv"
   export DS4_200G_EFFECTIVE_IFNAME="$ifnames_csv"
   [[ -n "$local_ip" ]] || ds4_200g_die "selected interface list has no IPv4 fabric address"
-  nccl_ifnames_csv="${DS4_200G_NCCL_IFNAME:-$ifnames_csv}"
+  if [[ -z "${DS4_200G_NCCL_IFNAME:-}" || "${DS4_200G_NCCL_IFNAME:-}" == "$original_ifnames_csv" ]]; then
+    nccl_ifnames_csv="$ifnames_csv"
+  else
+    nccl_ifnames_csv="$DS4_200G_NCCL_IFNAME"
+  fi
   nccl_hcas_csv=""
   usable_nccl_ifnames_csv=""
   IFS=',' read -r -a nccl_ifnames <<< "$nccl_ifnames_csv"
@@ -359,7 +364,11 @@ ds4_require_200g_fabric()
   case "$nccl_transport" in
     socket)
       export DS4_200G_NCCL_TRANSPORT="socket"
-      socket_ifname="${DS4_200G_SOCKET_IFNAME:-$ifnames_csv}"
+      if [[ -z "${DS4_200G_SOCKET_IFNAME:-}" || "${DS4_200G_SOCKET_IFNAME:-}" == "$original_ifnames_csv" ]]; then
+        socket_ifname="$ifnames_csv"
+      else
+        socket_ifname="$DS4_200G_SOCKET_IFNAME"
+      fi
       IFS=',' read -r -a socket_ifnames <<< "$socket_ifname"
       for ifname in "${socket_ifnames[@]}"; do
         [[ -n "$ifname" ]] || ds4_200g_die "DS4_200G_SOCKET_IFNAME contains an empty interface"
