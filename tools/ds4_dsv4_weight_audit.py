@@ -32,6 +32,13 @@ checks = [
         and "model.hc_head_scale" in model,
     ),
     (
+        "final lm_head uses DeepSeek reference fp32 logits path",
+        "params_dtype=torch.float32" in model
+        and "hidden_states.to(torch.float32)" in model
+        and "final PP rank must keep " in model
+        and "lm_head.weight in torch.float32" in model,
+    ),
+    (
         "owned local layer coverage is checked",
         "expected_layers = set(range(self.model.start_layer, self.model.end_layer))"
         in model
