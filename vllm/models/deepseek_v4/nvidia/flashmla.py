@@ -1112,6 +1112,17 @@ class DeepseekV4FlashMLASparseImpl(DeepseekV4SparseMLAAttentionImpl):
             output=output,
             num_heads=layer.num_heads,
         )
+        _ds4_reference_check_sparse_mla_prefill(
+            layer_prefix=layer.prefix,
+            q=q,
+            kv_flat=kv_flat,
+            combined_indices=combined_indices,
+            combined_lens=combined_lens,
+            attn_sink=layer.attn_sink,
+            scale=layer.scale,
+            output=output,
+            num_heads=layer.num_heads,
+        )
 
     @classmethod
     def _forward_decode(
