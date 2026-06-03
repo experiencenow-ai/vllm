@@ -663,20 +663,17 @@ class GroupCoordinator:
                             "active PP edge rank."
                         )
                     os.environ["NCCL_SOCKET_IFNAME"] = pair_ifname
-                elif original_ifname is None:
-                    os.environ.pop("NCCL_SOCKET_IFNAME", None)
-                else:
-                    os.environ["NCCL_SOCKET_IFNAME"] = original_ifname
-                pair_ranks = [self.ranks[left_index], self.ranks[right_index]]
-                pair_group = torch.distributed.new_group(
-                    pair_ranks, backend=torch_distributed_backend
-                )
-                if self.rank_in_group == left_index:
+                    pair_ranks = [self.ranks[left_index], self.ranks[right_index]]
+                    pair_group = self._new_ds4_pp_torch_pair_group(
+                        pair_ranks, torch_distributed_backend
+                    )
                     self._warm_ds4_pp_torch_pair_group(pair_group, pair_ifname)
-                    groups[right_index] = pair_group
-                elif self.rank_in_group == right_index:
-                    self._warm_ds4_pp_torch_pair_group(pair_group, pair_ifname)
-                    groups[left_index] = pair_group
+                    peer_index = (
+                        right_index
+                        if self.rank_in_group == left_index
+                        else left_index
+                    )
+                    groups[peer_index] = pair_group
                 torch.distributed.barrier(group=self.cpu_group)
         finally:
             if original_ifname is None:
@@ -684,6 +681,20 @@ class GroupCoordinator:
             else:
                 os.environ["NCCL_SOCKET_IFNAME"] = original_ifname
         return groups
+
+    def _new_ds4_pp_torch_pair_group(
+        self, pair_ranks: list[int], torch_distributed_backend: str | Backend
+    ) -> ProcessGroup:
+        try:
+            return torch.distributed.new_group(
+                pair_ranks,
+                backend=torch_distributed_backend,
+                use_local_synchronization=True,
+            )
+        except TypeError:
+            return torch.distributed.new_group(
+                pair_ranks, backend=torch_distributed_backend
+            )
 
     def _warm_ds4_pp_torch_pair_group(
         self, pair_group: ProcessGroup, pair_ifname: str
