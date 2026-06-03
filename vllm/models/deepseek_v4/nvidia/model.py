@@ -1191,16 +1191,15 @@ class DeepseekV4Model(nn.Module):
         dtype: torch.dtype,
         device: torch.device,
     ) -> IntermediateTensors:
-        # PP intermediate tensors carry the multi-stream hidden_states
-        # of shape (num_tokens, hc_mult, hidden_size) — V4 expands the
-        # token embedding to hc_mult streams before the first decoder
-        # layer and keeps that shape until hc_head() collapses it. The
-        # hyper-connection residual/mix tensors are also carried across PP
-        # boundaries so a boundary does not force an extra standalone hc_post.
+        # PP intermediate tensors carry flat per-layer hidden states plus
+        # the multi-stream hyper-connection residual/mix state. This matches
+        # MHCFusedPostPreOp: x is (num_tokens, hidden_size), while residual is
+        # (num_tokens, hc_mult, hidden_size). Only the final rank applies
+        # standalone hc_post before hc_head().
         return IntermediateTensors(
             {
                 "hidden_states": torch.zeros(
-                    (batch_size, self.hc_mult, self.config.hidden_size),
+                    (batch_size, self.config.hidden_size),
                     dtype=dtype,
                     device=device,
                 ),
