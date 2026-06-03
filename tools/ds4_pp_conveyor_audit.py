@@ -69,6 +69,12 @@ def main() -> int:
         and "not self._ds4_pp_overlap_send_enabled()" in worker,
     )
     failures += check(
+        "worker drains CPU-staged PP sends immediately",
+        "if envs.VLLM_DS4_PP_CPU_STAGED_TENSOR_DICT and send_handles:" in worker
+        and "send_wait_cpu_staged" in worker
+        and "send_handles = []" in worker,
+    )
+    failures += check(
         "worker blocks only when a reusable send buffer slot is still busy",
         "send_buffer_wait" in worker
         and "_wait_pp_send_handles(slot.handles)" in worker,

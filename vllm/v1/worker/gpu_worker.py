@@ -1329,6 +1329,14 @@ class Worker(WorkerBase):
             all_gather_group=get_tp_group(),
             all_gather_tensors=all_gather_tensors,
         )
+        if envs.VLLM_DS4_PP_CPU_STAGED_TENSOR_DICT and send_handles:
+            ds4_prev_send_wait_ms += self._wait_pp_send_handles(send_handles)
+            self._ds4_pp_gantt(
+                "send_wait_cpu_staged",
+                scheduler_output,
+                handles=len(send_handles),
+            )
+            send_handles = []
         if send_handles:
             if send_slot is not None:
                 send_slot.handles = send_handles
