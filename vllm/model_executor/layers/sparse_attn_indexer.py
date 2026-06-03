@@ -7,6 +7,7 @@ import triton
 import triton.language as tl
 
 from vllm import _custom_ops as ops
+from vllm import envs
 from vllm._aiter_ops import rocm_aiter_ops
 from vllm.compilation.breakable_cudagraph import eager_break_during_capture
 from vllm.forward_context import get_forward_context
@@ -88,6 +89,66 @@ def _localize_prefill_topk_indices(
         topk_tokens,
         BLOCK_TOPK=block_topk,
     )
+
+
+@torch.compiler.disable
+def _validate_prefill_topk_indices_are_local(
+    topk_indices: torch.Tensor,
+    cu_seqlen_ks: torch.Tensor,
+    cu_seqlen_ke: torch.Tensor,
+    topk_tokens: int,
+    layer_prefix: str,
+    source: str,
+) -> None:
+    if not (
+        envs.VLLM_DS4_DSV4_SPARSE_MLA_VALIDATE
+        or envs.VLLM_DS4_DSV4_SPARSE_MLA_TRACE
+    ):
+        return
+    if topk_tokens <= 0 or topk_indices.numel() == 0:
+        return
+    if current_platform.is_cuda() and torch.cuda.is_current_stream_capturing():
+        return
+    rows = topk_indices.shape[0]
+    width = min(topk_tokens, topk_indices.shape[1])
+    view = topk_indices[:rows, :width]
+    valid = view >= 0
+    if valid.any():
+        local_lens = (cu_seqlen_ke[:rows] - cu_seqlen_ks[:rows]).to(view.dtype)
+        bad = valid & (view >= local_lens.view(-1, 1))
+        if bad.any():
+            bad_count = int(bad.sum().item())
+            bad_values = view[bad]
+            idx_min = int(bad_values.min().item())
+            idx_max = int(bad_values.max().item())
+            lens_min = int(local_lens.min().item())
+            lens_max = int(local_lens.max().item())
+            start_min = int(cu_seqlen_ks[:rows].min().item())
+            start_max = int(cu_seqlen_ks[:rows].max().item())
+            raise RuntimeError(
+                "DS4 sparse indexer produced non-local prefill top-k indices "
+                f"for {layer_prefix} source={source}: bad_count={bad_count} "
+                f"idx_min={idx_min} idx_max={idx_max} "
+                f"local_len_min={lens_min} local_len_max={lens_max} "
+                f"row_start_min={start_min} row_start_max={start_max} "
+                f"rows={rows} width={width}"
+            )
+        idx_min = int(view[valid].min().item())
+        idx_max = int(view[valid].max().item())
+    else:
+        idx_min = 0
+        idx_max = -1
+    if envs.VLLM_DS4_DSV4_SPARSE_MLA_TRACE:
+        logger.info(
+            "DS4 sparse indexer local prefill top-k ok layer=%s source=%s "
+            "rows=%d width=%d idx_min=%d idx_max=%d",
+            layer_prefix,
+            source,
+            rows,
+            width,
+            idx_min,
+            idx_max,
+        )
 
 
 def _should_use_sm120_short_row_topk_decode(
@@ -362,12 +423,21 @@ def sparse_attn_indexer(
                     logits.stride(1),
                     topk_tokens,
                 )
-            if current_platform.is_cuda():
+            if current_platform.is_cuda() and used_direct_topk:
                 _localize_prefill_topk_indices(
                     topk_indices,
                     chunk.cu_seqlen_ks,
                     chunk.cu_seqlen_ke,
                     topk_tokens,
+                )
+            if current_platform.is_cuda():
+                _validate_prefill_topk_indices_are_local(
+                    topk_indices,
+                    chunk.cu_seqlen_ks,
+                    chunk.cu_seqlen_ke,
+                    topk_tokens,
+                    k_cache_prefix,
+                    "direct-localized" if used_direct_topk else "materialized",
                 )
 
     if has_decode:
