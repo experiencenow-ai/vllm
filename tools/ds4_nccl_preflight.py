@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import datetime as _dt
+import contextlib
 import os
+import subprocess
 import sys
 import time
 
@@ -198,7 +200,69 @@ def _parse_p2p_pairs(world_size: int) -> list[tuple[int, int]]:
     return pairs
 
 
-def _run_p2p_pair_probe(rank: int, src: int, dst: int, *, cpu_group=None) -> int:
+def _rank_loopback_ip(rank: int) -> str:
+    raw = _env("DS4_NCCL_PREFLIGHT_RANK_IPS", "")
+    if raw:
+        parts = [part.strip() for part in raw.replace("|", ",").split(",")]
+        parts = [part for part in parts if part]
+        if len(parts) > rank:
+            return parts[rank]
+    return f"10.10.100.{10 + rank}"
+
+
+def _route_dev_for_rank(peer_rank: int) -> str:
+    peer_ip = _rank_loopback_ip(peer_rank)
+    route = subprocess.check_output(
+        ["ip", "route", "get", peer_ip],
+        text=True,
+        stderr=subprocess.DEVNULL,
+    )
+    parts = route.split()
+    for index, item in enumerate(parts):
+        if item == "dev" and index + 1 < len(parts):
+            return parts[index + 1]
+    raise RuntimeError(f"could not find route device for rank {peer_rank} ip {peer_ip}")
+
+
+@contextlib.contextmanager
+def _temporary_nccl_socket_ifname(ifname: str):
+    original = os.environ.get("NCCL_SOCKET_IFNAME")
+    try:
+        if ifname:
+            os.environ["NCCL_SOCKET_IFNAME"] = ifname
+        yield
+    finally:
+        if original is None:
+            os.environ.pop("NCCL_SOCKET_IFNAME", None)
+        else:
+            os.environ["NCCL_SOCKET_IFNAME"] = original
+
+
+def _make_torch_pair_group(rank: int, src: int, dst: int):
+    peer = dst if rank == src else src
+    pair_ifname = _route_dev_for_rank(peer) if rank in {src, dst} else ""
+    with _temporary_nccl_socket_ifname(pair_ifname):
+        pair_group = dist.new_group(ranks=[src, dst], backend="nccl")
+        if rank in {src, dst}:
+            value = torch.tensor([rank + 1], dtype=torch.float32, device="cuda")
+            print(
+                "DS4 NCCL P2P preflight torch pair group warmup: "
+                f"pair={src}-{dst} rank={rank} ifname={pair_ifname}",
+                file=sys.stderr,
+            )
+            dist.all_reduce(value, op=dist.ReduceOp.SUM, group=pair_group)
+            torch.cuda.synchronize()
+    return pair_group
+
+
+def _run_p2p_pair_probe(
+    rank: int,
+    src: int,
+    dst: int,
+    *,
+    cpu_group=None,
+    torch_group=None,
+) -> int:
     bench_bytes = int(_env("DS4_NCCL_PREFLIGHT_BENCH_BYTES", "0"))
     if bench_bytes <= 0:
         return 0
@@ -239,18 +303,18 @@ def _run_p2p_pair_probe(rank: int, src: int, dst: int, *, cpu_group=None) -> int
         ops = []
         if bidirectional and rank == src:
             for send_chunk, recv_chunk in zip(send_chunks, recv_chunks):
-                ops.append(dist.P2POp(dist.isend, send_chunk, dst))
-                ops.append(dist.P2POp(dist.irecv, recv_chunk, dst))
+                ops.append(dist.P2POp(dist.isend, send_chunk, dst, torch_group))
+                ops.append(dist.P2POp(dist.irecv, recv_chunk, dst, torch_group))
         elif bidirectional:
             for send_chunk, recv_chunk in zip(send_chunks, recv_chunks):
-                ops.append(dist.P2POp(dist.irecv, recv_chunk, src))
-                ops.append(dist.P2POp(dist.isend, send_chunk, src))
+                ops.append(dist.P2POp(dist.irecv, recv_chunk, src, torch_group))
+                ops.append(dist.P2POp(dist.isend, send_chunk, src, torch_group))
         elif rank == src:
             for send_chunk in send_chunks:
-                ops.append(dist.P2POp(dist.isend, send_chunk, dst))
+                ops.append(dist.P2POp(dist.isend, send_chunk, dst, torch_group))
         else:
             for recv_chunk in recv_chunks:
-                ops.append(dist.P2POp(dist.irecv, recv_chunk, src))
+                ops.append(dist.P2POp(dist.irecv, recv_chunk, src, torch_group))
         reqs = dist.batch_isend_irecv(ops)
         for req in reqs:
             req.wait()
@@ -281,6 +345,8 @@ def _run_p2p_pair_probe(rank: int, src: int, dst: int, *, cpu_group=None) -> int
         communicator = PyNcclCommunicator(cpu_group, torch.device("cuda:0"))
         exchange = pynccl_exchange
     else:
+        if torch_group is None:
+            raise RuntimeError("torch P2P preflight requires an NCCL pair group")
         exchange = torch_exchange
 
     print(
@@ -425,14 +491,27 @@ def _run_p2p_nccl_preflight(rank: int, world_size: int) -> int:
             file=sys.stderr,
         )
         cpu_group = None
+        torch_group = None
         if method == "pynccl":
             cpu_group = dist.new_group(ranks=[src, dst], backend="gloo")
+        elif method == "torch":
+            torch_group = _make_torch_pair_group(rank, src, dst)
+        else:
+            raise ValueError("DS4_NCCL_PREFLIGHT_P2P_METHOD must be pynccl or torch")
         _store_barrier(rank, world_size, f"p2p-{pair_index}-pre")
         try:
-            status = _run_p2p_pair_probe(rank, src, dst, cpu_group=cpu_group)
+            status = _run_p2p_pair_probe(
+                rank,
+                src,
+                dst,
+                cpu_group=cpu_group,
+                torch_group=torch_group,
+            )
         finally:
             if cpu_group is not None and cpu_group != dist.GroupMember.NON_GROUP_MEMBER:
                 dist.destroy_process_group(cpu_group)
+            if torch_group is not None and torch_group != dist.GroupMember.NON_GROUP_MEMBER:
+                dist.destroy_process_group(torch_group)
         _store_barrier(rank, world_size, f"p2p-{pair_index}-post")
         if status != 0:
             return status
@@ -516,11 +595,7 @@ def main() -> int:
     p2p_method = _env("DS4_NCCL_PREFLIGHT_P2P_METHOD", "pynccl").lower()
     process_group_backend = (
         "gloo"
-        if backend == "tp_pair_nccl"
-        else "gloo"
-        if backend == "p2p_nccl" and p2p_method == "pynccl"
-        else "nccl"
-        if backend == "p2p_nccl"
+        if backend in {"tp_pair_nccl", "p2p_nccl"}
         else backend
     )
     if backend not in {"gloo", "nccl", "tp_pair_nccl", "p2p_nccl"}:
