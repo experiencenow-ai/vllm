@@ -889,20 +889,29 @@ class GroupCoordinator:
                     "VLLM_DS4_PP_NEXT_SOCKET_IFNAME for every "
                     "active PP edge rank."
                 )
+            if active and not envs.VLLM_DS4_PP_TORCH_GROUP_WARMUP:
+                raise RuntimeError(
+                    "VLLM_DS4_PP_TORCH_PAIR_GROUPS requires "
+                    "VLLM_DS4_PP_TORCH_GROUP_WARMUP=1. Torch/NCCL initializes "
+                    "pair groups lazily; without an in-context warmup it can "
+                    "ignore the pair-local NCCL_SOCKET_IFNAME and hang or "
+                    "route over the wrong rail."
+                )
             with self._ds4_pp_pair_nccl_socket_ifname(
                 pair_ifname if active else ""
             ):
                 pair_group = self._new_ds4_pp_torch_pair_group(
                     pair_ranks, torch_distributed_backend
                 )
+                if active:
+                    self._warm_ds4_pp_torch_pair_group(
+                        pair_group,
+                        pair_ifname,
+                        self.ranks[right_index]
+                        if self.rank_in_group == left_index
+                        else self.ranks[left_index],
+                    )
             if active:
-                self._warm_ds4_pp_torch_pair_group(
-                    pair_group,
-                    pair_ifname,
-                    self.ranks[right_index]
-                    if self.rank_in_group == left_index
-                    else self.ranks[left_index],
-                )
                 peer_index = (
                     right_index
                     if self.rank_in_group == left_index
