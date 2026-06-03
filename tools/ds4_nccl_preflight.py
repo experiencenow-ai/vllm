@@ -395,6 +395,16 @@ def _run_p2p_pair_probe(
     if method == "pynccl":
         if cpu_group is None:
             raise RuntimeError("PyNCCL P2P preflight requires a Gloo CPU pair group")
+        route_ifname, edge_rail = _pp_edge_dev_for_rank(rank, peer)
+        if route_ifname:
+            os.environ["NCCL_SOCKET_IFNAME"] = route_ifname
+        print(
+            "DS4 NCCL P2P preflight PyNCCL pair route: "
+            f"pair={src}-{dst} rank={rank} peer={peer} "
+            f"route_ifname={route_ifname or '<unset>'} edge_rail={edge_rail} "
+            f"pair_nccl_ifname={os.environ.get('NCCL_SOCKET_IFNAME', '<unset>')}",
+            file=sys.stderr,
+        )
         from vllm.distributed.device_communicators.pynccl import PyNcclCommunicator
 
         communicator = PyNcclCommunicator(cpu_group, torch.device("cuda:0"))
