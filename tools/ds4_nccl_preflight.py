@@ -315,6 +315,7 @@ def _run_p2p_pair_probe(
     *,
     cpu_group=None,
     torch_group=None,
+    pynccl_communicator=None,
 ) -> int:
     bench_bytes = int(_env("DS4_NCCL_PREFLIGHT_BENCH_BYTES", "0"))
     if bench_bytes <= 0:
@@ -322,9 +323,17 @@ def _run_p2p_pair_probe(
     bench_iters = max(1, int(_env("DS4_NCCL_PREFLIGHT_BENCH_ITERS", "3")))
     stripes = max(1, int(_env("DS4_NCCL_PREFLIGHT_P2P_STRIPES", "1")))
     method = _env("DS4_NCCL_PREFLIGHT_P2P_METHOD", "pynccl").lower()
-    if method not in {"pynccl", "torch", "torch_world", "torch-global"}:
+    if method not in {
+        "pynccl",
+        "pynccl_world",
+        "pynccl-global",
+        "torch",
+        "torch_world",
+        "torch-global",
+    }:
         raise ValueError(
-            "DS4_NCCL_PREFLIGHT_P2P_METHOD must be pynccl, torch, or torch_world"
+            "DS4_NCCL_PREFLIGHT_P2P_METHOD must be pynccl, pynccl_world, "
+            "torch, or torch_world"
         )
     direction = _env("DS4_NCCL_PREFLIGHT_P2P_DIRECTION", "unidirectional").lower()
     if direction not in {"unidirectional", "oneway", "bidirectional", "bidir"}:
@@ -353,6 +362,7 @@ def _run_p2p_pair_probe(
     send_chunks = _split_p2p_tensor(send, stripes)
     recv_chunks = _split_p2p_tensor(recv, stripes)
     communicator = None
+    pynccl_world = method in {"pynccl_world", "pynccl-global"}
 
     def torch_exchange() -> None:
         ops = []
@@ -376,8 +386,11 @@ def _run_p2p_pair_probe(
 
     def pynccl_exchange() -> None:
         assert communicator is not None
-        group_rank = 0 if rank == src else 1
-        peer_rank = 1 - group_rank
+        if pynccl_world:
+            peer_rank = peer
+        else:
+            group_rank = 0 if rank == src else 1
+            peer_rank = 1 - group_rank
         communicator.group_start()
         if bidirectional or rank == src:
             for send_chunk in send_chunks:
@@ -392,11 +405,15 @@ def _run_p2p_pair_probe(
                 communicator.send(send_credit, peer_rank)
         communicator.group_end()
 
-    if method == "pynccl":
+    if method in {"pynccl", "pynccl_world", "pynccl-global"}:
         if cpu_group is None:
-            raise RuntimeError("PyNCCL P2P preflight requires a Gloo CPU pair group")
-        route_ifname, edge_rail = _pp_edge_dev_for_rank(rank, peer)
-        if route_ifname:
+            raise RuntimeError("PyNCCL P2P preflight requires a Gloo CPU group")
+        if pynccl_world:
+            route_ifname = os.environ.get("NCCL_SOCKET_IFNAME", "")
+            edge_rail = "world"
+        else:
+            route_ifname, edge_rail = _pp_edge_dev_for_rank(rank, peer)
+        if route_ifname and not pynccl_world:
             os.environ["NCCL_SOCKET_IFNAME"] = route_ifname
         print(
             "DS4 NCCL P2P preflight PyNCCL pair route: "
@@ -407,7 +424,9 @@ def _run_p2p_pair_probe(
         )
         from vllm.distributed.device_communicators.pynccl import PyNcclCommunicator
 
-        communicator = PyNcclCommunicator(cpu_group, torch.device("cuda:0"))
+        communicator = pynccl_communicator or PyNcclCommunicator(
+            cpu_group, torch.device("cuda:0")
+        )
         exchange = pynccl_exchange
     elif method == "torch":
         if torch_group is None:
@@ -483,7 +502,7 @@ def _run_p2p_pair_probe(
             file=sys.stderr,
         )
         return 68
-    if communicator is not None:
+    if communicator is not None and not pynccl_world:
         destroy = getattr(communicator, "destroy", None)
         if destroy is not None:
             destroy()
@@ -509,6 +528,18 @@ def _split_p2p_tensor(tensor: torch.Tensor, stripes: int) -> list[torch.Tensor]:
 def _run_p2p_nccl_preflight(rank: int, world_size: int) -> int:
     pairs = _parse_p2p_pairs(world_size)
     method = _env("DS4_NCCL_PREFLIGHT_P2P_METHOD", "pynccl").lower()
+    if method not in {
+        "pynccl",
+        "pynccl_world",
+        "pynccl-global",
+        "torch",
+        "torch_world",
+        "torch-global",
+    }:
+        raise ValueError(
+            "DS4_NCCL_PREFLIGHT_P2P_METHOD must be pynccl, pynccl_world, "
+            "torch, or torch_world"
+        )
     torch.cuda.set_device(0)
     print(
         "DS4 NCCL P2P preflight pairs: "
@@ -543,6 +574,7 @@ def _run_p2p_nccl_preflight(rank: int, world_size: int) -> int:
             )
             return 66
     broad_torch_group = None
+    broad_pynccl_communicator = None
     try:
         rank_groups = _env("DS4_NCCL_PREFLIGHT_GROUPS", "")
         if rank_groups and rank_groups != "<unused>":
@@ -555,6 +587,25 @@ def _run_p2p_nccl_preflight(rank: int, world_size: int) -> int:
                 return status
             print(
                 "DS4 NCCL P2P preflight stage: pairwise NCCL group probes complete",
+                file=sys.stderr,
+            )
+        if method in {"pynccl_world", "pynccl-global"}:
+            print(
+                "DS4 NCCL P2P preflight stage: broad PyNCCL communicator "
+                "create begin",
+                file=sys.stderr,
+            )
+            from vllm.distributed.device_communicators.pynccl import (
+                PyNcclCommunicator,
+            )
+
+            broad_pynccl_communicator = PyNcclCommunicator(
+                dist.distributed_c10d._get_default_group(),
+                torch.device("cuda:0"),
+            )
+            print(
+                "DS4 NCCL P2P preflight stage: broad PyNCCL communicator "
+                "create complete",
                 file=sys.stderr,
             )
         if method in {"torch_world", "torch-global"}:
@@ -604,14 +655,16 @@ def _run_p2p_nccl_preflight(rank: int, world_size: int) -> int:
             torch_group = None
             if method == "pynccl":
                 cpu_group = dist.new_group(ranks=[src, dst], backend="gloo")
+            elif method in {"pynccl_world", "pynccl-global"}:
+                cpu_group = dist.distributed_c10d._get_default_group()
             elif method == "torch":
                 torch_group = _make_torch_pair_group(rank, src, dst)
             elif method in {"torch_world", "torch-global"}:
                 torch_group = broad_torch_group
             else:
                 raise ValueError(
-                    "DS4_NCCL_PREFLIGHT_P2P_METHOD must be pynccl, torch, "
-                    "or torch_world"
+                    "DS4_NCCL_PREFLIGHT_P2P_METHOD must be pynccl, "
+                    "pynccl_world, torch, or torch_world"
                 )
             _store_barrier(rank, world_size, f"p2p-{pair_index}-pre")
             try:
@@ -621,9 +674,14 @@ def _run_p2p_nccl_preflight(rank: int, world_size: int) -> int:
                     dst,
                     cpu_group=cpu_group,
                     torch_group=torch_group,
+                    pynccl_communicator=broad_pynccl_communicator,
                 )
             finally:
-                if cpu_group is not None and cpu_group != dist.GroupMember.NON_GROUP_MEMBER:
+                if (
+                    method == "pynccl"
+                    and cpu_group is not None
+                    and cpu_group != dist.GroupMember.NON_GROUP_MEMBER
+                ):
                     dist.destroy_process_group(cpu_group)
                 if (
                     torch_group is not None
@@ -641,6 +699,8 @@ def _run_p2p_nccl_preflight(rank: int, world_size: int) -> int:
         print(f"DS4 NCCL P2P preflight passed on rank {rank}", file=sys.stderr)
         return 0
     finally:
+        if broad_pynccl_communicator is not None:
+            broad_pynccl_communicator.destroy()
         if broad_torch_group is not None and broad_torch_group != dist.GroupMember.NON_GROUP_MEMBER:
             dist.destroy_process_group(broad_torch_group)
 
