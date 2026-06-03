@@ -263,6 +263,7 @@ def build_command(args: argparse.Namespace) -> str:
         "tools/ds4_static_fabric.py "
         "tools/ds4_nccl_preflight.py tools/ds4_nccl_p2p_bench.py "
         "tools/ds4_run_nccl_p2p_bench.py "
+        "tools/ds4_mhc_correctness_probe.py "
         "tools/ds4_cudagraph_support_audit.py "
         "tools/ds4_simple_kv_offload_audit.py "
         "tools/ds4_workspace_prealloc_audit.py "
