@@ -76,7 +76,13 @@ def _hc_head_torch(
     return out.to(torch.bfloat16).view(*residual.shape[:-2], hidden_size)
 
 
-def _run_case(num_tokens: int, hidden_size: int, hc_mult: int, seed: int) -> list[Metric]:
+def _run_case(
+    num_tokens: int,
+    hidden_size: int,
+    hc_mult: int,
+    seed: int,
+    include_triton_head: bool,
+) -> list[Metric]:
     import torch
     import vllm.model_executor.layers.mhc  # noqa: F401
     import vllm.model_executor.kernels.mhc as mhc_kernels
@@ -178,18 +184,6 @@ def _run_case(num_tokens: int, hidden_size: int, hc_mult: int, seed: int) -> lis
         hc_eps,
         hc_mult,
     )
-    head_triton = torch.empty_like(head_tilelang)
-    torch.ops.vllm.hc_head_triton(
-        residual,
-        head_fn,
-        head_scale,
-        head_base,
-        head_triton,
-        hidden_size,
-        rms_eps,
-        hc_eps,
-        hc_mult,
-    )
     ref_head = _hc_head_torch(
         residual,
         head_fn,
@@ -198,10 +192,24 @@ def _run_case(num_tokens: int, hidden_size: int, hc_mult: int, seed: int) -> lis
         rms_eps,
         hc_eps,
     )
+    head_triton = None
+    if include_triton_head:
+        head_triton = torch.empty_like(head_tilelang)
+        torch.ops.vllm.hc_head_triton(
+            residual,
+            head_fn,
+            head_scale,
+            head_base,
+            head_triton,
+            hidden_size,
+            rms_eps,
+            hc_eps,
+            hc_mult,
+        )
     torch.cuda.synchronize()
 
     prefix = f"tokens={num_tokens}"
-    return [
+    metrics = [
         _metric(f"{prefix}:mhc_pre:post_mix", post_mix, ref_post),
         _metric(f"{prefix}:mhc_pre:comb_mix", comb_mix, ref_comb),
         _metric(f"{prefix}:mhc_pre:layer_input", layer_input, ref_input),
@@ -211,8 +219,10 @@ def _run_case(num_tokens: int, hidden_size: int, hc_mult: int, seed: int) -> lis
         _metric(f"{prefix}:mhc_fused:comb_mix", fused_comb, ref_fused_comb),
         _metric(f"{prefix}:mhc_fused:layer_input", fused_input, ref_fused_input),
         _metric(f"{prefix}:hc_head_tilelang", head_tilelang, ref_head),
-        _metric(f"{prefix}:hc_head_triton", head_triton, ref_head),
     ]
+    if head_triton is not None:
+        metrics.append(_metric(f"{prefix}:hc_head_triton", head_triton, ref_head))
+    return metrics
 
 
 def main() -> int:
@@ -223,6 +233,13 @@ def main() -> int:
     parser.add_argument("--seed", type=int, default=int(os.getenv("DS4_MHC_CORRECTNESS_SEED", "1234")))
     parser.add_argument("--max-abs", type=float, default=float(os.getenv("DS4_MHC_CORRECTNESS_MAX_ABS", "1.0")))
     parser.add_argument("--mean-abs", type=float, default=float(os.getenv("DS4_MHC_CORRECTNESS_MEAN_ABS", "0.05")))
+    parser.add_argument(
+        "--include-triton-head",
+        action="store_true",
+        default=os.getenv("DS4_MHC_CORRECTNESS_INCLUDE_TRITON_HEAD", "0").strip().lower()
+        in ("1", "true", "yes", "on"),
+        help="Also test the debug Triton hc_head backend. This requires Python.h.",
+    )
     args = parser.parse_args()
 
     all_metrics: list[Metric] = []
@@ -233,6 +250,7 @@ def main() -> int:
                 hidden_size=args.hidden_size,
                 hc_mult=args.hc_mult,
                 seed=args.seed,
+                include_triton_head=args.include_triton_head,
             )
         )
 

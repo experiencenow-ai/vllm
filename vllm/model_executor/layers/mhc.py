@@ -8,6 +8,55 @@ import vllm.envs as envs
 from vllm.model_executor.custom_op import CustomOp
 
 
+@torch.compiler.disable
+def _maybe_check_hc_head_ref(
+    got: torch.Tensor,
+    residual: torch.Tensor,
+    hc_fn: torch.Tensor,
+    hc_scale: torch.Tensor,
+    hc_base: torch.Tensor,
+    rms_norm_eps: float,
+    hc_eps: float,
+) -> None:
+    if not envs.VLLM_DS4_DSV4_HC_HEAD_REF_CHECK:
+        return
+    if torch.cuda.is_current_stream_capturing():
+        return
+    num_tokens, hc_mult, hidden_size = residual.shape
+    max_tokens = envs.VLLM_DS4_DSV4_HC_HEAD_REF_MAX_TOKENS
+    if max_tokens <= 0 or num_tokens > max_tokens:
+        return
+    with torch.no_grad():
+        x = residual.reshape(num_tokens, hc_mult * hidden_size).to(torch.float32)
+        mixes = torch.matmul(x, hc_fn.t())
+        sqrsum = x.square().sum(dim=-1, keepdim=True)
+        mixes = mixes * torch.rsqrt(
+            (sqrsum / float(hc_mult * hidden_size)) + rms_norm_eps)
+        pre_mix = (
+            torch.sigmoid(mixes * hc_scale[0] + hc_base.view(1, hc_mult))
+            + hc_eps
+        )
+        ref = torch.sum(
+            pre_mix.unsqueeze(-1) * residual.to(torch.float32), dim=1
+        ).to(got.dtype)
+        diff = (got.detach().to(torch.float32) - ref.to(torch.float32)).abs()
+        max_abs = float(diff.max().item()) if diff.numel() else 0.0
+        mean_abs = float(diff.mean().item()) if diff.numel() else 0.0
+        finite = bool(torch.isfinite(got).all().item() and torch.isfinite(ref).all().item())
+    if (
+        not finite
+        or max_abs > envs.VLLM_DS4_DSV4_HC_HEAD_REF_ATOL
+        or mean_abs > envs.VLLM_DS4_DSV4_HC_HEAD_REF_MEAN_ATOL
+    ):
+        raise RuntimeError(
+            "DS4 DSV4 hc_head reference check failed: "
+            f"tokens={num_tokens} hc_mult={hc_mult} hidden_size={hidden_size} "
+            f"finite={finite} max_abs={max_abs:.6g} mean_abs={mean_abs:.6g} "
+            f"max_allowed={envs.VLLM_DS4_DSV4_HC_HEAD_REF_ATOL:.6g} "
+            f"mean_allowed={envs.VLLM_DS4_DSV4_HC_HEAD_REF_MEAN_ATOL:.6g}"
+        )
+
+
 # --8<-- [start:mhc_pre]
 @CustomOp.register("mhc_pre")
 class MHCPreOp(CustomOp):
@@ -222,6 +271,15 @@ class HCHeadOp(CustomOp):
                 f"{backend!r}. Use 'tilelang' for production or "
                 "'triton-debug' for a correctness isolation run."
             )
+        _maybe_check_hc_head_ref(
+            out,
+            hs_flat,
+            hc_fn,
+            hc_scale,
+            hc_base,
+            rms_norm_eps,
+            hc_eps,
+        )
         return out.view(*outer_shape, hidden_size)
 
     def forward_hip(
