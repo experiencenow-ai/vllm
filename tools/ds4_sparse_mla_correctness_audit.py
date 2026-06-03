@@ -20,6 +20,9 @@ def main() -> int:
     envs = read("vllm/envs.py")
     flashmla = read("vllm/models/deepseek_v4/nvidia/flashmla.py")
     indexer = read("vllm/model_executor/layers/sparse_attn_indexer.py")
+    indexer_op = indexer.split("def sparse_attn_indexer(", 1)[1].split(
+        "def sparse_attn_indexer_fake(", 1
+    )[0]
     launcher = read("tools/ds4_launch_dsv4_flash_pp8.sh")
     failures = 0
     for name in (
@@ -107,6 +110,10 @@ def main() -> int:
         and "if not used_direct_topk:" in indexer
         and "_localize_prefill_topk_indices(" in indexer
         and "continue\n            if current_platform.is_xpu()" not in indexer,
+    )
+    failures += check(
+        "registered sparse indexer op does not reference class self",
+        "self." not in indexer_op,
     )
     failures += check(
         "launcher logs prefill backend",
