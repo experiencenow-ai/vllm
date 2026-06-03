@@ -76,6 +76,7 @@ def _print_env() -> None:
         "DS4_NCCL_PREFLIGHT_P2P_METHOD",
         "DS4_NCCL_PREFLIGHT_MIN_P2P_GBPS",
         "DS4_NCCL_PREFLIGHT_WARN_P2P_GBPS",
+        "DS4_NCCL_PREFLIGHT_TORCH_WORLD_WARMUP",
     ]
     for name in names:
         print(f"{name}={_env(name, '<unset>')}", file=sys.stderr)
@@ -531,60 +532,107 @@ def _run_p2p_nccl_preflight(rank: int, world_size: int) -> int:
                 file=sys.stderr,
             )
             return 66
-    rank_groups = _env("DS4_NCCL_PREFLIGHT_GROUPS", "")
-    if rank_groups and rank_groups != "<unused>":
-        print(
-            "DS4 NCCL P2P preflight stage: pairwise NCCL group probes begin",
-            file=sys.stderr,
-        )
-        status = _run_pairwise_nccl_preflight(rank, world_size)
-        if status != 0:
-            return status
-        print(
-            "DS4 NCCL P2P preflight stage: pairwise NCCL group probes complete",
-            file=sys.stderr,
-        )
-    for pair_index, (src, dst) in enumerate(pairs):
-        print(
-            f"DS4 NCCL P2P preflight pair begin: pair={src}-{dst} method={method}",
-            file=sys.stderr,
-        )
-        _store_barrier(rank, world_size, f"p2p-{pair_index}-before-group")
-        cpu_group = None
-        torch_group = None
-        if method == "pynccl":
-            cpu_group = dist.new_group(ranks=[src, dst], backend="gloo")
-        elif method == "torch":
-            torch_group = _make_torch_pair_group(rank, src, dst)
-        elif method in {"torch_world", "torch-global"}:
+    broad_torch_group = None
+    try:
+        rank_groups = _env("DS4_NCCL_PREFLIGHT_GROUPS", "")
+        if rank_groups and rank_groups != "<unused>":
+            print(
+                "DS4 NCCL P2P preflight stage: pairwise NCCL group probes begin",
+                file=sys.stderr,
+            )
+            status = _run_pairwise_nccl_preflight(rank, world_size)
+            if status != 0:
+                return status
+            print(
+                "DS4 NCCL P2P preflight stage: pairwise NCCL group probes complete",
+                file=sys.stderr,
+            )
+        if method in {"torch_world", "torch-global"}:
+            print(
+                "DS4 NCCL P2P preflight stage: broad NCCL torch group create begin",
+                file=sys.stderr,
+            )
+            broad_torch_group = dist.new_group(
+                ranks=list(range(world_size)),
+                backend="nccl",
+            )
+            if _bool_env("DS4_NCCL_PREFLIGHT_TORCH_WORLD_WARMUP", True):
+                value = torch.tensor([rank + 1], dtype=torch.float32, device="cuda")
+                print(
+                    "DS4 NCCL P2P preflight stage: broad NCCL torch group "
+                    "warmup begin",
+                    file=sys.stderr,
+                )
+                dist.all_reduce(value, op=dist.ReduceOp.SUM, group=broad_torch_group)
+                torch.cuda.synchronize()
+                expected = float((world_size * (world_size + 1)) // 2)
+                actual = float(value.item())
+                if actual != expected:
+                    print(
+                        "DS4 NCCL P2P preflight failed: "
+                        f"broad torch group warmup sum {actual} != expected "
+                        f"{expected}",
+                        file=sys.stderr,
+                    )
+                    return 66
+                print(
+                    "DS4 NCCL P2P preflight stage: broad NCCL torch group "
+                    "warmup complete",
+                    file=sys.stderr,
+                )
+            print(
+                "DS4 NCCL P2P preflight stage: broad NCCL torch group create complete",
+                file=sys.stderr,
+            )
+        for pair_index, (src, dst) in enumerate(pairs):
+            print(
+                f"DS4 NCCL P2P preflight pair begin: pair={src}-{dst} method={method}",
+                file=sys.stderr,
+            )
+            _store_barrier(rank, world_size, f"p2p-{pair_index}-before-group")
+            cpu_group = None
             torch_group = None
-        else:
-            raise ValueError(
-                "DS4_NCCL_PREFLIGHT_P2P_METHOD must be pynccl, torch, or torch_world"
+            if method == "pynccl":
+                cpu_group = dist.new_group(ranks=[src, dst], backend="gloo")
+            elif method == "torch":
+                torch_group = _make_torch_pair_group(rank, src, dst)
+            elif method in {"torch_world", "torch-global"}:
+                torch_group = broad_torch_group
+            else:
+                raise ValueError(
+                    "DS4_NCCL_PREFLIGHT_P2P_METHOD must be pynccl, torch, "
+                    "or torch_world"
+                )
+            _store_barrier(rank, world_size, f"p2p-{pair_index}-pre")
+            try:
+                status = _run_p2p_pair_probe(
+                    rank,
+                    src,
+                    dst,
+                    cpu_group=cpu_group,
+                    torch_group=torch_group,
+                )
+            finally:
+                if cpu_group is not None and cpu_group != dist.GroupMember.NON_GROUP_MEMBER:
+                    dist.destroy_process_group(cpu_group)
+                if (
+                    torch_group is not None
+                    and torch_group != broad_torch_group
+                    and torch_group != dist.GroupMember.NON_GROUP_MEMBER
+                ):
+                    dist.destroy_process_group(torch_group)
+            _store_barrier(rank, world_size, f"p2p-{pair_index}-post")
+            if status != 0:
+                return status
+            print(
+                f"DS4 NCCL P2P preflight pair complete: pair={src}-{dst} method={method}",
+                file=sys.stderr,
             )
-        _store_barrier(rank, world_size, f"p2p-{pair_index}-pre")
-        try:
-            status = _run_p2p_pair_probe(
-                rank,
-                src,
-                dst,
-                cpu_group=cpu_group,
-                torch_group=torch_group,
-            )
-        finally:
-            if cpu_group is not None and cpu_group != dist.GroupMember.NON_GROUP_MEMBER:
-                dist.destroy_process_group(cpu_group)
-            if torch_group is not None and torch_group != dist.GroupMember.NON_GROUP_MEMBER:
-                dist.destroy_process_group(torch_group)
-        _store_barrier(rank, world_size, f"p2p-{pair_index}-post")
-        if status != 0:
-            return status
-        print(
-            f"DS4 NCCL P2P preflight pair complete: pair={src}-{dst} method={method}",
-            file=sys.stderr,
-        )
-    print(f"DS4 NCCL P2P preflight passed on rank {rank}", file=sys.stderr)
-    return 0
+        print(f"DS4 NCCL P2P preflight passed on rank {rank}", file=sys.stderr)
+        return 0
+    finally:
+        if broad_torch_group is not None and broad_torch_group != dist.GroupMember.NON_GROUP_MEMBER:
+            dist.destroy_process_group(broad_torch_group)
 
 
 def _run_pairwise_nccl_preflight(rank: int, world_size: int) -> int:
