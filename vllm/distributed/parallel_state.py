@@ -725,9 +725,22 @@ class GroupCoordinator:
         self.use_device_communicator = use_device_communicator
         self.device_communicator = None
         self.ds4_pp_striped_nccl_channel = None
+        self.ds4_pp_tcp_tensor_channel = None
         self.ds4_pp_torch_pair_groups: dict[int, ProcessGroup] = {}
         self.ds4_pp_pynccl_pair_cpu_groups: dict[int, ProcessGroup] = {}
         self.ds4_pp_pynccl_pair_communicators: dict[int, Any] = {}
+        if group_name == "pp" and envs.VLLM_DS4_PP_TCP_TENSOR_DICT:
+            from vllm.distributed.ds4_tcp_tensor_channel import (
+                build_ds4_pp_tcp_tensor_channel,
+            )
+
+            self.ds4_pp_tcp_tensor_channel = build_ds4_pp_tcp_tensor_channel(
+                group_name=group_name,
+                rank=self.rank,
+                rank_in_group=self.rank_in_group,
+                send_control=self.send_object,
+                recv_control=self.recv_object,
+            )
         if (
             group_name == "pp"
             and envs.VLLM_DS4_PP_TORCH_PG_TENSOR_DICT
@@ -1398,12 +1411,59 @@ class GroupCoordinator:
             return False
         if "pp" not in self.unique_name:
             return False
+        if envs.VLLM_DS4_PP_TCP_TENSOR_DICT:
+            raise RuntimeError(
+                "VLLM_DS4_PP_CPU_STAGED_TENSOR_DICT and "
+                "VLLM_DS4_PP_TCP_TENSOR_DICT cannot both be enabled."
+            )
         if envs.VLLM_DS4_PP_PYNCCL_TENSOR_DICT:
             raise RuntimeError(
                 "VLLM_DS4_PP_CPU_STAGED_TENSOR_DICT and "
                 "VLLM_DS4_PP_PYNCCL_TENSOR_DICT cannot both be enabled."
             )
         return self.world_size > 1
+
+    def _can_use_ds4_tcp_tensor_dict(self) -> bool:
+        if not envs.VLLM_DS4_PP_TCP_TENSOR_DICT:
+            return False
+        if "pp" not in self.unique_name:
+            return False
+        if self.world_size <= 1:
+            return False
+        if envs.VLLM_DS4_PP_PYNCCL_TENSOR_DICT:
+            raise RuntimeError(
+                "VLLM_DS4_PP_TCP_TENSOR_DICT and "
+                "VLLM_DS4_PP_PYNCCL_TENSOR_DICT cannot both be enabled."
+            )
+        if envs.VLLM_DS4_PP_TORCH_PG_TENSOR_DICT:
+            raise RuntimeError(
+                "VLLM_DS4_PP_TCP_TENSOR_DICT and "
+                "VLLM_DS4_PP_TORCH_PG_TENSOR_DICT cannot both be enabled."
+            )
+        if self.ds4_pp_tcp_tensor_channel is None:
+            raise RuntimeError(
+                "VLLM_DS4_PP_TCP_TENSOR_DICT is enabled, but the PP group has "
+                "no DS4 TCP tensor channel. Refusing transport fallback."
+            )
+        return True
+
+    def _enqueue_ds4_tcp_send(
+        self,
+        tensor: torch.Tensor,
+        dst: int,
+    ) -> Handle:
+        if self.ds4_pp_tcp_tensor_channel is None:
+            raise RuntimeError("DS4 PP TCP tensor channel is not initialized")
+        return self.ds4_pp_tcp_tensor_channel.send(tensor, dst)
+
+    def _enqueue_ds4_tcp_recv(
+        self,
+        tensor: torch.Tensor,
+        src: int,
+    ) -> Handle:
+        if self.ds4_pp_tcp_tensor_channel is None:
+            raise RuntimeError("DS4 PP TCP tensor channel is not initialized")
+        return self.ds4_pp_tcp_tensor_channel.recv(tensor, src)
 
     def _enqueue_ds4_pynccl_p2p(
         self,
@@ -2040,6 +2100,14 @@ class GroupCoordinator:
                 tensor = tensor.reshape(all_gather_size, -1)[all_gather_rank]
 
             ds4_trace_tensors[key] = tensor
+            if (
+                tensor.is_cuda
+                and self._can_use_ds4_tcp_tensor_dict()
+                and self.ds4_pp_tcp_tensor_channel is not None
+                and self.ds4_pp_tcp_tensor_channel.can_handle(tensor)
+            ):
+                handles.append(self._enqueue_ds4_tcp_send(tensor, dst))
+                continue
             if tensor.is_cuda and self._can_use_ds4_pynccl_tensor_dict():
                 cuda_p2p_tensors.append(tensor)
                 continue
@@ -2166,13 +2234,22 @@ class GroupCoordinator:
         for key, value in recv_metadata_list:
             if isinstance(value, (TensorMetadata, TensorMetadataCpuStaged)):
                 cpu_staged = isinstance(value, TensorMetadataCpuStaged)
-                recv_device = "cpu" if cpu_staged else value.device
-                target_device = getattr(value, "target_device", recv_device)
+                tcp_staged = (
+                    not cpu_staged
+                    and value.device == "cuda"
+                    and self._can_use_ds4_tcp_tensor_dict()
+                )
+                recv_device = "cpu" if (cpu_staged or tcp_staged) else value.device
+                target_device = (
+                    value.device
+                    if tcp_staged
+                    else getattr(value, "target_device", recv_device)
+                )
                 full_tensor = torch.empty(
                     value.size, dtype=value.dtype, device=recv_device
                 )
                 if full_tensor.numel() == 0:
-                    if cpu_staged and target_device != "cpu":
+                    if (cpu_staged or tcp_staged) and target_device != "cpu":
                         tensor_dict[key] = full_tensor.to(target_device)
                     else:
                         tensor_dict[key] = full_tensor
@@ -2190,6 +2267,8 @@ class GroupCoordinator:
                         and self._can_use_ds4_pynccl_tensor_dict()
                     ):
                         cuda_p2p_tensors.append(slice_tensor)
+                    elif tcp_staged:
+                        handles.append(self._enqueue_ds4_tcp_recv(slice_tensor, src))
                     else:
                         comm_group = metadata_group if slice_tensor.is_cpu else group
                         handle = torch.distributed.irecv(
@@ -2203,10 +2282,11 @@ class GroupCoordinator:
                         orig_shape: tuple[int, ...] = tuple(orig_shape),
                         all_gather_group=all_gather_group,
                         cpu_staged: bool = cpu_staged,
+                        tcp_staged: bool = tcp_staged,
                         target_device: str = target_device,
                     ) -> None:
                         assert all_gather_group is not None
-                        if cpu_staged and target_device != "cpu":
+                        if (cpu_staged or tcp_staged) and target_device != "cpu":
                             slice_tensor = slice_tensor.to(target_device)
                         gathered = all_gather_group.all_gather(slice_tensor, dim=0)
                         tensor_dict[key] = gathered.reshape(orig_shape)
@@ -2214,7 +2294,12 @@ class GroupCoordinator:
                     postprocess.append(_postprocess)
                     tensor_dict[key] = slice_tensor
                 else:
-                    if full_tensor.is_cuda and self._can_use_ds4_pynccl_tensor_dict():
+                    if tcp_staged:
+                        handles.append(self._enqueue_ds4_tcp_recv(full_tensor, src))
+                    elif (
+                        full_tensor.is_cuda
+                        and self._can_use_ds4_pynccl_tensor_dict()
+                    ):
                         cuda_p2p_tensors.append(full_tensor)
                     else:
                         comm_group = metadata_group if full_tensor.is_cpu else group
@@ -2222,7 +2307,7 @@ class GroupCoordinator:
                             full_tensor, src=self.ranks[src], group=comm_group
                         )
                         handles.append(handle)
-                    if cpu_staged and target_device != "cpu":
+                    if (cpu_staged or tcp_staged) and target_device != "cpu":
                         def _postprocess_cpu_staged(
                             key: str = key,
                             full_tensor: torch.Tensor = full_tensor,
@@ -2275,6 +2360,7 @@ class GroupCoordinator:
         if self.ds4_pp_striped_nccl_channel is not None:
             self.ds4_pp_striped_nccl_channel.destroy()
             self.ds4_pp_striped_nccl_channel = None
+        self.ds4_pp_tcp_tensor_channel = None
         for communicator in self.ds4_pp_pynccl_pair_communicators.values():
             destroy = getattr(communicator, "destroy", None)
             if destroy is not None:

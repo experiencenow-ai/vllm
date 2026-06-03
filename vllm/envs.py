@@ -175,6 +175,14 @@ if TYPE_CHECKING:
     VLLM_DS4_PP_TORCH_PG_TENSOR_DICT: bool = False
     VLLM_DS4_PP_TORCH_PAIR_GROUPS: bool = False
     VLLM_DS4_PP_TORCH_GROUP_WARMUP: bool = True
+    VLLM_DS4_PP_TCP_TENSOR_DICT: bool = False
+    VLLM_DS4_PP_TCP_STRIPES: int = 8
+    VLLM_DS4_PP_TCP_MIN_BYTES: int = 1
+    VLLM_DS4_PP_TCP_BIND_HOST: str = ""
+    VLLM_DS4_PP_TCP_ADVERTISE_HOST: str = ""
+    VLLM_DS4_PP_TCP_CONNECT_TIMEOUT_SECONDS: float = 30.0
+    VLLM_DS4_PP_TCP_READ_TIMEOUT_SECONDS: float = 300.0
+    VLLM_DS4_PP_TCP_NODELAY: bool = True
     VLLM_DS4_PP_DIRECT_CUDA_MIN_BYTES: int = 262144
     VLLM_DS4_PP_DEVICE_TENSOR_DICT_METADATA: bool = False
     VLLM_DS4_PP_SEND_BACKLOG: int = 1
@@ -1596,6 +1604,36 @@ environment_variables: dict[str, Callable[[], Any]] = {
     ),
     "VLLM_DS4_PP_TORCH_GROUP_WARMUP": lambda: (
         os.environ.get("VLLM_DS4_PP_TORCH_GROUP_WARMUP", "1")
+        .strip()
+        .lower()
+        in ("1", "true", "yes", "on")
+    ),
+    "VLLM_DS4_PP_TCP_TENSOR_DICT": lambda: (
+        os.environ.get("VLLM_DS4_PP_TCP_TENSOR_DICT", "0")
+        .strip()
+        .lower()
+        in ("1", "true", "yes", "on")
+    ),
+    "VLLM_DS4_PP_TCP_STRIPES": lambda: int(
+        os.environ.get("VLLM_DS4_PP_TCP_STRIPES", "8")
+    ),
+    "VLLM_DS4_PP_TCP_MIN_BYTES": lambda: int(
+        os.environ.get("VLLM_DS4_PP_TCP_MIN_BYTES", "1")
+    ),
+    "VLLM_DS4_PP_TCP_BIND_HOST": lambda: os.environ.get(
+        "VLLM_DS4_PP_TCP_BIND_HOST", ""
+    ),
+    "VLLM_DS4_PP_TCP_ADVERTISE_HOST": lambda: os.environ.get(
+        "VLLM_DS4_PP_TCP_ADVERTISE_HOST", ""
+    ),
+    "VLLM_DS4_PP_TCP_CONNECT_TIMEOUT_SECONDS": lambda: float(
+        os.environ.get("VLLM_DS4_PP_TCP_CONNECT_TIMEOUT_SECONDS", "30")
+    ),
+    "VLLM_DS4_PP_TCP_READ_TIMEOUT_SECONDS": lambda: float(
+        os.environ.get("VLLM_DS4_PP_TCP_READ_TIMEOUT_SECONDS", "300")
+    ),
+    "VLLM_DS4_PP_TCP_NODELAY": lambda: (
+        os.environ.get("VLLM_DS4_PP_TCP_NODELAY", "1")
         .strip()
         .lower()
         in ("1", "true", "yes", "on")

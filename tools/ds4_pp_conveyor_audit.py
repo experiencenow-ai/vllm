@@ -110,6 +110,13 @@ def main() -> int:
         and "_ds4_pp_torch_pair_group(src)" in parallel,
     )
     failures += check(
+        "parallel_state has rail TCP PP payload channel",
+        "build_ds4_pp_tcp_tensor_channel" in parallel
+        and "_can_use_ds4_tcp_tensor_dict" in parallel
+        and "_enqueue_ds4_tcp_send" in parallel
+        and "_enqueue_ds4_tcp_recv" in parallel,
+    )
+    failures += check(
         "parallel_state warms torch pair groups inside pair-local NIC context",
         "VLLM_DS4_PP_TORCH_GROUP_WARMUP=1" in parallel
         and "without an in-context warmup" in parallel
@@ -157,6 +164,15 @@ def main() -> int:
         and 'VLLM_DS4_PP_TORCH_PAIR_GROUPS="${VLLM_DS4_PP_TORCH_PAIR_GROUPS:-1}"'
         in dsv4
         and 'VLLM_DS4_PP_TORCH_GROUP_WARMUP="${VLLM_DS4_PP_TORCH_GROUP_WARMUP:-1}"'
+        in dsv4,
+    )
+    failures += check(
+        "DSV4 PP launcher has first-class rail TCP staged transport",
+        "tcp-staged|tcp_staged|rail-tcp|rail_tcp" in dsv4
+        and 'DS4_PP_TRANSPORT="tcp-staged"' in dsv4
+        and 'VLLM_DS4_PP_TCP_TENSOR_DICT="${VLLM_DS4_PP_TCP_TENSOR_DICT:-1}"'
+        in dsv4
+        and 'DS4_NCCL_PREFLIGHT_MODE="${DS4_NCCL_PREFLIGHT_MODE:-skip}"'
         in dsv4,
     )
     for script_name, script in (
