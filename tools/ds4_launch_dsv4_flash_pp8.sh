@@ -345,6 +345,32 @@ ds4_pp_edge_ifname()
     esac
   fi
 }
+
+ds4_pp_edge_ifname_is_verified()
+{
+  local ifname="$1"
+  local verified_fabric="${DS4_200G_EFFECTIVE_IFNAME:-$DS4_200G_IFNAME}"
+  local verified_control="${DS4_200G_EFFECTIVE_CONTROL_IFNAME:-}"
+  if ds4_200g_csv_contains "$verified_fabric" "$ifname"; then
+    return 0
+  fi
+  if [[ "${DS4_200G_ADVERTISE_LOOPBACK:-0}" =~ ^(1|true|TRUE|yes|YES|on|ON)$ ]] \
+    && ds4_200g_is_gloo_loopback_like_ifname "$ifname" \
+    && ds4_200g_csv_contains "$verified_control" "$ifname"; then
+    echo "WARNING: DSV4 PP${NNODES} PP edge socket identity uses routed loopback interface '$ifname'; physical routes were validated against fabric ${verified_fabric}" >&2
+    return 0
+  fi
+  return 1
+}
+
+ds4_pp_edge_ifname_verified_label()
+{
+  printf "%s" "${DS4_200G_EFFECTIVE_IFNAME:-$DS4_200G_IFNAME}"
+  if [[ -n "${DS4_200G_EFFECTIVE_CONTROL_IFNAME:-}" ]]; then
+    printf " or routed control %s" "$DS4_200G_EFFECTIVE_CONTROL_IFNAME"
+  fi
+}
+
 export VLLM_DS4_PP_EDGE_RAIL="${VLLM_DS4_PP_EDGE_RAIL:-${DS4_PP_EDGE_RAIL:-enp}}"
 export DS4_NCCL_PREFLIGHT_PP_EDGE_RAIL="${DS4_NCCL_PREFLIGHT_PP_EDGE_RAIL:-$VLLM_DS4_PP_EDGE_RAIL}"
 if [[ "$NNODES" -gt 1 ]]; then
@@ -352,14 +378,14 @@ if [[ "$NNODES" -gt 1 ]]; then
     DS4_PP_PREV_IP="10.10.100.$((10 + NODE_RANK - 1))"
     VLLM_DS4_PP_PREV_SOCKET_IFNAME="${VLLM_DS4_PP_PREV_SOCKET_IFNAME:-$(ds4_pp_edge_ifname "$NODE_RANK" "$((NODE_RANK - 1))")}"
     [[ -n "$VLLM_DS4_PP_PREV_SOCKET_IFNAME" ]] || { echo "DSV4 PP${NNODES} could not derive PP edge interface to previous PP rank at $DS4_PP_PREV_IP" >&2; exit 64; }
-    ds4_200g_csv_contains "${DS4_200G_EFFECTIVE_IFNAME:-$DS4_200G_IFNAME}" "$VLLM_DS4_PP_PREV_SOCKET_IFNAME" || { echo "DSV4 PP${NNODES} PP edge to previous PP rank at $DS4_PP_PREV_IP uses $VLLM_DS4_PP_PREV_SOCKET_IFNAME, not the verified fabric ${DS4_200G_EFFECTIVE_IFNAME:-$DS4_200G_IFNAME}" >&2; exit 64; }
+    ds4_pp_edge_ifname_is_verified "$VLLM_DS4_PP_PREV_SOCKET_IFNAME" || { echo "DSV4 PP${NNODES} PP edge to previous PP rank at $DS4_PP_PREV_IP uses $VLLM_DS4_PP_PREV_SOCKET_IFNAME, not the verified fabric $(ds4_pp_edge_ifname_verified_label)" >&2; exit 64; }
     export VLLM_DS4_PP_PREV_SOCKET_IFNAME
   fi
   if [[ "$NODE_RANK" -lt $((NNODES - 1)) ]]; then
     DS4_PP_NEXT_IP="10.10.100.$((10 + NODE_RANK + 1))"
     VLLM_DS4_PP_NEXT_SOCKET_IFNAME="${VLLM_DS4_PP_NEXT_SOCKET_IFNAME:-$(ds4_pp_edge_ifname "$NODE_RANK" "$((NODE_RANK + 1))")}"
     [[ -n "$VLLM_DS4_PP_NEXT_SOCKET_IFNAME" ]] || { echo "DSV4 PP${NNODES} could not derive PP edge interface to next PP rank at $DS4_PP_NEXT_IP" >&2; exit 64; }
-    ds4_200g_csv_contains "${DS4_200G_EFFECTIVE_IFNAME:-$DS4_200G_IFNAME}" "$VLLM_DS4_PP_NEXT_SOCKET_IFNAME" || { echo "DSV4 PP${NNODES} PP edge to next PP rank at $DS4_PP_NEXT_IP uses $VLLM_DS4_PP_NEXT_SOCKET_IFNAME, not the verified fabric ${DS4_200G_EFFECTIVE_IFNAME:-$DS4_200G_IFNAME}" >&2; exit 64; }
+    ds4_pp_edge_ifname_is_verified "$VLLM_DS4_PP_NEXT_SOCKET_IFNAME" || { echo "DSV4 PP${NNODES} PP edge to next PP rank at $DS4_PP_NEXT_IP uses $VLLM_DS4_PP_NEXT_SOCKET_IFNAME, not the verified fabric $(ds4_pp_edge_ifname_verified_label)" >&2; exit 64; }
     export VLLM_DS4_PP_NEXT_SOCKET_IFNAME
   fi
   DS4_PP_SOCKET_IFNAMES=""
