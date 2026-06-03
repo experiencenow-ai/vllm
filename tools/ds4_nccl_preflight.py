@@ -223,6 +223,21 @@ def _route_dev_for_rank(peer_rank: int) -> str:
     raise RuntimeError(f"could not find route device for rank {peer_rank} ip {peer_ip}")
 
 
+def _pp_edge_dev_for_rank(rank: int, peer_rank: int) -> tuple[str, str]:
+    rail = _env(
+        "DS4_NCCL_PREFLIGHT_PP_EDGE_RAIL",
+        _env("VLLM_DS4_PP_EDGE_RAIL", "enp"),
+    ).strip()
+    if rail in {"", "route", "routed", "loopback"} or abs(rank - peer_rank) != 1:
+        return (_route_dev_for_rank(peer_rank), rail or "route")
+    left_side = rank < peer_rank
+    if rail in {"enp", "rail0", "lower", "odd"}:
+        return ("enp1s0f1np1" if left_side else "enp1s0f0np0", rail)
+    if rail in {"enP2p", "enp2p", "rail1", "upper", "even"}:
+        return ("enP2p1s0f1np1" if left_side else "enP2p1s0f0np0", rail)
+    return (rail, rail)
+
+
 def _new_nccl_pair_group(src: int, dst: int):
     try:
         return dist.new_group(
@@ -238,7 +253,7 @@ def _make_torch_pair_group(rank: int, src: int, dst: int):
     if rank not in {src, dst}:
         return None
     peer = dst if rank == src else src
-    route_ifname = _route_dev_for_rank(peer)
+    route_ifname, edge_rail = _pp_edge_dev_for_rank(rank, peer)
     original_ifname = os.environ.get("NCCL_SOCKET_IFNAME")
     try:
         if route_ifname:
@@ -249,6 +264,7 @@ def _make_torch_pair_group(rank: int, src: int, dst: int):
         print(
             "DS4 NCCL P2P preflight torch pair group warmup: "
             f"pair={src}-{dst} rank={rank} route_ifname={route_ifname} "
+            f"edge_rail={edge_rail} "
             f"pair_nccl_ifname={os.environ.get('NCCL_SOCKET_IFNAME', '<unset>')}",
             file=sys.stderr,
         )
