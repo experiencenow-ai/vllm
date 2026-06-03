@@ -15,6 +15,7 @@ from vllm.models.deepseek_v4.common.ops import (
     dequantize_and_gather_k_cache,
     dequantize_combined_sparse_mla_decode_kv,
     dequantize_global_slots_k_cache,
+    sparse_prefill_combined_topk_size,
 )
 from vllm.utils.platform_utils import num_compute_units
 from vllm.v1.attention.backend import (
@@ -36,11 +37,13 @@ from vllm.v1.attention.backends.mla.sparse_mla_env import (
 from vllm.v1.attention.backends.mla.sparse_mla_kernels import (
     accumulate_fp8ds_global_slots_sparse_mla_attention_chunk_multihead,
     accumulate_fp8ds_paged_sparse_mla_attention_chunk_multihead,
+    accumulate_gathered_sparse_mla_attention_chunk,
     accumulate_indexed_sparse_mla_attention_chunk,
     build_combined_sparse_mla_decode_valid_mask,
     choose_sparse_mla_splitkv_splits,
     finish_sparse_mla_attention_with_sink,
     finish_two_sparse_mla_attention_states_with_sink,
+    gather_indexed_sparse_mla_kv,
     fp8ds_global_paged_sparse_mla_attention_with_sink_multihead,
     fp8ds_paged_sparse_mla_attention_with_sink_multihead,
     matmul_sparse_mla_attention_with_sink,
@@ -202,13 +205,15 @@ def _ds4_check_sparse_mla_output(
 @torch.compiler.disable
 def _ds4_sparse_mla_prefill_backend() -> str:
     backend = envs.VLLM_DS4_DSV4_SPARSE_MLA_PREFILL_BACKEND
-    if backend in ("indexed", "triton", "triton-indexed"):
+    if backend in ("gathered", "gathered-sparse"):
+        return "gathered"
+    if backend in ("indexed", "indexed-unsafe", "triton", "triton-indexed"):
         return "indexed"
     if backend in ("matmul-debug", "materialized-debug"):
         return "matmul-debug"
     raise RuntimeError(
         "Invalid VLLM_DS4_DSV4_SPARSE_MLA_PREFILL_BACKEND="
-        f"{backend!r}; expected indexed or matmul-debug"
+        f"{backend!r}; expected gathered, indexed-unsafe, or matmul-debug"
     )
 
 
@@ -374,17 +379,30 @@ def _ds4_reference_check_sparse_mla_prefill(
         return
     if _ds4_cuda_graph_capture_active():
         return
-    num_tokens = min(
+    max_tokens = min(
         q.shape[0],
         output.shape[0],
         max(0, envs.VLLM_DS4_DSV4_SPARSE_MLA_REF_MAX_TOKENS),
     )
-    if num_tokens == 0:
+    if max_tokens == 0:
         return
-    ref = torch.zeros_like(output[:num_tokens])
-    q_active = q[:num_tokens, :num_heads].float()
+    if q.shape[0] <= max_tokens:
+        token_indices = torch.arange(q.shape[0], device=q.device)
+    else:
+        head_tokens = max(1, max_tokens // 2)
+        tail_tokens = max_tokens - head_tokens
+        token_indices = torch.cat(
+            (
+                torch.arange(head_tokens, device=q.device),
+                torch.arange(q.shape[0] - tail_tokens, q.shape[0], device=q.device),
+            )
+        )
+    num_tokens = token_indices.numel()
+    ref = torch.zeros_like(output.index_select(0, token_indices))
+    q_active = q.index_select(0, token_indices)[:, :num_heads].float()
     sink = attn_sink[:num_heads].float()
-    for token_idx in range(num_tokens):
+    for sample_idx in range(num_tokens):
+        token_idx = int(token_indices[sample_idx].item())
         lens = int(combined_lens[token_idx].item())
         if lens <= 0:
             continue
@@ -393,25 +411,29 @@ def _ds4_reference_check_sparse_mla_prefill(
         if slot_ids.numel() == 0:
             continue
         kv = kv_flat.index_select(0, slot_ids.long()).float()
-        scores = torch.matmul(q_active[token_idx], kv.t()) * scale
+        scores = torch.matmul(q_active[sample_idx], kv.t()) * scale
         scores_with_sink = torch.cat((scores, sink.view(num_heads, 1)), dim=1)
         probs = torch.softmax(scores_with_sink, dim=1)[:, : kv.shape[0]]
-        ref[token_idx, :num_heads] = torch.matmul(probs, kv).to(output.dtype)
-    diff = (output[:num_tokens, :num_heads].float() - ref[:, :num_heads].float()).abs()
+        ref[sample_idx, :num_heads] = torch.matmul(probs, kv).to(output.dtype)
+    actual = output.index_select(0, token_indices)[:, :num_heads]
+    diff = (actual.float() - ref[:, :num_heads].float()).abs()
     max_diff = float(diff.max().item()) if diff.numel() > 0 else 0.0
     if max_diff > envs.VLLM_DS4_DSV4_SPARSE_MLA_REF_ATOL:
         raise RuntimeError(
             f"DS4 sparse MLA prefill reference mismatch for {layer_prefix}: "
-            f"tokens={num_tokens} max_diff={max_diff:.6g} "
+            f"sampled_tokens={num_tokens} q_tokens={q.shape[0]} "
+            f"max_diff={max_diff:.6g} "
             f"atol={envs.VLLM_DS4_DSV4_SPARSE_MLA_REF_ATOL:.6g} "
-            f"actual={_ds4_sparse_mla_tensor_stats(output[:num_tokens, :num_heads])} "
+            f"actual={_ds4_sparse_mla_tensor_stats(actual)} "
             f"ref={_ds4_sparse_mla_tensor_stats(ref[:, :num_heads])}"
         )
     if envs.VLLM_DS4_DSV4_SPARSE_MLA_TRACE:
         logger.info(
-            "DS4 sparse MLA %s prefill reference ok tokens=%d max_diff=%.6g",
+            "DS4 sparse MLA %s prefill reference ok sampled_tokens=%d "
+            "q_tokens=%d max_diff=%.6g",
             layer_prefix,
             num_tokens,
+            q.shape[0],
             max_diff,
         )
 
@@ -951,8 +973,7 @@ class DeepseekV4FlashMLASparseImpl(DeepseekV4SparseMLAAttentionImpl):
         combined_indices: torch.Tensor,
         combined_lens: torch.Tensor,
         output: torch.Tensor,
-        workspace_buffers: tuple[torch.Tensor, torch.Tensor, torch.Tensor]
-        | None = None,
+        workspace_buffers: tuple[torch.Tensor, ...] | None = None,
     ) -> None:
         backend = _ds4_sparse_mla_prefill_backend()
         if backend == "matmul-debug":
@@ -986,6 +1007,7 @@ class DeepseekV4FlashMLASparseImpl(DeepseekV4SparseMLAAttentionImpl):
                 max_score_buffer,
                 denom_buffer,
                 output_buffer,
+                selected_kv_buffer,
             ) = (
                 torch.empty(
                     (query_chunk_size, layer.num_heads),
@@ -1002,9 +1024,28 @@ class DeepseekV4FlashMLASparseImpl(DeepseekV4SparseMLAAttentionImpl):
                     dtype=torch.float32,
                     device=q.device,
                 ),
+                torch.empty(
+                    (query_chunk_size, topk_chunk_size, q.shape[-1]),
+                    dtype=kv.dtype,
+                    device=q.device,
+                ),
             )
         else:
-            max_score_buffer, denom_buffer, output_buffer = workspace_buffers
+            if len(workspace_buffers) == 3:
+                max_score_buffer, denom_buffer, output_buffer = workspace_buffers
+                selected_kv_buffer = None
+            elif len(workspace_buffers) == 4:
+                (
+                    max_score_buffer,
+                    denom_buffer,
+                    output_buffer,
+                    selected_kv_buffer,
+                ) = workspace_buffers
+            else:
+                raise RuntimeError(
+                    f"DS4 sparse MLA expected 3 or 4 prefill workspace "
+                    f"buffers, got {len(workspace_buffers)}"
+                )
 
         for token_start in range(0, q.shape[0], query_chunk_size):
             token_end = min(token_start + query_chunk_size, q.shape[0])
@@ -1024,17 +1065,49 @@ class DeepseekV4FlashMLASparseImpl(DeepseekV4SparseMLAAttentionImpl):
                     index_start + topk_chunk_size,
                     combined_indices.shape[-1],
                 )
-                accumulate_indexed_sparse_mla_attention_chunk(
-                    q=q_chunk,
-                    kv_flat=kv_flat,
-                    indices=indices_chunk_full[:, index_start:index_end],
-                    lens=lens_chunk,
-                    candidate_offset=index_start,
-                    scale=layer.scale,
-                    max_score=max_score,
-                    denom=denom,
-                    acc=subset_acc,
-                )
+                indices_chunk = indices_chunk_full[:, index_start:index_end]
+                if backend == "gathered":
+                    if selected_kv_buffer is None:
+                        selected_kv_buffer = torch.empty(
+                            (
+                                query_chunk_size,
+                                topk_chunk_size,
+                                q.shape[-1],
+                            ),
+                            dtype=kv.dtype,
+                            device=q.device,
+                        )
+                    selected_kv = selected_kv_buffer[
+                        :num_tokens, : indices_chunk.shape[1]
+                    ]
+                    gather_indexed_sparse_mla_kv(
+                        kv_flat,
+                        indices_chunk,
+                        selected_kv,
+                    )
+                    accumulate_gathered_sparse_mla_attention_chunk(
+                        q=q_chunk,
+                        kv=selected_kv,
+                        lens=lens_chunk,
+                        candidate_offset=index_start,
+                        scale=layer.scale,
+                        max_score=max_score,
+                        denom=denom,
+                        acc=subset_acc,
+                        slot_ids=indices_chunk,
+                    )
+                else:
+                    accumulate_indexed_sparse_mla_attention_chunk(
+                        q=q_chunk,
+                        kv_flat=kv_flat,
+                        indices=indices_chunk,
+                        lens=lens_chunk,
+                        candidate_offset=index_start,
+                        scale=layer.scale,
+                        max_score=max_score,
+                        denom=denom,
+                        acc=subset_acc,
+                    )
 
             finish_sparse_mla_attention_with_sink(
                 max_score,
@@ -1343,12 +1416,16 @@ class DeepseekV4FlashMLASparseImpl(DeepseekV4SparseMLAAttentionImpl):
                 max(1, query_end - query_start),
                 triton_sparse_mla_query_chunk_size(),
             )
-            (
-                kv,
-                max_score_buffer,
-                denom_buffer,
-                output_buffer,
-            ) = current_workspace_manager().get_simultaneous(
+            prefill_backend = _ds4_sparse_mla_prefill_backend()
+            combined_topk_width = sparse_prefill_combined_topk_size(
+                top_k,
+                layer.window_size,
+            )
+            sparse_topk_chunk_size = min(
+                combined_topk_width,
+                triton_sparse_mla_topk_chunk_size(),
+            )
+            workspace_specs = [
                 ((chunk_size_const, M, q.shape[-1]), torch.bfloat16),
                 ((sparse_query_chunk_size, layer.num_heads), torch.float32),
                 ((sparse_query_chunk_size, layer.num_heads), torch.float32),
@@ -1360,7 +1437,24 @@ class DeepseekV4FlashMLASparseImpl(DeepseekV4SparseMLAAttentionImpl):
                     ),
                     torch.float32,
                 ),
-            )
+            ]
+            if prefill_backend == "gathered":
+                workspace_specs.append(
+                    (
+                        (
+                            sparse_query_chunk_size,
+                            sparse_topk_chunk_size,
+                            q.shape[-1],
+                        ),
+                        torch.bfloat16,
+                    )
+                )
+            workspace = current_workspace_manager().get_simultaneous(*workspace_specs)
+            kv = workspace[0]
+            max_score_buffer = workspace[1]
+            denom_buffer = workspace[2]
+            output_buffer = workspace[3]
+            selected_kv_buffer = workspace[4] if prefill_backend == "gathered" else None
             if not swa_only:
                 # Gather compressed KV
                 assert attn_metadata is not None
@@ -1425,10 +1519,15 @@ class DeepseekV4FlashMLASparseImpl(DeepseekV4SparseMLAAttentionImpl):
                     combined_indices=combined_indices,
                     combined_lens=combined_lens,
                     output=output[query_start:query_end],
-                    workspace_buffers=(
-                        max_score_buffer,
-                        denom_buffer,
-                        output_buffer,
+                    workspace_buffers=tuple(
+                        buffer
+                        for buffer in (
+                            max_score_buffer,
+                            denom_buffer,
+                            output_buffer,
+                            selected_kv_buffer,
+                        )
+                        if buffer is not None
                     ),
                 )
                 continue

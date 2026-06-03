@@ -87,8 +87,22 @@ def main() -> int:
     failures += check(
         "prefill backend selector fails closed",
         "_ds4_sparse_mla_prefill_backend(" in flashmla
-        and "expected indexed or matmul-debug" in flashmla
+        and "expected gathered, indexed-unsafe, or matmul-debug" in flashmla
+        and 'backend in ("gathered", "gathered-sparse")' in flashmla
+        and '"indexed-unsafe"' in flashmla
         and "VLLM_DS4_DSV4_SPARSE_MLA_PREFILL_BACKEND" in flashmla,
+    )
+    failures += check(
+        "gathered sparse prefill is the default",
+        'VLLM_DS4_DSV4_SPARSE_MLA_PREFILL_BACKEND: str = "gathered"' in envs
+        and '"VLLM_DS4_DSV4_SPARSE_MLA_PREFILL_BACKEND", "gathered"' in envs
+        and 'VLLM_DS4_DSV4_SPARSE_MLA_PREFILL_BACKEND:-gathered' in launcher,
+    )
+    failures += check(
+        "gathered sparse prefill materializes selected KV before accumulation",
+        "gather_indexed_sparse_mla_kv(" in flashmla
+        and "accumulate_gathered_sparse_mla_attention_chunk(" in flashmla
+        and "selected_kv_buffer" in flashmla,
     )
     failures += check(
         "materialized prefill diagnostic uses normal sparse MLA matmul path",
@@ -113,15 +127,28 @@ def main() -> int:
     failures += check(
         "indexed sparse prefill accepts caller-owned scratch buffers",
         "workspace_buffers:" in sparse_prefill_body
-        and "max_score_buffer, denom_buffer, output_buffer = workspace_buffers"
-        in sparse_prefill_body,
+        and "len(workspace_buffers) == 4" in sparse_prefill_body
+        and "selected_kv_buffer" in sparse_prefill_body,
     )
     failures += check(
-        "prefill gather KV and indexed scratch share one workspace reservation",
-        "kv,\n                max_score_buffer,\n                denom_buffer,\n                output_buffer,"
-        in outer_prefill_body
+        "prefill gather KV and sparse scratch share one workspace reservation",
+        (
+            "kv,\n                max_score_buffer,\n                denom_buffer,\n                output_buffer,"
+            in outer_prefill_body
+            or "workspace_specs = [" in outer_prefill_body
+        )
         and "current_workspace_manager().get_simultaneous(" in outer_prefill_body
-        and "workspace_buffers=(" in outer_prefill_body,
+        and (
+            "workspace_buffers=(" in outer_prefill_body
+            or "workspace_buffers=tuple(" in outer_prefill_body
+        ),
+    )
+    failures += check(
+        "gathered selected-KV scratch shares the outer workspace reservation",
+        "workspace_specs.append(" in outer_prefill_body
+        and "selected_kv_buffer = workspace[4]" in outer_prefill_body
+        and "current_workspace_manager().get_simultaneous(*workspace_specs)"
+        in outer_prefill_body,
     )
     failures += check(
         "indexed sparse prefill no longer nests workspace allocation on hot path",
