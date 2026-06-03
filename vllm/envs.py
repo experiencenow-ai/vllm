@@ -150,6 +150,9 @@ if TYPE_CHECKING:
     VLLM_DS4_DSV4_HC_HEAD_BACKEND: str = "tilelang"
     VLLM_DS4_DSV4_CUTLASS_MXFP4_W13_LAYOUT: str = "swapped"
     VLLM_DS4_DSV4_WEIGHT_AUDIT: bool = False
+    VLLM_DS4_DSV4_HASH_ROUTER_REF_CHECK: bool = False
+    VLLM_DS4_DSV4_HASH_ROUTER_REF_MAX_TOKENS: int = 16
+    VLLM_DS4_DSV4_HASH_ROUTER_REF_ATOL: float = 0.025
     VLLM_DS4_DSV4_SPARSE_MLA_VALIDATE: bool = False
     VLLM_DS4_DSV4_SPARSE_MLA_TRACE: bool = False
     VLLM_DS4_DSV4_SPARSE_MLA_REF_CHECK: bool = False
@@ -1445,10 +1448,10 @@ environment_variables: dict[str, Callable[[], Any]] = {
     )
     .strip()
     .lower(),
-    # DS4 DSV4 native MXFP4 MoE correctness: FlashInfer CUTLASS receives the
-    # de-interleaved W13 tensor. DSV4 reference math is gate/up
-    # silu(gate) * up, so production launchers must state that layout
-    # explicitly instead of inheriting the older swapped converter path.
+    # DS4 DSV4 native MXFP4 MoE correctness: FlashInfer gated kernels consume
+    # their first GEMM in W31/up-gate order. Keep the production default
+    # explicit so launches cannot drift between raw checkpoint W13 and the
+    # FlashInfer W31 contract.
     "VLLM_DS4_DSV4_CUTLASS_MXFP4_W13_LAYOUT": lambda: os.environ.get(
         "VLLM_DS4_DSV4_CUTLASS_MXFP4_W13_LAYOUT", "swapped"
     )
@@ -1459,6 +1462,21 @@ environment_variables: dict[str, Callable[[], Any]] = {
     "VLLM_DS4_DSV4_WEIGHT_AUDIT": lambda: (
         os.environ.get("VLLM_DS4_DSV4_WEIGHT_AUDIT", "0").strip().lower()
         in ("1", "true", "yes", "on")
+    ),
+    # DS4 DSV4 correctness diagnostic: for small hash-MoE batches, compare the
+    # CUDA hash-router op against the row-local PyTorch contract and fail closed
+    # on disagreement. This is diagnostic only; production keeps it disabled.
+    "VLLM_DS4_DSV4_HASH_ROUTER_REF_CHECK": lambda: (
+        os.environ.get("VLLM_DS4_DSV4_HASH_ROUTER_REF_CHECK", "0")
+        .strip()
+        .lower()
+        in ("1", "true", "yes", "on")
+    ),
+    "VLLM_DS4_DSV4_HASH_ROUTER_REF_MAX_TOKENS": lambda: int(
+        os.environ.get("VLLM_DS4_DSV4_HASH_ROUTER_REF_MAX_TOKENS", "16")
+    ),
+    "VLLM_DS4_DSV4_HASH_ROUTER_REF_ATOL": lambda: float(
+        os.environ.get("VLLM_DS4_DSV4_HASH_ROUTER_REF_ATOL", "0.025")
     ),
     # DS4 DSV4 sparse MLA correctness diagnostics. These validate and optionally
     # reference-check the required SM12x Triton sparse-MLA path; they must never

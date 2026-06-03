@@ -103,6 +103,57 @@ def _topk_softplus_sqrt_torch(
     return topk_weights, topk_indices
 
 
+@torch.compiler.disable
+def _ds4_check_hash_softplus_sqrt_against_torch(
+    topk_weights: torch.Tensor,
+    topk_indices: torch.Tensor,
+    gating_output: torch.Tensor,
+    renormalize: bool,
+    input_tokens: torch.Tensor,
+    hash_indices_table: torch.Tensor,
+    routed_scaling_factor: float,
+) -> None:
+    max_tokens = envs.VLLM_DS4_DSV4_HASH_ROUTER_REF_MAX_TOKENS
+    if max_tokens <= 0 or gating_output.shape[0] > max_tokens:
+        return
+    ref_weights = torch.empty_like(topk_weights)
+    ref_indices = torch.empty_like(topk_indices)
+    token_expert_indices = torch.empty_like(
+        topk_indices, dtype=torch.int32, device=topk_indices.device
+    )
+    _topk_softplus_sqrt_torch(
+        ref_weights,
+        ref_indices,
+        token_expert_indices,
+        gating_output,
+        renormalize=renormalize,
+        e_score_correction_bias=None,
+        input_tokens=input_tokens,
+        hash_indices_table=hash_indices_table,
+        routed_scaling_factor=routed_scaling_factor,
+    )
+    sorted_ref_ids, idx_ref = ref_indices.to(torch.int64).sort(dim=-1)
+    sorted_ids, idx_ops = topk_indices.to(torch.int64).sort(dim=-1)
+    if not bool(torch.equal(sorted_ref_ids, sorted_ids)):
+        mismatch = (sorted_ref_ids != sorted_ids).nonzero(as_tuple=False)
+        sample = mismatch[:8].detach().cpu().tolist()
+        raise RuntimeError(
+            "DS4 DSV4 hash-router CUDA op disagrees with torch reference "
+            f"on expert ids: tokens={gating_output.shape[0]} sample={sample}"
+        )
+    sorted_ref_w = ref_weights.gather(1, idx_ref)
+    sorted_w = topk_weights.gather(1, idx_ops)
+    delta = (sorted_ref_w - sorted_w).abs()
+    max_delta = float(delta.max().detach().cpu()) if delta.numel() > 0 else 0.0
+    if max_delta > envs.VLLM_DS4_DSV4_HASH_ROUTER_REF_ATOL:
+        raise RuntimeError(
+            "DS4 DSV4 hash-router CUDA op disagrees with torch reference "
+            f"on weights: tokens={gating_output.shape[0]} "
+            f"max_abs_delta={max_delta:.6g} "
+            f"atol={envs.VLLM_DS4_DSV4_HASH_ROUTER_REF_ATOL}"
+        )
+
+
 def vllm_topk_softplus_sqrt(
     topk_weights: torch.Tensor,
     topk_indices: torch.Tensor,
@@ -148,6 +199,20 @@ def vllm_topk_softplus_sqrt(
         input_tokens,
         hash_indices_table,
     )
+    if (
+        envs.VLLM_DS4_DSV4_HASH_ROUTER_REF_CHECK
+        and hash_indices_table is not None
+        and input_tokens is not None
+    ):
+        _ds4_check_hash_softplus_sqrt_against_torch(
+            topk_weights,
+            topk_indices,
+            gating_output,
+            renormalize,
+            input_tokens,
+            hash_indices_table,
+            routed_scaling_factor,
+        )
 
     return topk_weights, topk_indices
 

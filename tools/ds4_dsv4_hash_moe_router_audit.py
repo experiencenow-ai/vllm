@@ -8,6 +8,8 @@ root = Path(__file__).resolve().parents[1]
 router = (
     root / "vllm/model_executor/layers/fused_moe/router/fused_topk_bias_router.py"
 ).read_text()
+envs = (root / "vllm/envs.py").read_text()
+launcher = (root / "tools/ds4_launch_dsv4_flash_pp8.sh").read_text()
 relaunch = (root / "tools/ds4_relaunch_spark_service.py").read_text()
 
 checks = [
@@ -22,6 +24,26 @@ checks = [
         "CUDA hash-router op is reached after dtype normalization",
         router.find("input_tokens = input_tokens.to(dtype=hash_indices_table.dtype)")
         < router.find("ops.topk_hash_softplus_sqrt("),
+    ),
+    (
+        "hash router reference-check envs are registered",
+        "VLLM_DS4_DSV4_HASH_ROUTER_REF_CHECK" in envs
+        and "VLLM_DS4_DSV4_HASH_ROUTER_REF_MAX_TOKENS" in envs
+        and "VLLM_DS4_DSV4_HASH_ROUTER_REF_ATOL" in envs,
+    ),
+    (
+        "hash router has a compile-disabled torch reference check",
+        "@torch.compiler.disable" in router
+        and "_ds4_check_hash_softplus_sqrt_against_torch(" in router
+        and "_topk_softplus_sqrt_torch(" in router
+        and "DS4 DSV4 hash-router CUDA op disagrees with torch reference" in router,
+    ),
+    (
+        "DSV4 launcher logs hash router reference-check knobs",
+        "hash_router_ref_check=$VLLM_DS4_DSV4_HASH_ROUTER_REF_CHECK" in launcher
+        and "hash_router_ref_max_tokens=$VLLM_DS4_DSV4_HASH_ROUTER_REF_MAX_TOKENS"
+        in launcher
+        and "hash_router_ref_atol=$VLLM_DS4_DSV4_HASH_ROUTER_REF_ATOL" in launcher,
     ),
     (
         "relaunch build validates hash-MoE router audit",

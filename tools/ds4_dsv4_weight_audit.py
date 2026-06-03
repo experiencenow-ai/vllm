@@ -45,6 +45,13 @@ checks = [
         and "missing_layers = sorted(expected_layers - loaded_layers)" in model,
     ),
     (
+        "all rank-owned parameters must be reported loaded",
+        "owned_params = set(dict(self.named_parameters()))" in model
+        and "missing_owned_params = sorted(owned_params - loaded_params)" in model
+        and "unexpected_loaded_params = sorted(loaded_params - owned_params)" in model
+        and "missing_owned_params[:64]" in model,
+    ),
+    (
         "expert coverage is tracked by layer, tensor, shard, and expert id",
         "self._ds4_expert_coverage: dict[int, dict[tuple[str, str], set[int]]] = {}"
         in model
