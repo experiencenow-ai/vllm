@@ -45,7 +45,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--api-port", default=os.getenv("API_PORT", "8102"))
     parser.add_argument(
         "--profile",
-        default=os.getenv("DS4_DSV4_PIPELINE_RAM_PROFILE", "max-throughput"),
+        default=os.getenv("DS4_DSV4_PIPELINE_RAM_PROFILE", "max-kv"),
         help="DS4_DSV4_PIPELINE_RAM_PROFILE for the selected DSV4 service",
     )
     parser.add_argument("--nnodes", type=int, default=int(os.getenv("NNODES", "8")))

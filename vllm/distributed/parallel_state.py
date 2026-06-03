@@ -640,19 +640,18 @@ class GroupCoordinator:
             return os.environ.get("VLLM_DS4_PP_PREV_SOCKET_IFNAME", "").strip()
         return ""
 
-    def _ds4_pp_socket_ifnames(self) -> str:
-        configured = os.environ.get("VLLM_DS4_PP_SOCKET_IFNAME", "").strip()
-        if configured:
-            return configured
-        devices: list[str] = []
-        for name in (
-            "VLLM_DS4_PP_PREV_SOCKET_IFNAME",
-            "VLLM_DS4_PP_NEXT_SOCKET_IFNAME",
-        ):
-            value = os.environ.get(name, "").strip()
-            if value and value not in devices:
-                devices.append(value)
-        return ",".join(devices)
+    @contextmanager
+    def _ds4_pp_pair_nccl_socket_ifname(self, pair_ifname: str):
+        original_ifname = os.environ.get("NCCL_SOCKET_IFNAME")
+        if pair_ifname:
+            os.environ["NCCL_SOCKET_IFNAME"] = pair_ifname
+        try:
+            yield
+        finally:
+            if original_ifname is None:
+                os.environ.pop("NCCL_SOCKET_IFNAME", None)
+            else:
+                os.environ["NCCL_SOCKET_IFNAME"] = original_ifname
 
     def _build_ds4_pp_torch_pair_groups(
         self, torch_distributed_backend: str | Backend
@@ -663,24 +662,20 @@ class GroupCoordinator:
                 "backend for adjacent PP tensor payload groups."
             )
         groups: dict[int, ProcessGroup] = {}
-        original_ifname = os.environ.get("NCCL_SOCKET_IFNAME")
-        stable_ifnames = self._ds4_pp_socket_ifnames()
-        try:
-            if stable_ifnames:
-                os.environ["NCCL_SOCKET_IFNAME"] = stable_ifnames
-            for left_index in range(self.world_size - 1):
-                right_index = left_index + 1
-                pair_ifname = self._ds4_pp_pair_ifname(left_index, right_index)
-                torch.distributed.barrier(group=self.cpu_group)
-                if self.rank_in_group in {left_index, right_index}:
-                    if not pair_ifname:
-                        raise RuntimeError(
-                            "VLLM_DS4_PP_TORCH_PAIR_GROUPS requires "
-                            "VLLM_DS4_PP_PREV_SOCKET_IFNAME or "
-                            "VLLM_DS4_PP_NEXT_SOCKET_IFNAME for every "
-                            "active PP edge rank."
-                        )
-                    pair_ranks = [self.ranks[left_index], self.ranks[right_index]]
+        for left_index in range(self.world_size - 1):
+            right_index = left_index + 1
+            pair_ifname = self._ds4_pp_pair_ifname(left_index, right_index)
+            torch.distributed.barrier(group=self.cpu_group)
+            if self.rank_in_group in {left_index, right_index}:
+                if not pair_ifname:
+                    raise RuntimeError(
+                        "VLLM_DS4_PP_TORCH_PAIR_GROUPS requires "
+                        "VLLM_DS4_PP_PREV_SOCKET_IFNAME or "
+                        "VLLM_DS4_PP_NEXT_SOCKET_IFNAME for every "
+                        "active PP edge rank."
+                    )
+                pair_ranks = [self.ranks[left_index], self.ranks[right_index]]
+                with self._ds4_pp_pair_nccl_socket_ifname(pair_ifname):
                     pair_group = self._new_ds4_pp_torch_pair_group(
                         pair_ranks, torch_distributed_backend
                     )
@@ -696,13 +691,8 @@ class GroupCoordinator:
                         if self.rank_in_group == left_index
                         else left_index
                     )
-                    groups[peer_index] = pair_group
-                torch.distributed.barrier(group=self.cpu_group)
-        finally:
-            if original_ifname is None:
-                os.environ.pop("NCCL_SOCKET_IFNAME", None)
-            else:
-                os.environ["NCCL_SOCKET_IFNAME"] = original_ifname
+                groups[peer_index] = pair_group
+            torch.distributed.barrier(group=self.cpu_group)
         return groups
 
     def _new_ds4_pp_torch_pair_group(
