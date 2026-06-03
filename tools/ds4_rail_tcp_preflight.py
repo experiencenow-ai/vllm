@@ -394,6 +394,41 @@ def _parse_iperf_csv_bits_per_second(stdout: str) -> float:
     )
 
 
+def _parse_iperf3_server_bits_per_second(stdout: str) -> float:
+    for line in reversed([item.strip() for item in stdout.splitlines() if item.strip()]):
+        fields = line.split()
+        if len(fields) < 7:
+            continue
+        if "receiver" not in fields:
+            continue
+        try:
+            value = float(fields[-3])
+        except ValueError:
+            continue
+        unit = fields[-2].lower()
+        if unit.startswith("gbit"):
+            return value * 1e9
+        if unit.startswith("mbit"):
+            return value * 1e6
+        if unit.startswith("kbit"):
+            return value * 1e3
+        if unit.startswith("bit"):
+            return value
+    raise RuntimeError(
+        "could not parse iperf3 server receiver bandwidth: "
+        f"{stdout!r}"
+    )
+
+
+def _parse_background_server_bits_per_second(tool: str, stdout: str, stderr: str) -> float:
+    text = "\n".join(item for item in (stdout, stderr) if item)
+    if tool == "iperf":
+        return _parse_iperf_csv_bits_per_second(text)
+    if tool == "iperf3":
+        return _parse_iperf3_server_bits_per_second(text)
+    raise ValueError(f"server bandwidth parse is not supported for {tool}")
+
+
 def _run_iperf_client(
     pair_index: int,
     src: int,
@@ -727,6 +762,8 @@ def _stop_background_servers(
     servers: list[tuple[int, int, int, subprocess.Popen[str]]],
 ) -> None:
     stop_timeout_s = float(_env("DS4_RAIL_TCP_PREFLIGHT_SERVER_STOP_TIMEOUT_S", "2"))
+    tool = _preflight_tool()
+    errors: list[str] = []
     for pair_index, src, dst, proc in servers:
         if proc.poll() is None:
             try:
@@ -741,6 +778,36 @@ def _stop_background_servers(
             except ProcessLookupError:
                 pass
             stdout, stderr = proc.communicate(timeout=stop_timeout_s)
+        if tool in {"iperf", "iperf3"} and _env(
+            "DS4_RAIL_TCP_PREFLIGHT_VERIFY_SERVER_SUMMARY", "1"
+        ).lower() not in {"0", "false", "no", "off"}:
+            try:
+                bits_per_second = _parse_background_server_bits_per_second(
+                    tool, stdout, stderr
+                )
+                gbps = bits_per_second / 8.0 / 1e9
+                status = _report_client_bandwidth(
+                    pair=f"{src}-{dst}",
+                    role=f"{tool}-server",
+                    streams=max(1, int(_env("DS4_RAIL_TCP_PREFLIGHT_STREAMS", "16"))),
+                    duration_s=float(_env("DS4_RAIL_TCP_PREFLIGHT_DURATION_S", "5")),
+                    rails_text="server",
+                    gbps=gbps,
+                )
+                if status != 0:
+                    errors.append(
+                        "rail TCP preflight server bandwidth failed: "
+                        f"pair={src}-{dst} index={pair_index} status={status}"
+                    )
+            except Exception as exc:  # noqa: BLE001 - preserve exact server text
+                text = (stderr or stdout or "").strip()
+                if text:
+                    text = text.splitlines()[-1][-300:]
+                errors.append(
+                    "rail TCP preflight server did not produce a verified summary: "
+                    f"pair={src}-{dst} index={pair_index} "
+                    f"{type(exc).__name__}: {exc} last_line={text!r}"
+                )
         text = (stderr or stdout or "").strip()
         if text:
             text = " " + text.splitlines()[-1][-300:]
@@ -749,6 +816,8 @@ def _stop_background_servers(
             f"pair={src}-{dst} index={pair_index} status={proc.returncode}{text}",
             file=sys.stderr,
         )
+    if errors:
+        raise RuntimeError("; ".join(errors))
 
 
 def _run_bandwidth_preflight(
