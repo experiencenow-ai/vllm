@@ -640,6 +640,20 @@ class GroupCoordinator:
             return os.environ.get("VLLM_DS4_PP_PREV_SOCKET_IFNAME", "").strip()
         return ""
 
+    def _ds4_pp_socket_ifnames(self) -> str:
+        configured = os.environ.get("VLLM_DS4_PP_SOCKET_IFNAME", "").strip()
+        if configured:
+            return configured
+        devices: list[str] = []
+        for name in (
+            "VLLM_DS4_PP_PREV_SOCKET_IFNAME",
+            "VLLM_DS4_PP_NEXT_SOCKET_IFNAME",
+        ):
+            value = os.environ.get(name, "").strip()
+            if value and value not in devices:
+                devices.append(value)
+        return ",".join(devices)
+
     def _build_ds4_pp_torch_pair_groups(
         self, torch_distributed_backend: str | Backend
     ) -> dict[int, ProcessGroup]:
@@ -650,10 +664,14 @@ class GroupCoordinator:
             )
         groups: dict[int, ProcessGroup] = {}
         original_ifname = os.environ.get("NCCL_SOCKET_IFNAME")
+        stable_ifnames = self._ds4_pp_socket_ifnames()
         try:
+            if stable_ifnames:
+                os.environ["NCCL_SOCKET_IFNAME"] = stable_ifnames
             for left_index in range(self.world_size - 1):
                 right_index = left_index + 1
                 pair_ifname = self._ds4_pp_pair_ifname(left_index, right_index)
+                torch.distributed.barrier(group=self.cpu_group)
                 if self.rank_in_group in {left_index, right_index}:
                     if not pair_ifname:
                         raise RuntimeError(
@@ -662,12 +680,17 @@ class GroupCoordinator:
                             "VLLM_DS4_PP_NEXT_SOCKET_IFNAME for every "
                             "active PP edge rank."
                         )
-                    os.environ["NCCL_SOCKET_IFNAME"] = pair_ifname
                     pair_ranks = [self.ranks[left_index], self.ranks[right_index]]
                     pair_group = self._new_ds4_pp_torch_pair_group(
                         pair_ranks, torch_distributed_backend
                     )
-                    self._warm_ds4_pp_torch_pair_group(pair_group, pair_ifname)
+                    self._warm_ds4_pp_torch_pair_group(
+                        pair_group,
+                        pair_ifname,
+                        self.ranks[right_index]
+                        if self.rank_in_group == left_index
+                        else self.ranks[left_index],
+                    )
                     peer_index = (
                         right_index
                         if self.rank_in_group == left_index
@@ -697,28 +720,51 @@ class GroupCoordinator:
             )
 
     def _warm_ds4_pp_torch_pair_group(
-        self, pair_group: ProcessGroup, pair_ifname: str
+        self, pair_group: ProcessGroup, pair_ifname: str, peer_global_rank: int
     ) -> None:
         if not torch.cuda.is_available():
             raise RuntimeError(
                 "VLLM_DS4_PP_TORCH_PAIR_GROUPS requires CUDA for NCCL "
                 "adjacent PP payload groups."
             )
-        value = torch.tensor(
+        send = torch.tensor(
             [self.rank_in_group + 1],
             dtype=torch.float32,
             device=self.device,
         )
-        torch.distributed.all_reduce(
-            value, op=torch.distributed.ReduceOp.SUM, group=pair_group
-        )
+        recv = torch.empty_like(send)
+        if self.rank < peer_global_rank:
+            ops = [
+                P2POp(torch.distributed.isend, send, peer_global_rank, pair_group),
+                P2POp(torch.distributed.irecv, recv, peer_global_rank, pair_group),
+            ]
+        else:
+            ops = [
+                P2POp(torch.distributed.irecv, recv, peer_global_rank, pair_group),
+                P2POp(torch.distributed.isend, send, peer_global_rank, pair_group),
+            ]
+        for req in torch.distributed.batch_isend_irecv(ops):
+            req.wait()
         torch.cuda.synchronize(self.device)
+        expected = float(
+            self.ranks.index(peer_global_rank) + 1
+            if peer_global_rank in self.ranks
+            else peer_global_rank + 1
+        )
+        actual = float(recv[0].item())
+        if actual != expected:
+            raise RuntimeError(
+                "DS4 PP torch pair group P2P warmup failed: "
+                f"pp_rank={self.rank_in_group} peer={peer_global_rank} "
+                f"recv {actual} != expected {expected}"
+            )
         logger.info(
             "DS4 PP torch pair group warmed: unique_name=%s pp_rank=%s "
-            "ifname=%s",
+            "route_ifname=%s nccl_ifnames=%s",
             self.unique_name,
             self.rank_in_group,
             pair_ifname,
+            os.environ.get("NCCL_SOCKET_IFNAME", "<unset>"),
         )
 
     def _ds4_pp_torch_pair_group(self, peer: int) -> ProcessGroup:
