@@ -187,6 +187,7 @@ fi
 export VLLM_TEST_FORCE_FP8_MARLIN=0
 export VLLM_DISABLED_KERNELS="${VLLM_DISABLED_KERNELS:-MarlinNvFp4LinearKernel,EmulationNvFp4LinearKernel,MarlinMxFp4LinearKernel,MarlinMxfp8LinearKernel,EmulationMxfp8LinearKernel,MarlinFP8ScaledMMLinearKernel}"
 export DS4_200G_IFNAME="${DS4_200G_IFNAME:-enP2p1s0f0np0,enP2p1s0f1np1}"
+export DS4_200G_ALLOW_DEGRADED_LINKS="${DS4_200G_ALLOW_DEGRADED_LINKS:-1}"
 if [[ "${DS4_200G_PAIR_LOCAL_NCCL:-0}" =~ ^(1|true|TRUE|yes|YES|on|ON)$ ]]; then
   echo "DSV4 PP4xTP2xEP refuses DS4_200G_PAIR_LOCAL_NCCL=1. The production fast path requires one all-rank NCCL/socket fabric so PP, TP, and EP cannot silently fall back to a pair-only view." >&2
   exit 64
