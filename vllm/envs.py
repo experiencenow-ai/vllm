@@ -149,6 +149,11 @@ if TYPE_CHECKING:
     VLLM_DS4_DSV4_LAYER_BACKEND: str = "cuda"
     VLLM_DS4_DSV4_HC_HEAD_BACKEND: str = "tilelang"
     VLLM_DS4_DSV4_WEIGHT_AUDIT: bool = False
+    VLLM_DS4_DSV4_SPARSE_MLA_VALIDATE: bool = False
+    VLLM_DS4_DSV4_SPARSE_MLA_TRACE: bool = False
+    VLLM_DS4_DSV4_SPARSE_MLA_REF_CHECK: bool = False
+    VLLM_DS4_DSV4_SPARSE_MLA_REF_MAX_TOKENS: int = 8
+    VLLM_DS4_DSV4_SPARSE_MLA_REF_ATOL: float = 0.5
     VLLM_DS4_MHC_TILELANG_MAX_TOKENS: int = 8192
     VLLM_DS4_MHC_ALLOW_TRITON_SM12X_FALLBACK: bool = False
     VLLM_DS4_MHC_NATIVE_PREFLIGHT_TOKENS: int = 8192
@@ -1442,6 +1447,27 @@ environment_variables: dict[str, Callable[[], Any]] = {
     "VLLM_DS4_DSV4_WEIGHT_AUDIT": lambda: (
         os.environ.get("VLLM_DS4_DSV4_WEIGHT_AUDIT", "0").strip().lower()
         in ("1", "true", "yes", "on")
+    ),
+    # DS4 DSV4 sparse MLA correctness diagnostics. These validate and optionally
+    # reference-check the required SM12x Triton sparse-MLA path; they must never
+    # route production to a slower backend.
+    "VLLM_DS4_DSV4_SPARSE_MLA_VALIDATE": lambda: (
+        os.environ.get("VLLM_DS4_DSV4_SPARSE_MLA_VALIDATE", "0").strip().lower()
+        in ("1", "true", "yes", "on")
+    ),
+    "VLLM_DS4_DSV4_SPARSE_MLA_TRACE": lambda: (
+        os.environ.get("VLLM_DS4_DSV4_SPARSE_MLA_TRACE", "0").strip().lower()
+        in ("1", "true", "yes", "on")
+    ),
+    "VLLM_DS4_DSV4_SPARSE_MLA_REF_CHECK": lambda: (
+        os.environ.get("VLLM_DS4_DSV4_SPARSE_MLA_REF_CHECK", "0").strip().lower()
+        in ("1", "true", "yes", "on")
+    ),
+    "VLLM_DS4_DSV4_SPARSE_MLA_REF_MAX_TOKENS": lambda: int(
+        os.environ.get("VLLM_DS4_DSV4_SPARSE_MLA_REF_MAX_TOKENS", "8")
+    ),
+    "VLLM_DS4_DSV4_SPARSE_MLA_REF_ATOL": lambda: float(
+        os.environ.get("VLLM_DS4_DSV4_SPARSE_MLA_REF_ATOL", "0.5")
     ),
     # DS4 DSV4: TileLang mHC prefill slabs must be chunked well below the
     # 65K prefill scheduler budget on GB10. The live c256 run showed illegal

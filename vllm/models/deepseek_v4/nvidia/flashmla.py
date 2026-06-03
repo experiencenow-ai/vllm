@@ -6,7 +6,9 @@ from typing import TYPE_CHECKING, ClassVar, cast
 
 import torch
 
+import vllm.envs as envs
 from vllm.forward_context import get_forward_context
+from vllm.logger import init_logger
 from vllm.models.deepseek_v4.common.ops import (
     combine_topk_swa_indices,
     compute_global_topk_indices_and_lens,
@@ -56,6 +58,185 @@ if TYPE_CHECKING:
         DeepseekV4MLAAttention,
     )
     from vllm.v1.attention.backends.mla.sparse_swa import DeepseekSparseSWAMetadata
+
+
+logger = init_logger(__name__)
+
+
+@torch.compiler.disable
+def _ds4_sparse_mla_tensor_stats(tensor: torch.Tensor) -> str:
+    if tensor.numel() == 0:
+        return "numel=0"
+    sample = tensor.detach()
+    if sample.dtype == torch.bool:
+        sample = sample.to(torch.int32)
+    if not sample.is_floating_point():
+        sample = sample.to(torch.float32)
+    else:
+        sample = sample.float()
+    finite = torch.isfinite(sample)
+    finite_count = int(finite.sum().item())
+    if finite_count == 0:
+        return f"numel={tensor.numel()} finite=0"
+    valid = sample[finite]
+    return (
+        f"numel={tensor.numel()} finite={finite_count} "
+        f"min={float(valid.min().item()):.6g} "
+        f"max={float(valid.max().item()):.6g} "
+        f"mean={float(valid.mean().item()):.6g} "
+        f"absmax={float(valid.abs().max().item()):.6g}"
+    )
+
+
+@torch.compiler.disable
+def _ds4_validate_indexed_sparse_mla_inputs(
+    *,
+    layer_prefix: str,
+    stage: str,
+    indices: torch.Tensor,
+    lens: torch.Tensor,
+    max_index: int,
+) -> None:
+    if not (envs.VLLM_DS4_DSV4_SPARSE_MLA_VALIDATE or envs.VLLM_DS4_DSV4_SPARSE_MLA_TRACE):
+        return
+    if indices.dim() != 2:
+        raise RuntimeError(
+            f"DS4 sparse MLA {stage} expected 2D indices for {layer_prefix}, "
+            f"got shape={tuple(indices.shape)}"
+        )
+    if lens.dim() != 1 or lens.shape[0] != indices.shape[0]:
+        raise RuntimeError(
+            f"DS4 sparse MLA {stage} lens mismatch for {layer_prefix}: "
+            f"indices_shape={tuple(indices.shape)} lens_shape={tuple(lens.shape)}"
+        )
+    width = indices.shape[1]
+    if lens.numel() > 0:
+        lens_min = int(lens.min().item())
+        lens_max = int(lens.max().item())
+    else:
+        lens_min = 0
+        lens_max = 0
+    if lens_min < 0 or lens_max > width:
+        raise RuntimeError(
+            f"DS4 sparse MLA {stage} invalid lens for {layer_prefix}: "
+            f"lens_min={lens_min} lens_max={lens_max} width={width}"
+        )
+    if indices.numel() > 0:
+        offsets = torch.arange(width, device=indices.device).view(1, width)
+        valid_mask = offsets < lens.view(-1, 1)
+        valid_indices = indices[valid_mask]
+    else:
+        valid_indices = indices.reshape(-1)
+    if valid_indices.numel() > 0:
+        idx_min = int(valid_indices.min().item())
+        idx_max = int(valid_indices.max().item())
+        if idx_min < 0 or idx_max >= max_index:
+            bad_count = int(((valid_indices < 0) | (valid_indices >= max_index)).sum().item())
+            raise RuntimeError(
+                f"DS4 sparse MLA {stage} out-of-range indices for {layer_prefix}: "
+                f"bad_count={bad_count} idx_min={idx_min} idx_max={idx_max} "
+                f"max_index={max_index} width={width} lens_min={lens_min} "
+                f"lens_max={lens_max}"
+            )
+    else:
+        idx_min = 0
+        idx_max = -1
+    if envs.VLLM_DS4_DSV4_SPARSE_MLA_TRACE:
+        logger.info(
+            "DS4 sparse MLA %s %s rows=%d width=%d lens_min=%d lens_max=%d "
+            "idx_min=%d idx_max=%d max_index=%d",
+            layer_prefix,
+            stage,
+            indices.shape[0],
+            width,
+            lens_min,
+            lens_max,
+            idx_min,
+            idx_max,
+            max_index,
+        )
+
+
+@torch.compiler.disable
+def _ds4_check_sparse_mla_output(
+    *,
+    layer_prefix: str,
+    stage: str,
+    output: torch.Tensor,
+    num_heads: int,
+) -> None:
+    if not (envs.VLLM_DS4_DSV4_SPARSE_MLA_VALIDATE or envs.VLLM_DS4_DSV4_SPARSE_MLA_TRACE):
+        return
+    active = output[:, :num_heads]
+    if active.numel() > 0 and not bool(torch.isfinite(active).all().item()):
+        raise RuntimeError(
+            f"DS4 sparse MLA {stage} produced non-finite output for {layer_prefix}: "
+            f"{_ds4_sparse_mla_tensor_stats(active)}"
+        )
+    if envs.VLLM_DS4_DSV4_SPARSE_MLA_TRACE:
+        logger.info(
+            "DS4 sparse MLA %s %s output %s",
+            layer_prefix,
+            stage,
+            _ds4_sparse_mla_tensor_stats(active),
+        )
+
+
+@torch.compiler.disable
+def _ds4_reference_check_sparse_mla_prefill(
+    *,
+    layer_prefix: str,
+    q: torch.Tensor,
+    kv_flat: torch.Tensor,
+    combined_indices: torch.Tensor,
+    combined_lens: torch.Tensor,
+    attn_sink: torch.Tensor,
+    scale: float,
+    output: torch.Tensor,
+    num_heads: int,
+) -> None:
+    if not envs.VLLM_DS4_DSV4_SPARSE_MLA_REF_CHECK:
+        return
+    num_tokens = min(
+        q.shape[0],
+        output.shape[0],
+        max(0, envs.VLLM_DS4_DSV4_SPARSE_MLA_REF_MAX_TOKENS),
+    )
+    if num_tokens == 0:
+        return
+    ref = torch.zeros_like(output[:num_tokens])
+    q_active = q[:num_tokens, :num_heads].float()
+    sink = attn_sink[:num_heads].float()
+    for token_idx in range(num_tokens):
+        lens = int(combined_lens[token_idx].item())
+        if lens <= 0:
+            continue
+        slot_ids = combined_indices[token_idx, :lens]
+        slot_ids = slot_ids[(slot_ids >= 0) & (slot_ids < kv_flat.shape[0])]
+        if slot_ids.numel() == 0:
+            continue
+        kv = kv_flat.index_select(0, slot_ids.long()).float()
+        scores = torch.matmul(q_active[token_idx], kv.t()) * scale
+        scores_with_sink = torch.cat((scores, sink.view(num_heads, 1)), dim=1)
+        probs = torch.softmax(scores_with_sink, dim=1)[:, : kv.shape[0]]
+        ref[token_idx, :num_heads] = torch.matmul(probs, kv).to(output.dtype)
+    diff = (output[:num_tokens, :num_heads].float() - ref[:, :num_heads].float()).abs()
+    max_diff = float(diff.max().item()) if diff.numel() > 0 else 0.0
+    if max_diff > envs.VLLM_DS4_DSV4_SPARSE_MLA_REF_ATOL:
+        raise RuntimeError(
+            f"DS4 sparse MLA prefill reference mismatch for {layer_prefix}: "
+            f"tokens={num_tokens} max_diff={max_diff:.6g} "
+            f"atol={envs.VLLM_DS4_DSV4_SPARSE_MLA_REF_ATOL:.6g} "
+            f"actual={_ds4_sparse_mla_tensor_stats(output[:num_tokens, :num_heads])} "
+            f"ref={_ds4_sparse_mla_tensor_stats(ref[:, :num_heads])}"
+        )
+    if envs.VLLM_DS4_DSV4_SPARSE_MLA_TRACE:
+        logger.info(
+            "DS4 sparse MLA %s prefill reference ok tokens=%d max_diff=%.6g",
+            layer_prefix,
+            num_tokens,
+            max_diff,
+        )
 
 
 class DeepseekV4SparseMLAAttentionImpl(SparseMLAAttentionImpl[FlashMLASparseMetadata]):
@@ -225,6 +406,13 @@ class DeepseekV4FlashMLASparseImpl(DeepseekV4SparseMLAAttentionImpl):
         swa_lens = swa_metadata.decode_swa_lens[:num_decode_tokens]
         swa_indices = swa_metadata.decode_swa_indices[:num_decode_tokens]
         max_swa_len = swa_metadata.decode_swa_indices.shape[-1]
+        _ds4_validate_indexed_sparse_mla_inputs(
+            layer_prefix=layer.prefix,
+            stage="swa_decode",
+            indices=swa_indices,
+            lens=swa_lens,
+            max_index=swa_k_cache.shape[0] * swa_metadata.block_size,
+        )
         head_block_size = sparse_mla_decode_head_block_size(num_decode_tokens)
         if not mtp_decode:
             fp8ds_paged_sparse_mla_attention_with_sink_multihead(
@@ -244,6 +432,12 @@ class DeepseekV4FlashMLASparseImpl(DeepseekV4SparseMLAAttentionImpl):
             )
             if output.shape[1] > layer.num_heads:
                 output[:, layer.num_heads :].zero_()
+            _ds4_check_sparse_mla_output(
+                layer_prefix=layer.prefix,
+                stage="swa_decode_paged",
+                output=output,
+                num_heads=layer.num_heads,
+            )
             return
 
         (
@@ -279,6 +473,12 @@ class DeepseekV4FlashMLASparseImpl(DeepseekV4SparseMLAAttentionImpl):
         )
         if output.shape[1] > layer.num_heads:
             output[:, layer.num_heads :].zero_()
+        _ds4_check_sparse_mla_output(
+            layer_prefix=layer.prefix,
+            stage="swa_decode_accum",
+            output=output,
+            num_heads=layer.num_heads,
+        )
 
     @classmethod
     def _forward_sparse_mla_compressed_decode_triton(
@@ -313,6 +513,20 @@ class DeepseekV4FlashMLASparseImpl(DeepseekV4SparseMLAAttentionImpl):
         compressed_slot_ids = topk_indices[:, 0, :]
         swa_lens = swa_metadata.decode_swa_lens[:num_decode_tokens]
         swa_indices = swa_metadata.decode_swa_indices[:num_decode_tokens]
+        _ds4_validate_indexed_sparse_mla_inputs(
+            layer_prefix=layer.prefix,
+            stage="compressed_decode_topk",
+            indices=compressed_slot_ids,
+            lens=topk_lens,
+            max_index=compressed_k_cache.shape[0] * compressed_block_size,
+        )
+        _ds4_validate_indexed_sparse_mla_inputs(
+            layer_prefix=layer.prefix,
+            stage="compressed_decode_swa",
+            indices=swa_indices,
+            lens=swa_lens,
+            max_index=swa_k_cache.shape[0] * swa_metadata.block_size,
+        )
         head_block_size = sparse_mla_decode_head_block_size(num_decode_tokens)
         if (
             compressed_topk <= topk_chunk_size
@@ -407,6 +621,12 @@ class DeepseekV4FlashMLASparseImpl(DeepseekV4SparseMLAAttentionImpl):
                 )
                 if output.shape[1] > layer.num_heads:
                     output[:, layer.num_heads :].zero_()
+                _ds4_check_sparse_mla_output(
+                    layer_prefix=layer.prefix,
+                    stage="compressed_decode_splitkv",
+                    output=output,
+                    num_heads=layer.num_heads,
+                )
                 return
 
             use_dot_finish = num_decode_tokens <= 16
@@ -421,6 +641,12 @@ class DeepseekV4FlashMLASparseImpl(DeepseekV4SparseMLAAttentionImpl):
                 score_buffer=score_or_mid_buffer,
                 value_block_size=512 if use_dot_finish else 256,
                 candidate_block_size=128 if use_dot_finish else None,
+            )
+            _ds4_check_sparse_mla_output(
+                layer_prefix=layer.prefix,
+                stage="compressed_decode_matmul",
+                output=output,
+                num_heads=layer.num_heads,
             )
             return
 
@@ -446,6 +672,12 @@ class DeepseekV4FlashMLASparseImpl(DeepseekV4SparseMLAAttentionImpl):
             )
             if output.shape[1] > layer.num_heads:
                 output[:, layer.num_heads :].zero_()
+            _ds4_check_sparse_mla_output(
+                layer_prefix=layer.prefix,
+                stage="compressed_decode_global_paged",
+                output=output,
+                num_heads=layer.num_heads,
+            )
             return
 
         (
@@ -526,6 +758,12 @@ class DeepseekV4FlashMLASparseImpl(DeepseekV4SparseMLAAttentionImpl):
         )
         if output.shape[1] > layer.num_heads:
             output[:, layer.num_heads :].zero_()
+        _ds4_check_sparse_mla_output(
+            layer_prefix=layer.prefix,
+            stage="compressed_decode_accum",
+            output=output,
+            num_heads=layer.num_heads,
+        )
 
     @classmethod
     def _forward_sparse_mla_prefill_triton(
@@ -538,6 +776,13 @@ class DeepseekV4FlashMLASparseImpl(DeepseekV4SparseMLAAttentionImpl):
         output: torch.Tensor,
     ) -> None:
         kv_flat = kv.reshape(-1, q.shape[-1])
+        _ds4_validate_indexed_sparse_mla_inputs(
+            layer_prefix=layer.prefix,
+            stage="prefill",
+            indices=combined_indices,
+            lens=combined_lens,
+            max_index=kv_flat.shape[0],
+        )
         topk_chunk_size = min(
             combined_indices.shape[-1],
             triton_sparse_mla_topk_chunk_size(),
@@ -595,6 +840,23 @@ class DeepseekV4FlashMLASparseImpl(DeepseekV4SparseMLAAttentionImpl):
             )
             if output.shape[1] > layer.num_heads:
                 output[token_start:token_end, layer.num_heads :].zero_()
+            _ds4_check_sparse_mla_output(
+                layer_prefix=layer.prefix,
+                stage="prefill",
+                output=output[token_start:token_end],
+                num_heads=layer.num_heads,
+            )
+        _ds4_reference_check_sparse_mla_prefill(
+            layer_prefix=layer.prefix,
+            q=q,
+            kv_flat=kv_flat,
+            combined_indices=combined_indices,
+            combined_lens=combined_lens,
+            attn_sink=layer.attn_sink,
+            scale=layer.scale,
+            output=output,
+            num_heads=layer.num_heads,
+        )
 
     @classmethod
     def _forward_decode(
