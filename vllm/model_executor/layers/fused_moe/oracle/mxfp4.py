@@ -1598,21 +1598,43 @@ def convert_weight_to_mxfp4_moe_kernel_format(
         if w2_bias is not None:
             w2_bias = w2_bias.data
 
-        # DSV4 loading gives contiguous [w1/gate, w3/up]. FlashInfer CUTLASS
-        # expects the first GEMM in [w3/up, w1/gate] order.
+        w13_layout = envs.VLLM_DS4_DSV4_CUTLASS_MXFP4_W13_LAYOUT
+        if w13_layout not in ("gate-up", "swapped"):
+            raise RuntimeError(
+                "VLLM_DS4_DSV4_CUTLASS_MXFP4_W13_LAYOUT must be "
+                "'gate-up' or 'swapped', got "
+                f"{w13_layout!r}"
+            )
+
+        # DSV4 loading gives contiguous [w1/gate, w3/up]. The production
+        # FlashInfer CUTLASS path must preserve that reference activation order
+        # unless the legacy swapped comparison mode is explicitly requested.
         w1_weight = w13_weight[:, :intermediate_size, :]
         w3_weight = w13_weight[:, intermediate_size:, :]
-        w13_weight = torch.cat([w3_weight, w1_weight], dim=1).contiguous()
+        if w13_layout == "gate-up":
+            w13_weight = torch.cat([w1_weight, w3_weight], dim=1).contiguous()
+        else:
+            w13_weight = torch.cat([w3_weight, w1_weight], dim=1).contiguous()
 
         w1_scale = w13_weight_scale[:, :intermediate_size, :]
         w3_scale = w13_weight_scale[:, intermediate_size:, :]
-        w13_weight_scale = torch.cat([w3_scale, w1_scale], dim=1).contiguous()
+        if w13_layout == "gate-up":
+            w13_weight_scale = torch.cat([w1_scale, w3_scale], dim=1).contiguous()
+        else:
+            w13_weight_scale = torch.cat([w3_scale, w1_scale], dim=1).contiguous()
 
         if w13_bias is not None:
             w13_bias = w13_bias.data
             b1 = w13_bias[:, :intermediate_size]
             b3 = w13_bias[:, intermediate_size:]
-            w13_bias = torch.cat([b3, b1], dim=1).contiguous()
+            if w13_layout == "gate-up":
+                w13_bias = torch.cat([b1, b3], dim=1).contiguous()
+            else:
+                w13_bias = torch.cat([b3, b1], dim=1).contiguous()
+        logger.info_once(
+            "DS4 DSV4 live FlashInfer CUTLASS MXFP4 W13 layout: %s",
+            w13_layout,
+        )
 
         if mxfp4_backend == Mxfp4MoeBackend.FLASHINFER_CUTLASS_MXFP4_MXFP8:
             from flashinfer import block_scale_interleave
