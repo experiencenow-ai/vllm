@@ -1614,6 +1614,7 @@ class DeepseekV4ForCausalLM(nn.Module, SupportsPP):
             self.lm_head = ParallelLMHead(
                 config.vocab_size,
                 config.hidden_size,
+                params_dtype=torch.float32,
                 prefix=maybe_prefix(prefix, "lm_head"),
             )
         else:
@@ -1630,7 +1631,10 @@ class DeepseekV4ForCausalLM(nn.Module, SupportsPP):
         self,
         hidden_states: torch.Tensor,
     ) -> torch.Tensor | None:
-        logits = self.logits_processor(self.lm_head, hidden_states)
+        # DeepSeek's reference inference path keeps head.weight in fp32 and
+        # projects normed hidden states as fp32. Preserve that final
+        # distribution instead of relying on the model dtype default.
+        logits = self.logits_processor(self.lm_head, hidden_states.to(torch.float32))
         return logits
 
     def forward(
@@ -1676,6 +1680,12 @@ class DeepseekV4ForCausalLM(nn.Module, SupportsPP):
                     "model.hc_head_scale",
                 ]
             )
+            if self.lm_head.weight.dtype != torch.float32:
+                raise RuntimeError(
+                    "DS4 DSV4 weight audit failed: final PP rank must keep "
+                    "lm_head.weight in torch.float32 to match DeepSeek V4 "
+                    f"reference logits; got {self.lm_head.weight.dtype}."
+                )
         loaded_layers = set()
         for name in loaded_params:
             match = re.match(r"model\.layers\.(\d+)\.", name)
