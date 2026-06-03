@@ -1637,16 +1637,13 @@ def convert_weight_to_mxfp4_moe_kernel_format(
         )
 
         if mxfp4_backend == Mxfp4MoeBackend.FLASHINFER_CUTLASS_MXFP4_MXFP8:
-            from flashinfer import block_scale_interleave
-
-            w13_scale_shape = w13_weight_scale.shape
-            w13_weight_scale = block_scale_interleave(
-                w13_weight_scale.view(torch.uint8)
-            ).reshape(w13_scale_shape)
-            w2_scale_shape = w2_weight_scale.shape
-            w2_weight_scale = block_scale_interleave(
-                w2_weight_scale.view(torch.uint8)
-            ).reshape(w2_scale_shape)
+            # The FlashInfer CUTLASS MXFP4/MXFP8 kernel consumes raw E8M0
+            # weight scale tensors (viewed as int32 by the caller) plus the
+            # separate activation scale tensors. Its CUDA test exercises this
+            # exact contract; do not apply block_scale_interleave here.
+            logger.info_once(
+                "DS4 DSV4 live FlashInfer CUTLASS MXFP4/MXFP8 weight scales: raw"
+            )
         else:
             assert mxfp4_backend == Mxfp4MoeBackend.FLASHINFER_CUTLASS_MXFP4_BF16
             from flashinfer.fused_moe import (

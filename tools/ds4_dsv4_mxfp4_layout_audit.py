@@ -53,6 +53,11 @@ checks = [
         and "w13_bias = torch.cat([b3, b1], dim=1).contiguous()" in mxfp4,
     ),
     (
+        "live DSV4 FlashInfer MXFP4/MXFP8 keeps raw weight-scale contract",
+        "DS4 DSV4 live FlashInfer CUTLASS MXFP4/MXFP8 weight scales: raw" in mxfp4
+        and "do not apply block_scale_interleave here" in mxfp4,
+    ),
+    (
         "DSV4 production launcher defaults to FlashInfer W31/swapped",
         'VLLM_DS4_DSV4_CUTLASS_MXFP4_W13_LAYOUT:-swapped' in launcher,
     ),
