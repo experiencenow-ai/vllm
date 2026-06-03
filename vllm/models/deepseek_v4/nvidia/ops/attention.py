@@ -110,6 +110,14 @@ def _pad_positions_to_q_kv_rows(
             "DeepSeek V4 fused Q/KV insert requires q and kv row counts "
             f"to match; q={num_rows} kv={kv.shape[0]}"
         )
+    if positions.dim() != 1:
+        raise ValueError(
+            "DeepSeek V4 graph-padded positions must be 1-D; "
+            f"got shape={tuple(positions.shape)}"
+        )
+    num_positions = positions.shape[0]
+    if num_positions > num_rows:
+        return positions[-num_rows:]
     return _pad_positions_to_num_rows(positions, num_rows)
 
 

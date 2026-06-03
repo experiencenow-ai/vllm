@@ -48,6 +48,16 @@ def test_deepseek_v4_fused_insert_padding_matches_q_kv_rows():
     assert padded.tolist() == [8, 0, 0, 0]
 
 
+def test_deepseek_v4_fused_insert_slices_graph_positions_to_q_kv_rows():
+    positions = torch.tensor([0, 1, 2, 3, 4], dtype=torch.int64)
+    q = torch.empty((1, 2), dtype=torch.float16)
+    kv = torch.empty((1, 3), dtype=torch.float16)
+
+    padded = _pad_positions_to_q_kv_rows(positions, q, kv)
+
+    assert padded.tolist() == [4]
+
+
 def test_deepseek_v4_fused_insert_rejects_q_kv_row_mismatch():
     positions = torch.tensor([8], dtype=torch.int64)
     q = torch.empty((4, 2), dtype=torch.float16)
