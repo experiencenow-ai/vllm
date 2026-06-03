@@ -148,6 +148,7 @@ if TYPE_CHECKING:
     VLLM_DS4_DSV4_PP_FLUSH_HC_BOUNDARY: bool = False
     VLLM_DS4_DSV4_LAYER_BACKEND: str = "cuda"
     VLLM_DS4_DSV4_HC_HEAD_BACKEND: str = "tilelang"
+    VLLM_DS4_DSV4_CUTLASS_MXFP4_W13_LAYOUT: str = "swapped"
     VLLM_DS4_DSV4_WEIGHT_AUDIT: bool = False
     VLLM_DS4_DSV4_SPARSE_MLA_VALIDATE: bool = False
     VLLM_DS4_DSV4_SPARSE_MLA_TRACE: bool = False
@@ -1441,6 +1442,15 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # not a silent fallback; production scripts should log the chosen backend.
     "VLLM_DS4_DSV4_HC_HEAD_BACKEND": lambda: os.environ.get(
         "VLLM_DS4_DSV4_HC_HEAD_BACKEND", "tilelang"
+    )
+    .strip()
+    .lower(),
+    # DS4 DSV4 native MXFP4 MoE correctness: FlashInfer CUTLASS receives the
+    # de-interleaved W13 tensor. DSV4 reference math is gate/up
+    # silu(gate) * up, so production launchers must state that layout
+    # explicitly instead of inheriting the older swapped converter path.
+    "VLLM_DS4_DSV4_CUTLASS_MXFP4_W13_LAYOUT": lambda: os.environ.get(
+        "VLLM_DS4_DSV4_CUTLASS_MXFP4_W13_LAYOUT", "swapped"
     )
     .strip()
     .lower(),

@@ -1050,32 +1050,55 @@ def convert_gpt_oss_weight_to_mxfp4_moe_kernel_format(
         Mxfp4MoeBackend.FLASHINFER_CUTLASS_MXFP4_BF16,
         Mxfp4MoeBackend.FLASHINFER_CUTLASS_MXFP4_MXFP8,
     ):
-        # De-interleave and swap for w13 weight, bias, and scales
+        # De-interleave W13 into the activation input order expected by the
+        # selected CUTLASS path. DSV4's reference path uses gate/up:
+        # silu(gate) * up. The older swapped path remains explicit-only for
+        # controlled comparison, never as an invisible DS4 production default.
+        w13_layout = envs.VLLM_DS4_DSV4_CUTLASS_MXFP4_W13_LAYOUT
+        if w13_layout not in ("gate-up", "swapped"):
+            raise RuntimeError(
+                "VLLM_DS4_DSV4_CUTLASS_MXFP4_W13_LAYOUT must be "
+                "'gate-up' or 'swapped', got "
+                f"{w13_layout!r}"
+            )
         w13_w = w13_weight.data
         gate_w, up_w = w13_w[:, ::2, :], w13_w[:, 1::2, :]
         deinterleaved_w13_w = torch.cat([gate_w, up_w], dim=1)
-        w1_w, w3_w = torch.chunk(deinterleaved_w13_w, 2, dim=1)
-        w13_weight_swapped = torch.cat([w3_w, w1_w], dim=1)
+        if w13_layout == "gate-up":
+            w13_weight_cutlass = deinterleaved_w13_w
+        else:
+            w1_w, w3_w = torch.chunk(deinterleaved_w13_w, 2, dim=1)
+            w13_weight_cutlass = torch.cat([w3_w, w1_w], dim=1)
 
         assert w13_bias is not None and w2_bias is not None
         w13_b = w13_bias.data.to(torch.float32)
         gate_b, up_b = w13_b[:, ::2], w13_b[:, 1::2]
         deinterleaved_w13_b = torch.cat([gate_b, up_b], dim=1)
-        b1, b3 = torch.chunk(deinterleaved_w13_b, 2, dim=-1)
-        w13_bias_swapped = torch.cat([b3, b1], dim=-1).to(torch.bfloat16)
+        if w13_layout == "gate-up":
+            w13_bias_cutlass = deinterleaved_w13_b.to(torch.bfloat16)
+        else:
+            b1, b3 = torch.chunk(deinterleaved_w13_b, 2, dim=-1)
+            w13_bias_cutlass = torch.cat([b3, b1], dim=-1).to(torch.bfloat16)
 
         w13_s = w13_weight_scale.data
         gate_s, up_s = w13_s[:, ::2, :], w13_s[:, 1::2, :]
         deinterleaved_w13_s = torch.cat([gate_s, up_s], dim=1)
-        s1, s3 = torch.chunk(deinterleaved_w13_s, 2, dim=1)
-        w13_scale_swapped = torch.cat([s3, s1], dim=1)
+        if w13_layout == "gate-up":
+            w13_scale_cutlass = deinterleaved_w13_s
+        else:
+            s1, s3 = torch.chunk(deinterleaved_w13_s, 2, dim=1)
+            w13_scale_cutlass = torch.cat([s3, s1], dim=1)
+        logger.info_once(
+            "DS4 DSV4 FlashInfer CUTLASS MXFP4 W13 layout: %s",
+            w13_layout,
+        )
 
         if mxfp4_backend == Mxfp4MoeBackend.FLASHINFER_CUTLASS_MXFP4_MXFP8:
             from flashinfer import block_scale_interleave
 
-            orig_shape = w13_scale_swapped.shape
+            orig_shape = w13_scale_cutlass.shape
             w13_scale_interleaved = block_scale_interleave(
-                w13_scale_swapped.view(torch.uint8)
+                w13_scale_cutlass.view(torch.uint8)
             ).reshape(orig_shape)
 
             w2_s = w2_weight_scale.data
@@ -1085,11 +1108,11 @@ def convert_gpt_oss_weight_to_mxfp4_moe_kernel_format(
             ).reshape(orig_shape)
 
             return (
-                w13_weight_swapped,
+                w13_weight_cutlass,
                 w2_weight,
                 w13_scale_interleaved,
                 w2_scale_interleaved,
-                w13_bias_swapped,
+                w13_bias_cutlass,
                 w2_bias,
             )
 
@@ -1102,13 +1125,13 @@ def convert_gpt_oss_weight_to_mxfp4_moe_kernel_format(
             )
 
             w13_weight_interleaved = interleave_moe_weights_for_sm90_mixed_gemm(
-                w13_weight_swapped.contiguous(), "fp4"
+                w13_weight_cutlass.contiguous(), "fp4"
             )
             w2_weight_interleaved = interleave_moe_weights_for_sm90_mixed_gemm(
                 w2_weight.contiguous(), "fp4"
             )
             w31_scales_interleaved = interleave_moe_scales_for_sm90_mixed_gemm(
-                w13_scale_swapped.to(torch.uint8)
+                w13_scale_cutlass.to(torch.uint8)
             )
             w2_scale_interleaved = interleave_moe_scales_for_sm90_mixed_gemm(
                 w2_weight_scale.data.to(torch.uint8)
@@ -1119,7 +1142,7 @@ def convert_gpt_oss_weight_to_mxfp4_moe_kernel_format(
                 w2_weight_interleaved,
                 w31_scales_interleaved,
                 w2_scale_interleaved,
-                w13_bias_swapped,
+                w13_bias_cutlass,
                 w2_bias,
             )
 
