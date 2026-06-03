@@ -16,6 +16,11 @@ def _env(name: str, default: str = "") -> str:
     return os.environ.get(name, default)
 
 
+def _bool_env(name: str, default: bool = False) -> bool:
+    raw = _env(name, "1" if default else "0").lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
 def _print_env() -> None:
     names = [
         "MASTER_ADDR",
