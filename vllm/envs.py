@@ -151,6 +151,7 @@ if TYPE_CHECKING:
     VLLM_DS4_PP_ONLY_GLOBAL_BACKEND: str = ""
     VLLM_DS4_PP_DISABLE_DEVICE_COMMUNICATOR: bool = False
     VLLM_DS4_PP_PYNCCL_TENSOR_DICT: bool = False
+    VLLM_DS4_PP_PYNCCL_PAIR_COMMUNICATORS: bool = False
     VLLM_DS4_PP_DIRECT_CUDA_TENSOR_DICT: bool = False
     VLLM_DS4_PP_TORCH_PG_TENSOR_DICT: bool = False
     VLLM_DS4_PP_TORCH_PAIR_GROUPS: bool = False
@@ -1440,6 +1441,12 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # slower transport path.
     "VLLM_DS4_PP_PYNCCL_TENSOR_DICT": lambda: (
         os.environ.get("VLLM_DS4_PP_PYNCCL_TENSOR_DICT", "0")
+        .strip()
+        .lower()
+        in ("1", "true", "yes", "on")
+    ),
+    "VLLM_DS4_PP_PYNCCL_PAIR_COMMUNICATORS": lambda: (
+        os.environ.get("VLLM_DS4_PP_PYNCCL_PAIR_COMMUNICATORS", "0")
         .strip()
         .lower()
         in ("1", "true", "yes", "on")
