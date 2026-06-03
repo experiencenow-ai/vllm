@@ -72,6 +72,7 @@ def _print_env() -> None:
         "DS4_NCCL_PREFLIGHT_WARN_BUSBW_GBPS",
         "DS4_NCCL_PREFLIGHT_GROUPS",
         "DS4_NCCL_PREFLIGHT_P2P_PAIRS",
+        "DS4_NCCL_PREFLIGHT_P2P_METHOD",
         "DS4_NCCL_PREFLIGHT_MIN_P2P_GBPS",
         "DS4_NCCL_PREFLIGHT_WARN_P2P_GBPS",
     ]
@@ -197,18 +198,22 @@ def _parse_p2p_pairs(world_size: int) -> list[tuple[int, int]]:
     return pairs
 
 
-def _run_p2p_pair_probe(rank: int, src: int, dst: int) -> int:
+def _run_p2p_pair_probe(rank: int, src: int, dst: int, *, cpu_group=None) -> int:
     bench_bytes = int(_env("DS4_NCCL_PREFLIGHT_BENCH_BYTES", "0"))
     if bench_bytes <= 0:
         return 0
     bench_iters = max(1, int(_env("DS4_NCCL_PREFLIGHT_BENCH_ITERS", "3")))
     stripes = max(1, int(_env("DS4_NCCL_PREFLIGHT_P2P_STRIPES", "1")))
+    method = _env("DS4_NCCL_PREFLIGHT_P2P_METHOD", "pynccl").lower()
+    if method not in {"pynccl", "torch"}:
+        raise ValueError("DS4_NCCL_PREFLIGHT_P2P_METHOD must be pynccl or torch")
     direction = _env("DS4_NCCL_PREFLIGHT_P2P_DIRECTION", "unidirectional").lower()
     if direction not in {"unidirectional", "oneway", "bidirectional", "bidir"}:
         raise ValueError(
             "DS4_NCCL_PREFLIGHT_P2P_DIRECTION must be unidirectional or bidirectional"
         )
     bidirectional = direction in {"bidirectional", "bidir"}
+    credit = _bool_env("DS4_NCCL_PREFLIGHT_P2P_CREDIT", True)
     min_p2p_gbps = float(
         _env(
             "DS4_NCCL_PREFLIGHT_MIN_P2P_GBPS",
@@ -224,10 +229,13 @@ def _run_p2p_pair_probe(rank: int, src: int, dst: int) -> int:
     peer = dst if rank == src else src
     send = torch.full((numel,), float(rank + 1), dtype=torch.float32, device="cuda")
     recv = torch.empty_like(send)
+    send_credit = torch.full((1,), rank + 1, dtype=torch.uint8, device="cuda")
+    recv_credit = torch.empty_like(send_credit)
     send_chunks = _split_p2p_tensor(send, stripes)
     recv_chunks = _split_p2p_tensor(recv, stripes)
+    communicator = None
 
-    def exchange() -> None:
+    def torch_exchange() -> None:
         ops = []
         if bidirectional and rank == src:
             for send_chunk, recv_chunk in zip(send_chunks, recv_chunks):
@@ -247,10 +255,39 @@ def _run_p2p_pair_probe(rank: int, src: int, dst: int) -> int:
         for req in reqs:
             req.wait()
 
+    def pynccl_exchange() -> None:
+        assert communicator is not None
+        group_rank = 0 if rank == src else 1
+        peer_rank = 1 - group_rank
+        communicator.group_start()
+        if bidirectional or rank == src:
+            for send_chunk in send_chunks:
+                communicator.send(send_chunk, peer_rank)
+        if bidirectional or rank != src:
+            for recv_chunk in recv_chunks:
+                communicator.recv(recv_chunk, peer_rank)
+        if credit and not bidirectional:
+            if rank == src:
+                communicator.recv(recv_credit, peer_rank)
+            else:
+                communicator.send(send_credit, peer_rank)
+        communicator.group_end()
+
+    if method == "pynccl":
+        if cpu_group is None:
+            raise RuntimeError("PyNCCL P2P preflight requires a Gloo CPU pair group")
+        from vllm.distributed.device_communicators.pynccl import PyNcclCommunicator
+
+        communicator = PyNcclCommunicator(cpu_group, torch.device("cuda:0"))
+        exchange = pynccl_exchange
+    else:
+        exchange = torch_exchange
+
     print(
         "DS4 NCCL P2P preflight bandwidth begin: "
         f"pair={src}-{dst} local_rank={rank} peer={peer} "
         f"bytes={actual_bytes} iters={bench_iters} stripes={len(send_chunks)} "
+        f"method={method} credit={1 if credit else 0} "
         f"direction={'bidirectional' if bidirectional else 'unidirectional'} "
         f"min_p2p_GBps={min_p2p_gbps:.3f} "
         f"warn_p2p_GBps={warn_p2p_gbps:.3f}",
@@ -310,6 +347,10 @@ def _run_p2p_pair_probe(rank: int, src: int, dst: int) -> int:
             file=sys.stderr,
         )
         return 68
+    if communicator is not None:
+        destroy = getattr(communicator, "destroy", None)
+        if destroy is not None:
+            destroy()
     return 0
 
 
@@ -331,6 +372,7 @@ def _split_p2p_tensor(tensor: torch.Tensor, stripes: int) -> list[torch.Tensor]:
 
 def _run_p2p_nccl_preflight(rank: int, world_size: int) -> int:
     pairs = _parse_p2p_pairs(world_size)
+    method = _env("DS4_NCCL_PREFLIGHT_P2P_METHOD", "pynccl").lower()
     torch.cuda.set_device(0)
     print(
         "DS4 NCCL P2P preflight pairs: "
@@ -348,10 +390,12 @@ def _run_p2p_nccl_preflight(rank: int, world_size: int) -> int:
             file=sys.stderr,
         )
     else:
-        value = torch.tensor([rank + 1], dtype=torch.float32, device="cuda")
+        value_device = "cuda" if dist.get_backend() == "nccl" else "cpu"
+        value = torch.tensor([rank + 1], dtype=torch.float32, device=value_device)
         print("DS4 NCCL P2P preflight stage: communicator all_reduce begin", file=sys.stderr)
         dist.all_reduce(value, op=dist.ReduceOp.SUM)
-        torch.cuda.synchronize()
+        if value_device == "cuda":
+            torch.cuda.synchronize()
         print("DS4 NCCL P2P preflight stage: communicator all_reduce complete", file=sys.stderr)
         expected = float((world_size * (world_size + 1)) // 2)
         actual = float(value.item())
@@ -377,16 +421,23 @@ def _run_p2p_nccl_preflight(rank: int, world_size: int) -> int:
         )
     for pair_index, (src, dst) in enumerate(pairs):
         print(
-            f"DS4 NCCL P2P preflight pair begin: pair={src}-{dst}",
+            f"DS4 NCCL P2P preflight pair begin: pair={src}-{dst} method={method}",
             file=sys.stderr,
         )
+        cpu_group = None
+        if method == "pynccl":
+            cpu_group = dist.new_group(ranks=[src, dst], backend="gloo")
         _store_barrier(rank, world_size, f"p2p-{pair_index}-pre")
-        status = _run_p2p_pair_probe(rank, src, dst)
+        try:
+            status = _run_p2p_pair_probe(rank, src, dst, cpu_group=cpu_group)
+        finally:
+            if cpu_group is not None and cpu_group != dist.GroupMember.NON_GROUP_MEMBER:
+                dist.destroy_process_group(cpu_group)
         _store_barrier(rank, world_size, f"p2p-{pair_index}-post")
         if status != 0:
             return status
         print(
-            f"DS4 NCCL P2P preflight pair complete: pair={src}-{dst}",
+            f"DS4 NCCL P2P preflight pair complete: pair={src}-{dst} method={method}",
             file=sys.stderr,
         )
     print(f"DS4 NCCL P2P preflight passed on rank {rank}", file=sys.stderr)
@@ -462,9 +513,12 @@ def main() -> int:
     master_port = _env("MASTER_PORT")
     timeout_s = int(_env("DS4_NCCL_PREFLIGHT_TIMEOUT", "90"))
     backend = _env("DS4_NCCL_PREFLIGHT_BACKEND", "nccl")
+    p2p_method = _env("DS4_NCCL_PREFLIGHT_P2P_METHOD", "pynccl").lower()
     process_group_backend = (
         "gloo"
         if backend == "tp_pair_nccl"
+        else "gloo"
+        if backend == "p2p_nccl" and p2p_method == "pynccl"
         else "nccl"
         if backend == "p2p_nccl"
         else backend
