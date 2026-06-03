@@ -239,48 +239,45 @@ def _make_torch_pair_group(rank: int, src: int, dst: int):
         return None
     peer = dst if rank == src else src
     route_ifname = _route_dev_for_rank(peer)
-    pair_group = _new_nccl_pair_group(src, dst)
-    send = torch.tensor([rank + 1], dtype=torch.float32, device="cuda")
-    recv = torch.empty_like(send)
-    print(
-        "DS4 NCCL P2P preflight torch pair group warmup: "
-        f"pair={src}-{dst} rank={rank} route_ifname={route_ifname} "
-        f"nccl_ifnames={os.environ.get('NCCL_SOCKET_IFNAME', '<unset>')}",
-        file=sys.stderr,
-    )
-    if rank == src:
-        ops = [
-            dist.P2POp(dist.isend, send, dst, pair_group),
-            dist.P2POp(dist.irecv, recv, dst, pair_group),
-        ]
-    else:
-        ops = [
-            dist.P2POp(dist.irecv, recv, src, pair_group),
-            dist.P2POp(dist.isend, send, src, pair_group),
-        ]
-    for req in dist.batch_isend_irecv(ops):
-        req.wait()
-    torch.cuda.synchronize()
-    expected = float(peer + 1)
-    actual = float(recv[0].item())
-    if actual != expected:
-        raise RuntimeError(
-            "DS4 NCCL P2P preflight torch pair warmup failed: "
-            f"pair={src}-{dst} rank={rank} recv {actual} != expected {expected}"
+    original_ifname = os.environ.get("NCCL_SOCKET_IFNAME")
+    try:
+        if route_ifname:
+            os.environ["NCCL_SOCKET_IFNAME"] = route_ifname
+        pair_group = _new_nccl_pair_group(src, dst)
+        send = torch.tensor([rank + 1], dtype=torch.float32, device="cuda")
+        recv = torch.empty_like(send)
+        print(
+            "DS4 NCCL P2P preflight torch pair group warmup: "
+            f"pair={src}-{dst} rank={rank} route_ifname={route_ifname} "
+            f"pair_nccl_ifname={os.environ.get('NCCL_SOCKET_IFNAME', '<unset>')}",
+            file=sys.stderr,
         )
-    return pair_group
-
-
-def _stable_torch_pair_ifnames(rank: int, pairs: list[tuple[int, int]]) -> str:
-    devices: list[str] = []
-    for src, dst in pairs:
-        if rank not in {src, dst}:
-            continue
-        peer = dst if rank == src else src
-        route_ifname = _route_dev_for_rank(peer)
-        if route_ifname and route_ifname not in devices:
-            devices.append(route_ifname)
-    return ",".join(devices)
+        if rank == src:
+            ops = [
+                dist.P2POp(dist.isend, send, dst, pair_group),
+                dist.P2POp(dist.irecv, recv, dst, pair_group),
+            ]
+        else:
+            ops = [
+                dist.P2POp(dist.irecv, recv, src, pair_group),
+                dist.P2POp(dist.isend, send, src, pair_group),
+            ]
+        for req in dist.batch_isend_irecv(ops):
+            req.wait()
+        torch.cuda.synchronize()
+        expected = float(peer + 1)
+        actual = float(recv[0].item())
+        if actual != expected:
+            raise RuntimeError(
+                "DS4 NCCL P2P preflight torch pair warmup failed: "
+                f"pair={src}-{dst} rank={rank} recv {actual} != expected {expected}"
+            )
+        return pair_group
+    finally:
+        if original_ifname is None:
+            os.environ.pop("NCCL_SOCKET_IFNAME", None)
+        else:
+            os.environ["NCCL_SOCKET_IFNAME"] = original_ifname
 
 
 def _run_p2p_pair_probe(
@@ -513,57 +510,41 @@ def _run_p2p_nccl_preflight(rank: int, world_size: int) -> int:
             "DS4 NCCL P2P preflight stage: pairwise NCCL group probes complete",
             file=sys.stderr,
         )
-    original_ifname = os.environ.get("NCCL_SOCKET_IFNAME")
-    try:
-        if method == "torch":
-            stable_ifnames = _stable_torch_pair_ifnames(rank, pairs)
-            if stable_ifnames:
-                os.environ["NCCL_SOCKET_IFNAME"] = stable_ifnames
-                print(
-                    "DS4 NCCL P2P preflight torch stable ifnames: "
-                    f"rank={rank} ifnames={stable_ifnames}",
-                    file=sys.stderr,
-                )
-        for pair_index, (src, dst) in enumerate(pairs):
-            print(
-                f"DS4 NCCL P2P preflight pair begin: pair={src}-{dst} method={method}",
-                file=sys.stderr,
-            )
-            _store_barrier(rank, world_size, f"p2p-{pair_index}-before-group")
-            cpu_group = None
-            torch_group = None
-            if method == "pynccl":
-                cpu_group = dist.new_group(ranks=[src, dst], backend="gloo")
-            elif method == "torch":
-                torch_group = _make_torch_pair_group(rank, src, dst)
-            else:
-                raise ValueError("DS4_NCCL_PREFLIGHT_P2P_METHOD must be pynccl or torch")
-            _store_barrier(rank, world_size, f"p2p-{pair_index}-pre")
-            try:
-                status = _run_p2p_pair_probe(
-                    rank,
-                    src,
-                    dst,
-                    cpu_group=cpu_group,
-                    torch_group=torch_group,
-                )
-            finally:
-                if cpu_group is not None and cpu_group != dist.GroupMember.NON_GROUP_MEMBER:
-                    dist.destroy_process_group(cpu_group)
-                if torch_group is not None and torch_group != dist.GroupMember.NON_GROUP_MEMBER:
-                    dist.destroy_process_group(torch_group)
-            _store_barrier(rank, world_size, f"p2p-{pair_index}-post")
-            if status != 0:
-                return status
-            print(
-                f"DS4 NCCL P2P preflight pair complete: pair={src}-{dst} method={method}",
-                file=sys.stderr,
-            )
-    finally:
-        if original_ifname is None:
-            os.environ.pop("NCCL_SOCKET_IFNAME", None)
+    for pair_index, (src, dst) in enumerate(pairs):
+        print(
+            f"DS4 NCCL P2P preflight pair begin: pair={src}-{dst} method={method}",
+            file=sys.stderr,
+        )
+        _store_barrier(rank, world_size, f"p2p-{pair_index}-before-group")
+        cpu_group = None
+        torch_group = None
+        if method == "pynccl":
+            cpu_group = dist.new_group(ranks=[src, dst], backend="gloo")
+        elif method == "torch":
+            torch_group = _make_torch_pair_group(rank, src, dst)
         else:
-            os.environ["NCCL_SOCKET_IFNAME"] = original_ifname
+            raise ValueError("DS4_NCCL_PREFLIGHT_P2P_METHOD must be pynccl or torch")
+        _store_barrier(rank, world_size, f"p2p-{pair_index}-pre")
+        try:
+            status = _run_p2p_pair_probe(
+                rank,
+                src,
+                dst,
+                cpu_group=cpu_group,
+                torch_group=torch_group,
+            )
+        finally:
+            if cpu_group is not None and cpu_group != dist.GroupMember.NON_GROUP_MEMBER:
+                dist.destroy_process_group(cpu_group)
+            if torch_group is not None and torch_group != dist.GroupMember.NON_GROUP_MEMBER:
+                dist.destroy_process_group(torch_group)
+        _store_barrier(rank, world_size, f"p2p-{pair_index}-post")
+        if status != 0:
+            return status
+        print(
+            f"DS4 NCCL P2P preflight pair complete: pair={src}-{dst} method={method}",
+            file=sys.stderr,
+        )
     print(f"DS4 NCCL P2P preflight passed on rank {rank}", file=sys.stderr)
     return 0
 

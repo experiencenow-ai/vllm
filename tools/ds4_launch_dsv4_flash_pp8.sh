@@ -12,7 +12,7 @@ MODEL="${DSV4_FLASH_MODEL:-/home/$USER/models/hf/deepseek-ai/DeepSeek-V4-Flash}"
 DSV4_SERVED_MODEL_NAME="${DSV4_SERVED_MODEL_NAME:-deepseek-v4-flash-pp${NNODES}}"
 RUNTIME_PYTHON="${DS4_VLLM_PYTHON:-/home/$USER/ds4-vllm-local/bin/python}"
 SOURCE_ROOT="${DS4_VLLM_SOURCE_ROOT:-/home/$USER/src/vllm}"
-DS4_DSV4_PIPELINE_RAM_PROFILE="${DS4_DSV4_PIPELINE_RAM_PROFILE:-resident3}"
+DS4_DSV4_PIPELINE_RAM_PROFILE="${DS4_DSV4_PIPELINE_RAM_PROFILE:-max-kv}"
 DEFAULT_SPECULATIVE_CONFIG="{\"model\":\"$MODEL\",\"num_speculative_tokens\":2,\"method\":\"deepseek_mtp\"}"
 DSV4_LINEAR_BACKEND="${DSV4_LINEAR_BACKEND:-auto}"
 DSV4_MOE_BACKEND="${DSV4_MOE_BACKEND:-auto}"
@@ -81,26 +81,26 @@ case "$DS4_DSV4_PIPELINE_RAM_PROFILE" in
     : "${DSV4_SKIP_LAST_RANK_SAMPLER_WARMUP:=0}"
     ds4_default_pp8_partition
     ;;
-  max-throughput|MAX-THROUGHPUT|batch512|BATCH512)
-    : "${DSV4_MAX_MODEL_LEN:=65536}"
+  max-kv|MAX-KV|max-length|MAX-LENGTH|max-throughput|MAX-THROUGHPUT|batch512|BATCH512)
+    : "${DSV4_MAX_MODEL_LEN:=262144}"
     : "${DSV4_MAX_NUM_SEQS:=512}"
     : "${DSV4_MAX_NUM_BATCHED_TOKENS:=262144}"
-    : "${DSV4_KV_CACHE_MEMORY_BYTES:=51539607552}"
+    : "${DSV4_KV_CACHE_MEMORY_BYTES:=68719476736}"
     : "${DSV4_MIN_KV_CACHE_MEMORY_BYTES:=8589934592}"
     : "${DSV4_KV_OFFLOADING_SIZE:=8}"
-    : "${DSV4_GPU_MEMORY_UTILIZATION:=0.70}"
+    : "${DSV4_GPU_MEMORY_UTILIZATION:=0.82}"
     : "${DSV4_WORKSPACE_PREALLOC_BYTES:=1610612736}"
     : "${DSV4_CUDAGRAPH_CAPTURE_SIZES:=1,2,4,8,16,32,64,128,256,512}"
     : "${DSV4_MAX_CUDAGRAPH_CAPTURE_SIZE:=512}"
     : "${DSV4_SCHED_MAX_NEW_REQS_PER_STEP:=64}"
     : "${DSV4_SCHED_MAX_NEW_PREFILL_TOKENS_PER_STEP:=65536}"
-    : "${DSV4_SCHED_KV_ADMISSION_MAX_USAGE:=0.82}"
-    : "${DSV4_SCHED_KV_HARD_FAIL_USAGE:=0.97}"
+    : "${DSV4_SCHED_KV_ADMISSION_MAX_USAGE:=0.90}"
+    : "${DSV4_SCHED_KV_HARD_FAIL_USAGE:=0.98}"
     : "${DSV4_SKIP_LAST_RANK_SAMPLER_WARMUP:=0}"
     ds4_default_pp8_partition
     ;;
   *)
-    echo "Unsupported DS4_DSV4_PIPELINE_RAM_PROFILE=$DS4_DSV4_PIPELINE_RAM_PROFILE; expected resident3, tight, balanced, perf, throughput, or max-throughput" >&2
+    echo "Unsupported DS4_DSV4_PIPELINE_RAM_PROFILE=$DS4_DSV4_PIPELINE_RAM_PROFILE; expected max-kv, max-length, max-throughput, throughput, resident3, tight, balanced, or perf" >&2
     exit 1
     ;;
 esac
