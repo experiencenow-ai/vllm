@@ -20,6 +20,7 @@ def main() -> int:
     worker = read("vllm/v1/worker/gpu_worker.py")
     runner = read("vllm/v1/worker/gpu_model_runner.py")
     parallel = read("vllm/distributed/parallel_state.py")
+    tcp_channel = read("vllm/distributed/ds4_tcp_tensor_channel.py")
     dsv4 = read("tools/ds4_launch_dsv4_flash_pp8.sh")
     qwen_fast = read("tools/ds4_launch_qwen27_nvfp4_pp8.sh")
     qwen_bf16 = read("tools/ds4_launch_qwen27_pp8.sh")
@@ -115,6 +116,14 @@ def main() -> int:
         and "_can_use_ds4_tcp_tensor_dict" in parallel
         and "_enqueue_ds4_tcp_send" in parallel
         and "_enqueue_ds4_tcp_recv" in parallel,
+    )
+    failures += check(
+        "rail TCP PP channel uses per-peer directional sequence counters",
+        "_send_seq: dict[int, int]" in tcp_channel
+        and "_recv_seq: dict[int, int]" in tcp_channel
+        and "def _next_send_seq(self, dst: int)" in tcp_channel
+        and "def _next_recv_seq(self, src: int)" in tcp_channel
+        and "Sequence counters are per peer and per direction" in tcp_channel,
     )
     failures += check(
         "parallel_state warms torch pair groups inside pair-local NIC context",

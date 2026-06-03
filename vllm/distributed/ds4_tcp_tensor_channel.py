@@ -60,7 +60,9 @@ class Ds4TcpTensorChannel:
         self.rank_in_group = rank_in_group
         self._send_control = send_control
         self._recv_control = recv_control
-        self._seq = 0
+        self._send_seq: dict[int, int] = {}
+        self._recv_seq: dict[int, int] = {}
+        self._seq_lock = threading.Lock()
 
     def can_handle(self, tensor: torch.Tensor) -> bool:
         if not envs.VLLM_DS4_PP_TCP_TENSOR_DICT:
@@ -74,7 +76,7 @@ class Ds4TcpTensorChannel:
         cpu_tensor = self._cpu_contiguous(tensor)
         byte_view = self._byte_view(cpu_tensor)
         byte_count = len(byte_view)
-        seq = self._next_seq()
+        seq = self._next_send_seq(dst)
         ready = self._recv_control(dst)
         self._check_ready(ready, byte_count, seq, dst)
         ranges = self._stripe_ranges(byte_count, len(ready["ports"]))
@@ -95,7 +97,7 @@ class Ds4TcpTensorChannel:
         cpu_tensor = self._cpu_contiguous(tensor)
         byte_view = self._byte_view(cpu_tensor)
         byte_count = len(byte_view)
-        seq = self._next_seq()
+        seq = self._next_recv_seq(src)
         stripe_count = self._stripe_count(byte_count)
         listeners: list[socket.socket] = []
         ports: list[int] = []
@@ -135,10 +137,17 @@ class Ds4TcpTensorChannel:
         )
         return handle
 
-    def _next_seq(self) -> int:
-        seq = self._seq
-        self._seq += 1
-        return seq
+    def _next_send_seq(self, dst: int) -> int:
+        with self._seq_lock:
+            seq = self._send_seq.get(dst, 0)
+            self._send_seq[dst] = seq + 1
+            return seq
+
+    def _next_recv_seq(self, src: int) -> int:
+        with self._seq_lock:
+            seq = self._recv_seq.get(src, 0)
+            self._recv_seq[src] = seq + 1
+            return seq
 
     def _stripe_count(self, byte_count: int) -> int:
         stripes = max(1, int(envs.VLLM_DS4_PP_TCP_STRIPES))
@@ -190,8 +199,10 @@ class Ds4TcpTensorChannel:
             )
         if int(ready.get("seq", -1)) != seq:
             raise RuntimeError(
-                f"DS4 PP TCP tensor sequence mismatch for dst={dst}: "
-                f"{ready.get('seq')} != {seq}"
+                f"DS4 PP TCP tensor send/recv sequence mismatch for dst={dst}: "
+                f"receiver_ready_seq={ready.get('seq')} sender_seq={seq}. "
+                "Sequence counters are per peer and per direction; this usually "
+                "means one side posted a different PP tensor payload order."
             )
         if int(ready.get("bytes", -1)) != byte_count:
             raise RuntimeError(
