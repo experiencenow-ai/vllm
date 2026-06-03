@@ -585,6 +585,14 @@ class GroupCoordinator:
         self.device_communicator = None
         self.ds4_pp_striped_nccl_channel = None
         self.ds4_pp_torch_pair_groups: dict[int, ProcessGroup] = {}
+        if (
+            group_name == "pp"
+            and envs.VLLM_DS4_PP_TORCH_PG_TENSOR_DICT
+            and not ds4_pp_torch_pair_groups
+            and envs.VLLM_DS4_PP_TORCH_GROUP_WARMUP
+            and self.world_size > 1
+        ):
+            self._warm_ds4_pp_torch_device_group()
         if ds4_pp_torch_pair_groups and self.world_size > 1:
             self.ds4_pp_torch_pair_groups = self._build_ds4_pp_torch_pair_groups(
                 torch_distributed_backend
@@ -631,6 +639,39 @@ class GroupCoordinator:
             current_platform.is_cpu()
             and self.device_communicator
             and getattr(self.device_communicator, "supports_tensor_dict", False)
+        )
+
+    def _warm_ds4_pp_torch_device_group(self) -> None:
+        if not torch.cuda.is_available():
+            raise RuntimeError(
+                "VLLM_DS4_PP_TORCH_PG_TENSOR_DICT requires CUDA for broad "
+                "PP payload group warmup."
+            )
+        value = torch.tensor(
+            [self.rank_in_group + 1],
+            dtype=torch.float32,
+            device=self.device,
+        )
+        torch.distributed.all_reduce(
+            value,
+            op=torch.distributed.ReduceOp.SUM,
+            group=self.device_group,
+        )
+        torch.cuda.synchronize(self.device)
+        expected = float((self.world_size * (self.world_size + 1)) // 2)
+        actual = float(value.item())
+        if actual != expected:
+            raise RuntimeError(
+                "DS4 PP broad torch device group warmup failed: "
+                f"pp_rank={self.rank_in_group} sum {actual} != expected {expected}"
+            )
+        logger.info(
+            "DS4 PP broad torch device group warmed: unique_name=%s "
+            "pp_rank=%s world_size=%s nccl_ifnames=%s",
+            self.unique_name,
+            self.rank_in_group,
+            self.world_size,
+            os.environ.get("NCCL_SOCKET_IFNAME", "<unset>"),
         )
 
     def _ds4_pp_pair_ifname(self, left_index: int, right_index: int) -> str:
