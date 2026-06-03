@@ -18,13 +18,14 @@ checks = [
     ),
     (
         "flush mode receives canonical multi-stream hidden tensors",
-        "if envs.VLLM_DS4_DSV4_PP_FLUSH_HC_BOUNDARY:" in model
+        "envs.VLLM_DS4_DSV4_PP_FLUSH_HC_BOUNDARY" in model
         and "(batch_size, self.hc_mult, self.config.hidden_size)" in model,
     ),
     (
         "flush mode reopens stage with no inherited HC state",
         "flush_hc_boundary = envs.VLLM_DS4_DSV4_PP_FLUSH_HC_BOUNDARY" in model
-        and "if flush_hc_boundary:\n                residual, post_mix, res_mix = None, None, None"
+        and "close_hc_boundary = flush_hc_boundary or native_layer_debug" in model
+        and "if close_hc_boundary:\n                residual, post_mix, res_mix = None, None, None"
         in model,
     ),
     (
