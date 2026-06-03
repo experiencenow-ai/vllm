@@ -76,6 +76,12 @@ def main() -> int:
         "@torch.compiler.disable" in flashmla
         and "_ds4_sparse_mla_tensor_stats" in flashmla,
     )
+    failures += check(
+        "diagnostics avoid CUDA value sync during graph capture",
+        "_ds4_cuda_graph_capture_active" in flashmla
+        and "torch.cuda.is_current_stream_capturing()" in flashmla
+        and "if _ds4_cuda_graph_capture_active():" in flashmla,
+    )
     return 1 if failures else 0
 
 

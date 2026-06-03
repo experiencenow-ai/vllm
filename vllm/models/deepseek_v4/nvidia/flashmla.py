@@ -64,6 +64,16 @@ logger = init_logger(__name__)
 
 
 @torch.compiler.disable
+def _ds4_cuda_graph_capture_active() -> bool:
+    if not torch.cuda.is_available():
+        return False
+    try:
+        return bool(torch.cuda.is_current_stream_capturing())
+    except RuntimeError:
+        return False
+
+
+@torch.compiler.disable
 def _ds4_sparse_mla_tensor_stats(tensor: torch.Tensor) -> str:
     if tensor.numel() == 0:
         return "numel=0"
@@ -113,6 +123,8 @@ def _ds4_validate_indexed_sparse_mla_inputs(
             f"indices_shape={tuple(indices.shape)} lens_shape={tuple(lens.shape)}"
         )
     width = indices.shape[1]
+    if _ds4_cuda_graph_capture_active():
+        return
     if lens.numel() > 0:
         lens_min = int(lens.min().item())
         lens_max = int(lens.max().item())
@@ -170,6 +182,8 @@ def _ds4_check_sparse_mla_output(
 ) -> None:
     if not (envs.VLLM_DS4_DSV4_SPARSE_MLA_VALIDATE or envs.VLLM_DS4_DSV4_SPARSE_MLA_TRACE):
         return
+    if _ds4_cuda_graph_capture_active():
+        return
     active = output[:, :num_heads]
     if active.numel() > 0 and not bool(torch.isfinite(active).all().item()):
         raise RuntimeError(
@@ -199,6 +213,8 @@ def _ds4_reference_check_sparse_mla_prefill(
     num_heads: int,
 ) -> None:
     if not envs.VLLM_DS4_DSV4_SPARSE_MLA_REF_CHECK:
+        return
+    if _ds4_cuda_graph_capture_active():
         return
     num_tokens = min(
         q.shape[0],
