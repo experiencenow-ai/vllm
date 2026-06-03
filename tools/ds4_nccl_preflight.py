@@ -8,7 +8,7 @@ import os
 import subprocess
 import sys
 import time
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 
 import torch
 import torch.distributed as dist
@@ -361,6 +361,16 @@ def _warm_pynccl_pair_communicator(
     )
 
 
+def _pynccl_pair_ifname_mode() -> str:
+    mode = _env("DS4_NCCL_PREFLIGHT_P2P_PAIR_IFNAME_MODE", "process")
+    mode = mode.strip().lower().replace("-", "_")
+    if mode not in {"process", "edge"}:
+        raise ValueError(
+            "DS4_NCCL_PREFLIGHT_P2P_PAIR_IFNAME_MODE must be process or edge"
+        )
+    return mode
+
+
 def _run_p2p_pair_probe(
     rank: int,
     src: int,
@@ -679,29 +689,40 @@ def _run_p2p_nccl_preflight(rank: int, world_size: int) -> int:
                 PyNcclCommunicator,
             )
 
+            pair_ifname_mode = _pynccl_pair_ifname_mode()
             for pair_index, (src, dst) in enumerate(pairs):
                 _store_barrier(rank, world_size, f"p2p-pair-{pair_index}-before-create")
                 cpu_group = dist.new_group(ranks=[src, dst], backend="gloo")
                 pair_cpu_groups[(src, dst)] = cpu_group
                 if rank in {src, dst}:
                     peer = dst if rank == src else src
-                    route_ifname, edge_rail = _pp_edge_dev_for_rank(rank, peer)
+                    edge_ifname, edge_rail = _pp_edge_dev_for_rank(rank, peer)
+                    process_ifname = os.environ.get("NCCL_SOCKET_IFNAME", "")
+                    route_ifname = edge_ifname if pair_ifname_mode == "edge" else process_ifname
                     if not route_ifname:
                         raise RuntimeError(
-                            "DS4 NCCL P2P preflight pynccl_pair requires a "
-                            f"route interface for active pair={src}-{dst} "
-                            f"rank={rank} peer={peer}"
+                            "DS4 NCCL P2P preflight pynccl_pair requires an "
+                            "explicit NCCL_SOCKET_IFNAME in process mode or a "
+                            "route interface in edge mode for active "
+                            f"pair={src}-{dst} rank={rank} peer={peer} "
+                            f"ifname_mode={pair_ifname_mode}"
                         )
                     print(
                         "DS4 NCCL P2P preflight adjacent PyNCCL create: "
                         f"pair={src}-{dst} rank={rank} "
                         f"peer={peer} route_ifname={route_ifname} "
-                        f"edge_rail={edge_rail} "
+                        f"edge_ifname={edge_ifname or '<unset>'} "
+                        f"edge_rail={edge_rail} ifname_mode={pair_ifname_mode} "
                         f"previous_nccl_ifname="
                         f"{os.environ.get('NCCL_SOCKET_IFNAME', '<unset>')}",
                         file=sys.stderr,
                     )
-                    with _temporary_nccl_socket_ifname(route_ifname):
+                    ctx = (
+                        _temporary_nccl_socket_ifname(route_ifname)
+                        if pair_ifname_mode == "edge"
+                        else nullcontext()
+                    )
+                    with ctx:
                         communicator = PyNcclCommunicator(
                             cpu_group,
                             torch.device("cuda:0"),

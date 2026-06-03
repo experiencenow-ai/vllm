@@ -122,12 +122,11 @@ def main() -> int:
         and "VLLM_DS4_PP_PYNCCL_TENSOR_DICT" in parallel,
     )
     failures += check(
-        "parallel_state binds PyNCCL pair communicators to exact PP edge ifnames",
+        "parallel_state defaults PyNCCL pair communicators to process-wide ifnames",
         "_build_ds4_pp_pynccl_pair_communicators" in parallel
-        and "pair_ifname = self._ds4_pp_pair_ifname(left_index, right_index)"
-        in parallel
-        and "with self._ds4_pp_pair_nccl_socket_ifname(pair_ifname)"
-        in parallel,
+        and "_ds4_pp_pynccl_pair_ifname_mode" in parallel
+        and 'pair_ifname_mode == "edge"' in parallel
+        and 'process_ifname = os.environ.get("NCCL_SOCKET_IFNAME"' in parallel,
     )
     failures += check(
         "DSV4 PP launcher defaults to explicit CPU-staged PP transport",
