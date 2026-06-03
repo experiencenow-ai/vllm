@@ -321,8 +321,10 @@ def _run_p2p_pair_probe(
     bench_iters = max(1, int(_env("DS4_NCCL_PREFLIGHT_BENCH_ITERS", "3")))
     stripes = max(1, int(_env("DS4_NCCL_PREFLIGHT_P2P_STRIPES", "1")))
     method = _env("DS4_NCCL_PREFLIGHT_P2P_METHOD", "pynccl").lower()
-    if method not in {"pynccl", "torch"}:
-        raise ValueError("DS4_NCCL_PREFLIGHT_P2P_METHOD must be pynccl or torch")
+    if method not in {"pynccl", "torch", "torch_world", "torch-global"}:
+        raise ValueError(
+            "DS4_NCCL_PREFLIGHT_P2P_METHOD must be pynccl, torch, or torch_world"
+        )
     direction = _env("DS4_NCCL_PREFLIGHT_P2P_DIRECTION", "unidirectional").lower()
     if direction not in {"unidirectional", "oneway", "bidirectional", "bidir"}:
         raise ValueError(
@@ -396,9 +398,14 @@ def _run_p2p_pair_probe(
 
         communicator = PyNcclCommunicator(cpu_group, torch.device("cuda:0"))
         exchange = pynccl_exchange
-    else:
+    elif method == "torch":
         if torch_group is None:
             raise RuntimeError("torch P2P preflight requires an NCCL pair group")
+        exchange = torch_exchange
+    else:
+        # Use the already-initialized world NCCL communicator.  This matches
+        # the DS4 PP broad-device-group tensor path and avoids constructing
+        # overlapping adjacent NCCL subgroups, which can wedge on Spark.
         exchange = torch_exchange
 
     print(
@@ -549,8 +556,12 @@ def _run_p2p_nccl_preflight(rank: int, world_size: int) -> int:
             cpu_group = dist.new_group(ranks=[src, dst], backend="gloo")
         elif method == "torch":
             torch_group = _make_torch_pair_group(rank, src, dst)
+        elif method in {"torch_world", "torch-global"}:
+            torch_group = None
         else:
-            raise ValueError("DS4_NCCL_PREFLIGHT_P2P_METHOD must be pynccl or torch")
+            raise ValueError(
+                "DS4_NCCL_PREFLIGHT_P2P_METHOD must be pynccl, torch, or torch_world"
+            )
         _store_barrier(rank, world_size, f"p2p-{pair_index}-pre")
         try:
             status = _run_p2p_pair_probe(
