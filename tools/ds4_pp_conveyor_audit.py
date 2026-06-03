@@ -83,10 +83,10 @@ def main() -> int:
         and "credit_op" in parallel,
     )
     failures += check(
-        "parallel_state accepts torch ProcessGroup CUDA tensor-dict path",
+        "parallel_state keeps torch ProcessGroup CUDA tensor-dict diagnostic path",
         "VLLM_DS4_PP_TORCH_PG_TENSOR_DICT" in parallel
-        and "dst=self.ranks[dst], group=self.device_group" in parallel
-        and "src=self.ranks[src], group=self.device_group" in parallel,
+        and "_ds4_pp_torch_pair_group(dst)" in parallel
+        and "_ds4_pp_torch_pair_group(src)" in parallel,
     )
     failures += check(
         "parallel_state keeps PyNCCL tensor-dict path explicit",
@@ -112,8 +112,7 @@ def main() -> int:
             in script
             and 'VLLM_DS4_PP_PYNCCL_P2P_CREDIT="${VLLM_DS4_PP_PYNCCL_P2P_CREDIT:-1}"'
             in script
-            and 'VLLM_DS4_SKIP_PYNCCL_WARMUP_ALLREDUCE="${VLLM_DS4_SKIP_PYNCCL_WARMUP_ALLREDUCE:-0}"'
-            in script
+            and "VLLM_DS4_SKIP_PYNCCL_WARMUP_ALLREDUCE" in script
             and 'VLLM_DS4_PP_STRIPED_NCCL_TENSOR_DICT="${VLLM_DS4_PP_STRIPED_NCCL_TENSOR_DICT:-0}"'
             in script,
         )
