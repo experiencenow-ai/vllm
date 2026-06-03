@@ -102,6 +102,13 @@ def main() -> int:
         and "_ds4_pp_torch_pair_group(src)" in parallel,
     )
     failures += check(
+        "parallel_state warms torch pair groups inside pair-local NIC context",
+        "VLLM_DS4_PP_TORCH_GROUP_WARMUP=1" in parallel
+        and "without an in-context warmup" in parallel
+        and "with self._ds4_pp_pair_nccl_socket_ifname" in parallel
+        and "self._warm_ds4_pp_torch_pair_group(" in parallel,
+    )
+    failures += check(
         "parallel_state keeps PyNCCL tensor-dict path explicit",
         "VLLM_DS4_PP_DIRECT_CUDA_TENSOR_DICT" in parallel
         and "VLLM_DS4_PP_PYNCCL_TENSOR_DICT" in parallel,
@@ -130,6 +137,17 @@ def main() -> int:
         and 'VLLM_DS4_PP_PYNCCL_TENSOR_DICT="${VLLM_DS4_PP_PYNCCL_TENSOR_DICT:-1}"'
         in dsv4
         and 'VLLM_DS4_PP_PYNCCL_PAIR_COMMUNICATORS="${VLLM_DS4_PP_PYNCCL_PAIR_COMMUNICATORS:-1}"'
+        in dsv4,
+    )
+    failures += check(
+        "DSV4 PP launcher has first-class torch pair transport",
+        "torch-pair|torch_pair" in dsv4
+        and 'DS4_PP_TRANSPORT="torch-pair"' in dsv4
+        and 'VLLM_DS4_PP_TORCH_PG_TENSOR_DICT="${VLLM_DS4_PP_TORCH_PG_TENSOR_DICT:-1}"'
+        in dsv4
+        and 'VLLM_DS4_PP_TORCH_PAIR_GROUPS="${VLLM_DS4_PP_TORCH_PAIR_GROUPS:-1}"'
+        in dsv4
+        and 'VLLM_DS4_PP_TORCH_GROUP_WARMUP="${VLLM_DS4_PP_TORCH_GROUP_WARMUP:-1}"'
         in dsv4,
     )
     for script_name, script in (
