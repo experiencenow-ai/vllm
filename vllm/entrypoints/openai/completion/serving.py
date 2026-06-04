@@ -172,7 +172,6 @@ class OpenAIServingCompletion(OpenAIServing):
         ds4_cohort_items: list[DS4CohortItem] = []
         use_ds4_cohort_admission = (
             envs.VLLM_DS4_COHORT_ADMISSION
-            and not request.stream
             and not request.use_beam_search
             and len(engine_inputs) >= envs.VLLM_DS4_COHORT_ADMISSION_MIN_PROMPTS
         )
