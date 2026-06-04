@@ -608,6 +608,8 @@ class DeepseekV4MultiHeadLatentAttentionWrapper(PluggableLayer):
         if self.n_local_heads < self.padded_heads:
             pad_size = self.padded_heads - self.n_local_heads
             q = F.pad(q, (0, 0, 0, pad_size), value=0.0)
+        if out.shape != q.shape:
+            out.resize_(q.shape)
 
         # MLA attention writes into the pre-allocated `out` buffer
         # ([num_tokens, padded_heads, head_dim]).

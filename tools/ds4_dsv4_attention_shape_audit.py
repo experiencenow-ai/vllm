@@ -22,6 +22,7 @@ require(
     "def _positions_for_flat_hidden_rows(",
     "hidden_states = hidden_states.reshape(num_tokens, hidden_size)",
     "positions = _positions_for_flat_hidden_rows(",
+    "out.resize_(q.shape)",
     "return self.wo_b(z.flatten(1)).reshape(*leading_shape, hidden_size)",
 )
 
