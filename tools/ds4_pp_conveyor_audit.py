@@ -126,10 +126,11 @@ def main() -> int:
         and "Sequence counters are per peer and per direction" in tcp_channel,
     )
     failures += check(
-        "parallel_state warms torch pair groups inside pair-local NIC context",
+        "parallel_state can warm torch pair groups with process-wide IFNAMEs",
         "VLLM_DS4_PP_TORCH_GROUP_WARMUP=1" in parallel
-        and "without an in-context warmup" in parallel
-        and "with self._ds4_pp_pair_nccl_socket_ifname" in parallel
+        and "VLLM_DS4_PP_TORCH_PAIR_IFNAME_MODE" in parallel
+        and "pair_ifname_mode == \"edge\"" in parallel
+        and "else nullcontext()" in parallel
         and "self._warm_ds4_pp_torch_pair_group(" in parallel,
     )
     failures += check(
