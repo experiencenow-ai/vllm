@@ -185,6 +185,11 @@ CHECKS = [
         "DSV4_MAX_NUM_BATCHED_TOKENS:=16384",
     ),
     (
+        "DSV4 resident128 workspace covers 512-token prefill cohorts",
+        "tools/ds4_launch_dsv4_flash_pp8.sh",
+        "DSV4_WORKSPACE_PREALLOC_BYTES:=536870912",
+    ),
+    (
         "DSV4 PP default derives balanced layer partition",
         "tools/ds4_launch_dsv4_flash_pp8.sh",
         "base=$((43 / NNODES))",
