@@ -14,6 +14,11 @@ CHECKS = [
         "VLLM_QWEN_GDN_PROFILE_WARMUP",
     ),
     (
+        "env exposes VLLM_DS4_QWEN_GDN_FIXED_TRITON_CONFIGS",
+        ROOT / "vllm/envs.py",
+        "VLLM_DS4_QWEN_GDN_FIXED_TRITON_CONFIGS",
+    ),
+    (
         "Qwen GDN warmup is skippable",
         ROOT / "vllm/model_executor/layers/mamba/gdn/qwen_gdn_linear_attn.py",
         "Skipping Qwen GDN prefill profile warmup",
@@ -59,9 +64,14 @@ CHECKS = [
         "--kv-cache-memory-bytes",
     ),
     (
-        "BF16 Qwen PP disables GDN profile warmup by default",
+        "BF16 Qwen PP enables GDN profile warmup by default",
         ROOT / "tools/ds4_launch_qwen27_pp8.sh",
-        "VLLM_QWEN_GDN_PROFILE_WARMUP:-0",
+        "VLLM_QWEN_GDN_PROFILE_WARMUP:-1",
+    ),
+    (
+        "BF16 Qwen PP pins fixed GDN Triton configs by default",
+        ROOT / "tools/ds4_launch_qwen27_pp8.sh",
+        "VLLM_DS4_QWEN_GDN_FIXED_TRITON_CONFIGS:-1",
     ),
     (
         "BF16 Qwen PP bounds profile run by default",

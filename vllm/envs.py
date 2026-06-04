@@ -125,6 +125,7 @@ if TYPE_CHECKING:
     VLLM_DS4_ALLOW_DEEPGEMM_FP8_LINEAR_SM12X: bool = False
     VLLM_ENABLE_FLA_PACKED_RECURRENT_DECODE: bool = True
     VLLM_QWEN_GDN_PROFILE_WARMUP: bool = True
+    VLLM_DS4_QWEN_GDN_FIXED_TRITON_CONFIGS: bool = False
     VLLM_DS4_PROFILE_DEBUG: bool = False
     VLLM_DS4_PROFILE_LAYER_TRACE: bool = False
     VLLM_DS4_PROFILE_RUN_MAX_TOKENS: int | None = None
@@ -1275,6 +1276,14 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # run dedicated warmup/tuning jobs separately.
     "VLLM_QWEN_GDN_PROFILE_WARMUP": lambda: (
         os.environ.get("VLLM_QWEN_GDN_PROFILE_WARMUP", "1").strip().lower()
+        in ("1", "true", "yes", "on")
+    ),
+    # DS4 GB10 Qwen production profiles pin the hot FLA/GDN Triton launch
+    # configs so first real requests do not run lazy @autotune rank by rank.
+    "VLLM_DS4_QWEN_GDN_FIXED_TRITON_CONFIGS": lambda: (
+        os.environ.get("VLLM_DS4_QWEN_GDN_FIXED_TRITON_CONFIGS", "0")
+        .strip()
+        .lower()
         in ("1", "true", "yes", "on")
     ),
     "VLLM_DS4_PROFILE_DEBUG": lambda: (
