@@ -352,6 +352,7 @@ checks = [
         and ': "${DSV4_MAX_NUM_SEQS:=128}"' in dsv4_pp8
         and ': "${DSV4_MAX_NUM_BATCHED_TOKENS:=16384}"' in dsv4_pp8
         and ': "${DSV4_KV_CACHE_MEMORY_BYTES:=8589934592}"' in dsv4_pp8
+        and ': "${DSV4_WORKSPACE_PREALLOC_BYTES:=536870912}"' in dsv4_pp8
         and ': "${DSV4_KV_CACHE_MEMORY_BYTES:=12884901888}"' in dsv4_pp8
         and "DSV4_KV_CACHE_MEMORY_BYTES_EFFECTIVE" in dsv4_pp8
         and "DSV4_SCALE_KV_CACHE_BY_LOCAL_LAYERS" in dsv4_pp8
