@@ -174,6 +174,7 @@ if TYPE_CHECKING:
     VLLM_DS4_PP_DIRECT_CUDA_TENSOR_DICT: bool = False
     VLLM_DS4_PP_TORCH_PG_TENSOR_DICT: bool = False
     VLLM_DS4_PP_TORCH_PAIR_GROUPS: bool = False
+    VLLM_DS4_PP_TORCH_PAIR_IFNAME_MODE: str = "process"
     VLLM_DS4_PP_TORCH_GROUP_WARMUP: bool = True
     VLLM_DS4_PP_TCP_TENSOR_DICT: bool = False
     VLLM_DS4_PP_TCP_STRIPES: int = 8
@@ -1601,6 +1602,9 @@ environment_variables: dict[str, Callable[[], Any]] = {
         .strip()
         .lower()
         in ("1", "true", "yes", "on")
+    ),
+    "VLLM_DS4_PP_TORCH_PAIR_IFNAME_MODE": lambda: os.environ.get(
+        "VLLM_DS4_PP_TORCH_PAIR_IFNAME_MODE", "process"
     ),
     "VLLM_DS4_PP_TORCH_GROUP_WARMUP": lambda: (
         os.environ.get("VLLM_DS4_PP_TORCH_GROUP_WARMUP", "1")

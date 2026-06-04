@@ -989,6 +989,15 @@ class GroupCoordinator:
             )
         return mode
 
+    def _ds4_pp_torch_pair_ifname_mode(self) -> str:
+        mode = envs.VLLM_DS4_PP_TORCH_PAIR_IFNAME_MODE.strip().lower()
+        mode = mode.replace("-", "_")
+        if mode not in {"process", "edge"}:
+            raise RuntimeError(
+                "VLLM_DS4_PP_TORCH_PAIR_IFNAME_MODE must be process or edge"
+            )
+        return mode
+
     @contextmanager
     def _ds4_pp_pair_nccl_socket_ifname(self, pair_ifname: str):
         original_ifname = os.environ.get("NCCL_SOCKET_IFNAME")
@@ -1011,9 +1020,14 @@ class GroupCoordinator:
                 "backend for adjacent PP tensor payload groups."
             )
         groups: dict[int, ProcessGroup] = {}
+        pair_ifname_mode = self._ds4_pp_torch_pair_ifname_mode()
         for left_index in range(self.world_size - 1):
             right_index = left_index + 1
-            pair_ifname = self._ds4_pp_pair_ifname(left_index, right_index)
+            edge_ifname = self._ds4_pp_pair_ifname(left_index, right_index)
+            process_ifname = os.environ.get("NCCL_SOCKET_IFNAME", "").strip()
+            pair_ifname = (
+                edge_ifname if pair_ifname_mode == "edge" else process_ifname
+            )
             active = self.rank_in_group in {left_index, right_index}
             pair_ranks = [self.ranks[left_index], self.ranks[right_index]]
             torch.distributed.barrier(group=self.cpu_group)
@@ -1032,9 +1046,12 @@ class GroupCoordinator:
                     "ignore the pair-local NCCL_SOCKET_IFNAME and hang or "
                     "route over the wrong rail."
                 )
-            with self._ds4_pp_pair_nccl_socket_ifname(
-                pair_ifname if active else ""
-            ):
+            ctx = (
+                self._ds4_pp_pair_nccl_socket_ifname(pair_ifname)
+                if active and pair_ifname_mode == "edge"
+                else nullcontext()
+            )
+            with ctx:
                 pair_group = self._new_ds4_pp_torch_pair_group(
                     pair_ranks, torch_distributed_backend
                 )
@@ -1042,6 +1059,7 @@ class GroupCoordinator:
                     self._warm_ds4_pp_torch_pair_group(
                         pair_group,
                         pair_ifname,
+                        pair_ifname_mode,
                         self.ranks[right_index]
                         if self.rank_in_group == left_index
                         else self.ranks[left_index],
@@ -1070,7 +1088,11 @@ class GroupCoordinator:
         )
 
     def _warm_ds4_pp_torch_pair_group(
-        self, pair_group: ProcessGroup, pair_ifname: str, peer_global_rank: int
+        self,
+        pair_group: ProcessGroup,
+        pair_ifname: str,
+        pair_ifname_mode: str,
+        peer_global_rank: int,
     ) -> None:
         if not torch.cuda.is_available():
             raise RuntimeError(
@@ -1110,10 +1132,11 @@ class GroupCoordinator:
             )
         logger.info(
             "DS4 PP torch pair group warmed: unique_name=%s pp_rank=%s "
-            "route_ifname=%s nccl_ifnames=%s",
+            "route_ifname=%s ifname_mode=%s nccl_ifnames=%s",
             self.unique_name,
             self.rank_in_group,
             pair_ifname,
+            pair_ifname_mode,
             os.environ.get("NCCL_SOCKET_IFNAME", "<unset>"),
         )
 
