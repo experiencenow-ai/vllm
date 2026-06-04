@@ -10,6 +10,31 @@ from vllm.utils.import_utils import has_cutedsl
 MXFP4_BLOCK_SIZE = 32
 
 
+def _slice_positions_to_index_q_rows(
+    positions: torch.Tensor,
+    index_q: torch.Tensor,
+) -> torch.Tensor:
+    if positions.ndim != 1:
+        raise ValueError(
+            "DS4 DSV4 fused indexer Q expects 1-D positions; "
+            f"got shape={tuple(positions.shape)}"
+        )
+    if index_q.ndim != 3:
+        raise ValueError(
+            "DS4 DSV4 fused indexer Q expects 3-D index_q; "
+            f"got shape={tuple(index_q.shape)}"
+        )
+    num_rows = index_q.shape[0]
+    if positions.shape[0] < num_rows:
+        raise ValueError(
+            "DS4 DSV4 fused indexer Q positions have fewer rows than q: "
+            f"positions={positions.shape[0]} q={num_rows}"
+        )
+    if positions.shape[0] == num_rows:
+        return positions
+    return positions[-num_rows:]
+
+
 @triton.jit
 def _get_cos_sin(
     cos_sin_cache_ptr,
@@ -318,8 +343,7 @@ def fused_indexer_q_rope_quant(
     a (values, scales) tuple (MXFP4). This matches the union type accepted
     by `SparseAttnIndexer.forward_*`.
     """
-    assert positions.ndim == 1
-    assert index_q.ndim == 3
+    positions = _slice_positions_to_index_q_rows(positions, index_q)
     assert index_q_cos_sin_cache.ndim == 2
 
     num_tokens = positions.shape[0]

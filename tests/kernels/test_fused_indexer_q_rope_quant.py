@@ -24,12 +24,41 @@ from vllm.model_executor.layers.quantization.utils.fp8_utils import (
     per_token_group_quant_fp8,
 )
 from vllm.models.deepseek_v4.common.ops import fused_indexer_q_rope_quant
+from vllm.models.deepseek_v4.common.ops.fused_indexer_q import (
+    _slice_positions_to_index_q_rows,
+)
 from vllm.utils.import_utils import has_cutedsl
 
 HEAD_DIM = 128
 ROPE_DIM = 64
 N_HEAD = 64
 MAX_POS = 4096
+
+
+def test_slice_positions_to_index_q_rows_keeps_exact_rows():
+    positions = torch.tensor([4, 5], dtype=torch.int64)
+    q = torch.empty((2, N_HEAD, HEAD_DIM), dtype=torch.bfloat16)
+
+    sliced = _slice_positions_to_index_q_rows(positions, q)
+
+    assert sliced is positions
+
+
+def test_slice_positions_to_index_q_rows_uses_tail_for_graph_padding():
+    positions = torch.tensor([0, 1, 2, 3, 4], dtype=torch.int64)
+    q = torch.empty((1, N_HEAD, HEAD_DIM), dtype=torch.bfloat16)
+
+    sliced = _slice_positions_to_index_q_rows(positions, q)
+
+    assert sliced.tolist() == [4]
+
+
+def test_slice_positions_to_index_q_rows_rejects_short_positions():
+    positions = torch.tensor([4], dtype=torch.int64)
+    q = torch.empty((2, N_HEAD, HEAD_DIM), dtype=torch.bfloat16)
+
+    with pytest.raises(ValueError, match="fewer rows"):
+        _slice_positions_to_index_q_rows(positions, q)
 
 
 def quantize_to_mxfp4(
