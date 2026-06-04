@@ -36,9 +36,13 @@ def main() -> int:
         and "envs.VLLM_DS4_COHORT_ADMISSION_MIN_PROMPTS" in serving,
     )
     failures += check(
-        "cohort admission requires atomic scheduler pause",
+        "cohort admission serializes scheduler pause",
         "VLLM_DS4_COHORT_PAUSE_DURING_ADMISSION=1" in serving
-        and "pause_generation(mode=\"keep\", clear_cache=False)" in serving
+        and "_ds4_completion_cohort_admission_lock = asyncio.Lock()" in serving
+        and "async with self._ds4_completion_cohort_admission_lock:" in serving
+        and "pause_generation(" in serving
+        and "mode=\"keep\"" in serving
+        and "clear_cache=False" in serving
         and "fragments prefill/decode waves" in serving,
     )
     failures += check(
