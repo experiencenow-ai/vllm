@@ -150,9 +150,9 @@ CHECKS = [
         "@_compile_disabled",
     ),
     (
-        "DSV4 PP launcher defaults to max-kv RAM profile",
+        "DSV4 PP launcher defaults to multi-resident RAM profile",
         "tools/ds4_launch_dsv4_flash_pp8.sh",
-        'DS4_DSV4_PIPELINE_RAM_PROFILE="${DS4_DSV4_PIPELINE_RAM_PROFILE:-max-kv}"',
+        'DS4_DSV4_PIPELINE_RAM_PROFILE="${DS4_DSV4_PIPELINE_RAM_PROFILE:-resident3}"',
     ),
     (
         "DSV4 resident3 KV cap is compact",
@@ -178,6 +178,11 @@ CHECKS = [
         "DSV4 PP default spreads partition remainder across early stages",
         "tools/ds4_launch_dsv4_flash_pp8.sh",
         "rem=$((43 % NNODES))",
+    ),
+    (
+        "DSV4 PP launcher bounds explicit GPU reservation before launch",
+        "tools/ds4_launch_dsv4_flash_pp8.sh",
+        "DSV4_MAX_EXPLICIT_GPU_RESERVATION_BYTES",
     ),
     (
         "DSV4 throughput profiles cannot silently fall back to auto partition",

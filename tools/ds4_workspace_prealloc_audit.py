@@ -58,7 +58,7 @@ checks = [
     ),
     (
         "DSV4 PP8 profiles set workspace prealloc defaults",
-        "DSV4_WORKSPACE_PREALLOC_BYTES:=4294967296" in dsv4_pp8
+        "DSV4_WORKSPACE_PREALLOC_BYTES:=2147483648" in dsv4_pp8
         and "DSV4_WORKSPACE_PREALLOC_BYTES:=1610612736" in dsv4_pp8
         and "DSV4_WORKSPACE_PREALLOC_BYTES:=536870912" in dsv4_pp8,
     ),

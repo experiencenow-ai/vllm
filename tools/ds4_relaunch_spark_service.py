@@ -74,7 +74,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--api-port", default=os.getenv("API_PORT", "8102"))
     parser.add_argument(
         "--profile",
-        default=os.getenv("DS4_DSV4_PIPELINE_RAM_PROFILE", "max-kv"),
+        default=os.getenv("DS4_DSV4_PIPELINE_RAM_PROFILE", "resident3"),
         help="DS4_DSV4_PIPELINE_RAM_PROFILE for the selected DSV4 service",
     )
     parser.add_argument("--nnodes", type=int, default=int(os.getenv("NNODES", "8")))
@@ -379,6 +379,9 @@ def launch_env(args: argparse.Namespace, rank: int) -> dict[str, str]:
 
 
 def static_fabric_ifnames(edge_rail: str) -> str:
+    explicit = [item.strip() for item in edge_rail.split(",") if item.strip()]
+    if len(explicit) > 2:
+        return ",".join(explicit)
     rails = {
         "enp": ("enp1s0f0np0", "enp1s0f1np1"),
         "rail0": ("enp1s0f0np0", "enp1s0f1np1"),
