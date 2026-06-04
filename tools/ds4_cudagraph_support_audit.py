@@ -53,12 +53,14 @@ require(
 
 require(
     "vllm/models/deepseek_v4/nvidia/ops/sm12x_deep_gemm_fallbacks.py",
-    "_slice_dense_mqa_topk_rows_to_output",
-    "_slice_dense_mqa_topk_rows_to_output(",
-    "q_values[-num_rows:]",
-    "weights[-num_rows:]",
-    "cu_seqlen_ks[-num_rows:]",
-    "cu_seqlen_ke[-num_rows:]",
+    "_slice_dense_mqa_topk_rows_to_live_tail",
+    "live_rows = min(",
+    "q_values[-live_rows:]",
+    "weights[-live_rows:]",
+    "cu_seqlen_ks[-live_rows:]",
+    "cu_seqlen_ke[-live_rows:]",
+    "out[-live_rows:]",
+    "topk_indices.fill_(-1)",
 )
 
 print("PASS: DS4 CUDA graph support audit")
