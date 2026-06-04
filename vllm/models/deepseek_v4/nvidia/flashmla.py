@@ -1370,6 +1370,10 @@ class DeepseekV4FlashMLASparseImpl(DeepseekV4SparseMLAAttentionImpl):
         assert query_start_loc_cpu is not None
         assert query_start_loc is not None
         prefill_token_base = query_start_loc_cpu[num_decodes]
+        # CUDAGraph/AOT padding can leave metadata wider than live q/output rows.
+        live_prefill_rows = min(q.shape[0], output.shape[0], num_prefill_tokens)
+        live_prefill_start = max(0, num_prefill_tokens - live_prefill_rows)
+        live_prefill_end = live_prefill_start + live_prefill_rows
 
         if not swa_only:
             if layer.compress_ratio == 4:
@@ -1412,6 +1416,41 @@ class DeepseekV4FlashMLASparseImpl(DeepseekV4SparseMLAAttentionImpl):
                     - prefill_token_base
                 ).item()
             )
+            query_start = max(query_start, live_prefill_start)
+            query_end = min(query_end, live_prefill_end)
+            if query_end <= query_start:
+                continue
+            live_query_offsets: list[int] = [0]
+            live_query_total = 0
+            for req_idx in range(chunk_start, chunk_end):
+                req_start = int(
+                    (
+                        query_start_loc_cpu[num_decodes + req_idx]
+                        - prefill_token_base
+                    ).item()
+                )
+                req_end = int(
+                    (
+                        query_start_loc_cpu[num_decodes + req_idx + 1]
+                        - prefill_token_base
+                    ).item()
+                )
+                req_live_start = max(req_start, query_start)
+                req_live_end = min(req_end, query_end)
+                live_query_total += max(req_live_end - req_live_start, 0)
+                live_query_offsets.append(live_query_total)
+            live_query_start_loc_cpu = torch.tensor(
+                live_query_offsets,
+                dtype=query_start_loc_cpu.dtype,
+                device=query_start_loc_cpu.device,
+            )
+            live_query_start_loc = torch.tensor(
+                live_query_offsets,
+                dtype=query_start_loc.dtype,
+                device=query_start_loc.device,
+            )
+            q_row_start = query_start - live_prefill_start
+            q_row_end = query_end - live_prefill_start
             sparse_query_chunk_size = min(
                 max(1, query_end - query_start),
                 triton_sparse_mla_query_chunk_size(),
@@ -1484,9 +1523,7 @@ class DeepseekV4FlashMLASparseImpl(DeepseekV4SparseMLAAttentionImpl):
             # Combine the topk indices and SWA indices for gathered KV cache
             combined_indices, combined_lens = combine_topk_swa_indices(
                 topk_indices[query_start:query_end],
-                query_start_loc[
-                    num_decodes + chunk_start : num_decodes + chunk_end + 1
-                ],
+                live_query_start_loc,
                 seq_lens[chunk_start:chunk_end],
                 gather_lens[chunk_start:chunk_end],
                 layer.window_size,
@@ -1500,9 +1537,7 @@ class DeepseekV4FlashMLASparseImpl(DeepseekV4SparseMLAAttentionImpl):
                 kv_flat=kv[:chunk_size].reshape(-1, q.shape[-1]),
                 combined_indices=combined_indices,
                 combined_lens=combined_lens,
-                query_start_loc_cpu=query_start_loc_cpu[
-                    num_decodes + chunk_start : num_decodes + chunk_end + 1
-                ],
+                query_start_loc_cpu=live_query_start_loc_cpu,
                 seq_lens=seq_lens[chunk_start:chunk_end],
                 gather_lens=gather_lens[chunk_start:chunk_end],
                 top_k=top_k,
@@ -1514,11 +1549,11 @@ class DeepseekV4FlashMLASparseImpl(DeepseekV4SparseMLAAttentionImpl):
             if is_triton_sparse_mla_enabled(q.device):
                 cls._forward_sparse_mla_prefill_triton(
                     layer=layer,
-                    q=q[query_start:query_end],
+                    q=q[q_row_start:q_row_end],
                     kv=kv[:chunk_size],
                     combined_indices=combined_indices,
                     combined_lens=combined_lens,
-                    output=output[query_start:query_end],
+                    output=output[q_row_start:q_row_end],
                     workspace_buffers=tuple(
                         buffer
                         for buffer in (
@@ -1532,11 +1567,11 @@ class DeepseekV4FlashMLASparseImpl(DeepseekV4SparseMLAAttentionImpl):
                 )
                 continue
             flash_mla_sparse_fwd(
-                q=q[query_start:query_end],
+                q=q[q_row_start:q_row_end],
                 kv=kv.view(-1, 1, q.shape[-1]),
                 indices=combined_indices.unsqueeze(1),
                 sm_scale=layer.scale,
                 attn_sink=layer.attn_sink,
                 topk_length=combined_lens,
-                out=output[query_start:query_end],
+                out=output[q_row_start:q_row_end],
             )
