@@ -187,7 +187,15 @@ CHECKS = [
     (
         "DSV4 resident128 workspace covers 512-token prefill cohorts",
         "tools/ds4_launch_dsv4_flash_pp8.sh",
-        "DSV4_WORKSPACE_PREALLOC_BYTES:=536870912",
+        'resident128|RESIDENT128|resident-128|RESIDENT-128)\n'
+        '    : "${DSV4_MAX_MODEL_LEN:=65536}"\n'
+        '    : "${DSV4_MAX_NUM_SEQS:=128}"\n'
+        '    : "${DSV4_MAX_NUM_BATCHED_TOKENS:=16384}"\n'
+        '    : "${DSV4_KV_CACHE_MEMORY_BYTES:=8589934592}"\n'
+        '    : "${DSV4_MIN_KV_CACHE_MEMORY_BYTES:=2147483648}"\n'
+        '    : "${DSV4_KV_OFFLOADING_SIZE:=2}"\n'
+        '    : "${DSV4_GPU_MEMORY_UTILIZATION:=0.30}"\n'
+        '    : "${DSV4_WORKSPACE_PREALLOC_BYTES:=536870912}"',
     ),
     (
         "DSV4 PP default derives balanced layer partition",

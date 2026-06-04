@@ -352,7 +352,17 @@ checks = [
         and ': "${DSV4_MAX_NUM_SEQS:=128}"' in dsv4_pp8
         and ': "${DSV4_MAX_NUM_BATCHED_TOKENS:=16384}"' in dsv4_pp8
         and ': "${DSV4_KV_CACHE_MEMORY_BYTES:=8589934592}"' in dsv4_pp8
-        and ': "${DSV4_WORKSPACE_PREALLOC_BYTES:=536870912}"' in dsv4_pp8
+        and (
+            'resident128|RESIDENT128|resident-128|RESIDENT-128)\n'
+            '    : "${DSV4_MAX_MODEL_LEN:=65536}"\n'
+            '    : "${DSV4_MAX_NUM_SEQS:=128}"\n'
+            '    : "${DSV4_MAX_NUM_BATCHED_TOKENS:=16384}"\n'
+            '    : "${DSV4_KV_CACHE_MEMORY_BYTES:=8589934592}"\n'
+            '    : "${DSV4_MIN_KV_CACHE_MEMORY_BYTES:=2147483648}"\n'
+            '    : "${DSV4_KV_OFFLOADING_SIZE:=2}"\n'
+            '    : "${DSV4_GPU_MEMORY_UTILIZATION:=0.30}"\n'
+            '    : "${DSV4_WORKSPACE_PREALLOC_BYTES:=536870912}"'
+        ) in dsv4_pp8
         and ': "${DSV4_KV_CACHE_MEMORY_BYTES:=12884901888}"' in dsv4_pp8
         and "DSV4_KV_CACHE_MEMORY_BYTES_EFFECTIVE" in dsv4_pp8
         and "DSV4_SCALE_KV_CACHE_BY_LOCAL_LAYERS" in dsv4_pp8
