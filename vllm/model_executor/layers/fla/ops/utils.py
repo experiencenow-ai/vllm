@@ -29,6 +29,32 @@ SUPPRESS_LEVEL = int(os.getenv("GDN_RECOMPUTE_SUPPRESS_LEVEL", "0"))
 
 # Default chunk size used across FLA triton kernels (kda, chunk, chunk_o, etc.)
 FLA_CHUNK_SIZE = 64
+DS4_QWEN_GDN_FIXED_TRITON_CONFIGS = os.getenv(
+    "VLLM_DS4_QWEN_GDN_FIXED_TRITON_CONFIGS", "0"
+).strip().lower() in ("1", "true", "yes", "on")
+DS4_QWEN_GDN_FIXED_KERNEL_CONFIGS = {
+    "chunk_local_cumsum_scalar": {"num_warps": 1, "num_stages": 3},
+    "chunk_scaled_dot_kkt": {"BK": 64, "num_warps": 4, "num_stages": 3},
+    "solve_tril_64": {"num_warps": 4, "num_stages": 3},
+    "recompute_w_u": {"num_warps": 4, "num_stages": 4},
+    "chunk_delta_h": {"BV": 64, "num_warps": 4, "num_stages": 2},
+    "chunk_o": {"BK": 64, "BV": 64, "num_warps": 4, "num_stages": 2},
+}
+
+
+def ds4_qwen_gdn_autotune(name: str, *args: Any, **kwargs: Any) -> Callable:
+    if DS4_QWEN_GDN_FIXED_TRITON_CONFIGS:
+        return lambda fn: fn
+    return triton.autotune(*args, **kwargs)
+
+
+def ds4_qwen_gdn_kernel_kwargs(name: str) -> dict[str, Any]:
+    if not DS4_QWEN_GDN_FIXED_TRITON_CONFIGS:
+        return {}
+    try:
+        return DS4_QWEN_GDN_FIXED_KERNEL_CONFIGS[name].copy()
+    except KeyError as exc:
+        raise RuntimeError(f"missing DS4 Qwen GDN fixed config for {name}") from exc
 
 
 def tensor_cache(fn: Callable[..., torch.Tensor]) -> Callable[..., torch.Tensor]:

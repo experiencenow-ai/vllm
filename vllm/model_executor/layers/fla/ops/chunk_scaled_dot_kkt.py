@@ -14,7 +14,11 @@ from vllm.triton_utils import tl, triton
 
 from .index import prepare_chunk_indices
 from .op import exp
-from .utils import FLA_CHUNK_SIZE
+from .utils import (
+    FLA_CHUNK_SIZE,
+    ds4_qwen_gdn_autotune,
+    ds4_qwen_gdn_kernel_kwargs,
+)
 
 
 @triton.heuristics(
@@ -23,7 +27,8 @@ from .utils import FLA_CHUNK_SIZE
         "IS_VARLEN": lambda args: args["cu_seqlens"] is not None,
     }
 )
-@triton.autotune(
+@ds4_qwen_gdn_autotune(
+    "chunk_scaled_dot_kkt",
     configs=[
         triton.Config({"BK": BK}, num_warps=num_warps, num_stages=num_stages)
         for BK in [32, 64, 128]
@@ -154,5 +159,6 @@ def chunk_scaled_dot_kkt_fwd(
         Hg=Hg,
         K=K,
         BT=BT,
+        **ds4_qwen_gdn_kernel_kwargs("chunk_scaled_dot_kkt"),
     )
     return A
