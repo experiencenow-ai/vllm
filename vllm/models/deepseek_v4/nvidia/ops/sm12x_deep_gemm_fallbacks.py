@@ -475,41 +475,37 @@ def _fp8_mqa_logits_topk_triton(
     )
 
 
-def _slice_dense_mqa_topk_rows_to_output(
+def _slice_dense_mqa_topk_rows_to_live_tail(
     q: tuple[torch.Tensor, torch.Tensor | None],
     weights: torch.Tensor,
     cu_seqlen_ks: torch.Tensor,
     cu_seqlen_ke: torch.Tensor,
     out: torch.Tensor,
 ) -> tuple[tuple[torch.Tensor, torch.Tensor | None], torch.Tensor,
-           torch.Tensor, torch.Tensor]:
+           torch.Tensor, torch.Tensor, torch.Tensor]:
     q_values, q_scale = q
-    num_rows = out.shape[0]
-    q_rows = q_values.shape[0]
-    if q_rows == num_rows:
-        return q, weights, cu_seqlen_ks, cu_seqlen_ke
-    if q_rows < num_rows:
-        raise ValueError(
-            "DS4 SM12x dense-MQA top-k q has fewer rows than output: "
-            f"q={q_rows} out={num_rows}"
+    live_rows = min(
+        q_values.shape[0],
+        weights.shape[0],
+        cu_seqlen_ks.shape[0],
+        cu_seqlen_ke.shape[0],
+        out.shape[0],
+    )
+    if live_rows == 0:
+        return (
+            (q_values[:0], q_scale[:0] if q_scale is not None else None),
+            weights[:0],
+            cu_seqlen_ks[:0],
+            cu_seqlen_ke[:0],
+            out[:0],
         )
-    if weights.shape[0] < num_rows:
-        raise ValueError(
-            "DS4 SM12x dense-MQA top-k weights have fewer rows than output: "
-            f"weights={weights.shape[0]} out={num_rows}"
-        )
-    if cu_seqlen_ks.shape[0] < num_rows or cu_seqlen_ke.shape[0] < num_rows:
-        raise ValueError(
-            "DS4 SM12x dense-MQA top-k metadata has fewer rows than output: "
-            f"ks={cu_seqlen_ks.shape[0]} ke={cu_seqlen_ke.shape[0]} "
-            f"out={num_rows}"
-        )
-    q_scale_out = q_scale[-num_rows:] if q_scale is not None else None
+    q_scale_out = q_scale[-live_rows:] if q_scale is not None else None
     return (
-        (q_values[-num_rows:], q_scale_out),
-        weights[-num_rows:],
-        cu_seqlen_ks[-num_rows:],
-        cu_seqlen_ke[-num_rows:],
+        (q_values[-live_rows:], q_scale_out),
+        weights[-live_rows:],
+        cu_seqlen_ks[-live_rows:],
+        cu_seqlen_ke[-live_rows:],
+        out[-live_rows:],
     )
 
 
@@ -665,8 +661,9 @@ def fp8_fp4_mqa_topk_indices(
         and q[1] is None
     ):
         return False
-    q, weights, cu_seqlen_ks, cu_seqlen_ke = (
-        _slice_dense_mqa_topk_rows_to_output(
+    topk_indices.fill_(-1)
+    q, weights, cu_seqlen_ks, cu_seqlen_ke, topk_indices_live = (
+        _slice_dense_mqa_topk_rows_to_live_tail(
             q,
             weights,
             cu_seqlen_ks,
@@ -674,13 +671,15 @@ def fp8_fp4_mqa_topk_indices(
             topk_indices,
         )
     )
+    if topk_indices_live.shape[0] == 0:
+        return True
     if _fp8_mqa_logits_topk_triton(
         q,
         kv,
         weights,
         cu_seqlen_ks,
         cu_seqlen_ke,
-        topk_indices,
+        topk_indices_live,
     ):
         return True
     if not _env_flag("VLLM_DS4_ALLOW_SM12X_MQA_TOPK_TORCH_FALLBACK", False):
@@ -697,8 +696,8 @@ def fp8_fp4_mqa_topk_indices(
         weights,
         cu_seqlen_ks,
         cu_seqlen_ke,
-        topk_indices.shape[1],
-        out=topk_indices,
+        topk_indices_live.shape[1],
+        out=topk_indices_live,
     )
     return True
 
