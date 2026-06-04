@@ -121,6 +121,37 @@ def _pad_positions_to_q_kv_rows(
     return _pad_positions_to_num_rows(positions, num_rows)
 
 
+def _num_leading_rows(shape: torch.Size) -> int:
+    num_rows = 1
+    for dim in shape:
+        num_rows *= dim
+    return num_rows
+
+
+def _positions_for_flat_hidden_rows(
+    positions: torch.Tensor,
+    leading_shape: torch.Size,
+    num_rows: int,
+) -> torch.Tensor:
+    if positions.dim() != 1:
+        raise ValueError(
+            "DeepSeek V4 graph-padded positions must be 1-D; "
+            f"got shape={tuple(positions.shape)}"
+        )
+    num_positions = positions.shape[0]
+    if num_positions == num_rows:
+        return positions
+    if len(leading_shape) > 1:
+        outer_rows = _num_leading_rows(leading_shape[:-1])
+        inner_rows = leading_shape[-1]
+        if num_positions == outer_rows:
+            return positions.repeat_interleave(inner_rows)
+        first_rows = leading_shape[0]
+        if num_positions == first_rows and first_rows > 0:
+            return positions.repeat_interleave(num_rows // first_rows)
+    return _pad_positions_to_num_rows(positions, num_rows)
+
+
 def _slice_slot_mapping_to_q_rows(
     slot_mapping: torch.Tensor,
     q: torch.Tensor,
@@ -354,14 +385,21 @@ class DeepseekV4MultiHeadLatentAttentionWrapper(PluggableLayer):
         hidden_states: torch.Tensor,
         llama_4_scaling: torch.Tensor | None = None,
     ) -> torch.Tensor:
+        input_shape = hidden_states.shape
+        leading_shape = input_shape[:-1]
+        hidden_size = input_shape[-1]
+        num_tokens = _num_leading_rows(leading_shape)
+        if hidden_states.dim() > 2:
+            hidden_states = hidden_states.reshape(num_tokens, hidden_size)
         # Pre-allocate attention output with FlashMLA-padded head count.
         # The op writes into `o_padded`; we slice to n_local_heads after.
-        num_tokens = hidden_states.shape[0]
         # CUDA graph input padding can make hidden_states contain graph rows
         # beyond the live scheduled tokens. The fused Q/KV insert kernel
         # accepts shorter slot_mapping, but q, kv, and position_ids must have
         # the same row count.
-        positions = _pad_positions_to_num_rows(positions, num_tokens)
+        positions = _positions_for_flat_hidden_rows(
+            positions, leading_shape, num_tokens
+        )
         o_padded = torch.empty(
             (num_tokens, self.padded_heads, self.head_dim),
             dtype=hidden_states.dtype,
@@ -388,7 +426,7 @@ class DeepseekV4MultiHeadLatentAttentionWrapper(PluggableLayer):
                 self.o_lora_rank,
                 self.wo_a,
             )
-            return self.wo_b(z.flatten(1))
+            return self.wo_b(z.flatten(1)).reshape(*leading_shape, hidden_size)
 
         # O projection: inverse RoPE + FP8 quant + einsum + wo_b
         o_fp8, o_scale = fused_inv_rope_fp8_quant(
@@ -420,7 +458,7 @@ class DeepseekV4MultiHeadLatentAttentionWrapper(PluggableLayer):
             list(self._einsum_recipe),
         )
 
-        return self.wo_b(z.flatten(1))
+        return self.wo_b(z.flatten(1)).reshape(*leading_shape, hidden_size)
 
     def attn_gemm_parallel_execute(self, hidden_states) -> tuple[Any, ...]:
         aux_streams = self.aux_stream_list
