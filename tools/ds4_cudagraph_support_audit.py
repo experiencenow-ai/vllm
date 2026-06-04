@@ -44,4 +44,11 @@ require(
     "slot_mapping = _slice_slot_mapping_to_q_rows",
 )
 
+require(
+    "vllm/models/deepseek_v4/common/ops/fused_indexer_q.py",
+    "_slice_positions_to_index_q_rows",
+    "positions = _slice_positions_to_index_q_rows(positions, index_q)",
+    "positions[-num_rows:]",
+)
+
 print("PASS: DS4 CUDA graph support audit")
