@@ -20,10 +20,13 @@ def require(*needles: str) -> None:
 require(
     "def _num_leading_rows(shape: torch.Size) -> int:",
     "def _positions_for_flat_hidden_rows(",
+    "def _reshape_attention_projection(",
+    "if len(leading_shape) == 1:",
+    "return output",
     "hidden_states = hidden_states.reshape(num_tokens, hidden_size)",
     "positions = _positions_for_flat_hidden_rows(",
     "out.resize_(q.shape)",
-    "return self.wo_b(z.flatten(1)).reshape(*leading_shape, hidden_size)",
+    "return _reshape_attention_projection(",
 )
 
 print("PASS: DS4 DSV4 attention shape audit")
