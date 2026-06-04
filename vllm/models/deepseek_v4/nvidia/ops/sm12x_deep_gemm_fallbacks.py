@@ -475,6 +475,44 @@ def _fp8_mqa_logits_topk_triton(
     )
 
 
+def _slice_dense_mqa_topk_rows_to_output(
+    q: tuple[torch.Tensor, torch.Tensor | None],
+    weights: torch.Tensor,
+    cu_seqlen_ks: torch.Tensor,
+    cu_seqlen_ke: torch.Tensor,
+    out: torch.Tensor,
+) -> tuple[tuple[torch.Tensor, torch.Tensor | None], torch.Tensor,
+           torch.Tensor, torch.Tensor]:
+    q_values, q_scale = q
+    num_rows = out.shape[0]
+    q_rows = q_values.shape[0]
+    if q_rows == num_rows:
+        return q, weights, cu_seqlen_ks, cu_seqlen_ke
+    if q_rows < num_rows:
+        raise ValueError(
+            "DS4 SM12x dense-MQA top-k q has fewer rows than output: "
+            f"q={q_rows} out={num_rows}"
+        )
+    if weights.shape[0] < num_rows:
+        raise ValueError(
+            "DS4 SM12x dense-MQA top-k weights have fewer rows than output: "
+            f"weights={weights.shape[0]} out={num_rows}"
+        )
+    if cu_seqlen_ks.shape[0] < num_rows or cu_seqlen_ke.shape[0] < num_rows:
+        raise ValueError(
+            "DS4 SM12x dense-MQA top-k metadata has fewer rows than output: "
+            f"ks={cu_seqlen_ks.shape[0]} ke={cu_seqlen_ke.shape[0]} "
+            f"out={num_rows}"
+        )
+    q_scale_out = q_scale[-num_rows:] if q_scale is not None else None
+    return (
+        (q_values[-num_rows:], q_scale_out),
+        weights[-num_rows:],
+        cu_seqlen_ks[-num_rows:],
+        cu_seqlen_ke[-num_rows:],
+    )
+
+
 def _fp8_mqa_logits_topk_triton_chunked(
     q_values: torch.Tensor,
     kv: tuple[torch.Tensor, torch.Tensor],
@@ -627,6 +665,15 @@ def fp8_fp4_mqa_topk_indices(
         and q[1] is None
     ):
         return False
+    q, weights, cu_seqlen_ks, cu_seqlen_ke = (
+        _slice_dense_mqa_topk_rows_to_output(
+            q,
+            weights,
+            cu_seqlen_ks,
+            cu_seqlen_ke,
+            topk_indices,
+        )
+    )
     if _fp8_mqa_logits_topk_triton(
         q,
         kv,
