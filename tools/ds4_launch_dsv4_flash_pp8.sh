@@ -12,7 +12,7 @@ MODEL="${DSV4_FLASH_MODEL:-/home/$USER/models/hf/deepseek-ai/DeepSeek-V4-Flash}"
 DSV4_SERVED_MODEL_NAME="${DSV4_SERVED_MODEL_NAME:-deepseek-v4-flash-pp${NNODES}}"
 RUNTIME_PYTHON="${DS4_VLLM_PYTHON:-/home/$USER/ds4-vllm-local/bin/python}"
 SOURCE_ROOT="${DS4_VLLM_SOURCE_ROOT:-/home/$USER/src/vllm}"
-DS4_DSV4_PIPELINE_RAM_PROFILE="${DS4_DSV4_PIPELINE_RAM_PROFILE:-max-kv}"
+DS4_DSV4_PIPELINE_RAM_PROFILE="${DS4_DSV4_PIPELINE_RAM_PROFILE:-resident3}"
 DEFAULT_SPECULATIVE_CONFIG="{\"model\":\"$MODEL\",\"num_speculative_tokens\":2,\"method\":\"deepseek_mtp\"}"
 DSV4_LINEAR_BACKEND="${DSV4_LINEAR_BACKEND:-auto}"
 DSV4_MOE_BACKEND="${DSV4_MOE_BACKEND:-auto}"
@@ -101,17 +101,17 @@ case "$DS4_DSV4_PIPELINE_RAM_PROFILE" in
     : "${DSV4_MAX_MODEL_LEN:=262144}"
     : "${DSV4_MAX_NUM_SEQS:=512}"
     : "${DSV4_MAX_NUM_BATCHED_TOKENS:=262144}"
-    : "${DSV4_KV_CACHE_MEMORY_BYTES:=68719476736}"
-    : "${DSV4_MIN_KV_CACHE_MEMORY_BYTES:=8589934592}"
+    : "${DSV4_KV_CACHE_MEMORY_BYTES:=51539607552}"
+    : "${DSV4_MIN_KV_CACHE_MEMORY_BYTES:=6442450944}"
     : "${DSV4_KV_OFFLOADING_SIZE:=8}"
-    : "${DSV4_GPU_MEMORY_UTILIZATION:=0.82}"
-    : "${DSV4_WORKSPACE_PREALLOC_BYTES:=4294967296}"
+    : "${DSV4_GPU_MEMORY_UTILIZATION:=0.70}"
+    : "${DSV4_WORKSPACE_PREALLOC_BYTES:=2147483648}"
     : "${DSV4_CUDAGRAPH_CAPTURE_SIZES:=1,2,4,8,16,32,64,128,256,512}"
     : "${DSV4_MAX_CUDAGRAPH_CAPTURE_SIZE:=512}"
     : "${DSV4_SCHED_MAX_NEW_REQS_PER_STEP:=64}"
     : "${DSV4_SCHED_MAX_NEW_PREFILL_TOKENS_PER_STEP:=65536}"
-    : "${DSV4_SCHED_KV_ADMISSION_MAX_USAGE:=0.90}"
-    : "${DSV4_SCHED_KV_HARD_FAIL_USAGE:=0.98}"
+    : "${DSV4_SCHED_KV_ADMISSION_MAX_USAGE:=0.82}"
+    : "${DSV4_SCHED_KV_HARD_FAIL_USAGE:=0.95}"
     : "${DSV4_SKIP_LAST_RANK_SAMPLER_WARMUP:=0}"
     ds4_default_pp_partition
     ;;
@@ -565,6 +565,28 @@ PY
       ;;
   esac
 fi
+
+case "$DSV4_KV_CACHE_MEMORY_BYTES_EFFECTIVE" in
+  ""|0|auto|AUTO|none|NONE)
+    ;;
+  *)
+    "$RUNTIME_PYTHON" - "$DSV4_KV_CACHE_MEMORY_BYTES_EFFECTIVE" "$VLLM_WORKSPACE_PREALLOC_BYTES" "${DSV4_MAX_EXPLICIT_GPU_RESERVATION_BYTES:-55834574848}" <<'PY'
+import sys
+kv = int(sys.argv[1])
+workspace = int(sys.argv[2])
+limit = int(sys.argv[3])
+total = kv + workspace
+if total > limit:
+    raise SystemExit(
+        "DSV4 explicit GPU reservation is too high: "
+        f"kv_cache_memory_bytes_effective={kv} + workspace_prealloc_bytes={workspace} "
+        f"= {total}, limit={limit}. Lower DSV4_KV_CACHE_MEMORY_BYTES or "
+        "DSV4_WORKSPACE_PREALLOC_BYTES, or explicitly raise "
+        "DSV4_MAX_EXPLICIT_GPU_RESERVATION_BYTES for a controlled stress run."
+    )
+PY
+    ;;
+esac
 
 echo "DSV4 PP${NNODES} profile=$DS4_DSV4_PIPELINE_RAM_PROFILE served_model=$DSV4_SERVED_MODEL_NAME max_model_len=$DSV4_MAX_MODEL_LEN max_num_seqs=$DSV4_MAX_NUM_SEQS max_num_batched_tokens=$DSV4_MAX_NUM_BATCHED_TOKENS prefix_caching=$DSV4_ENABLE_PREFIX_CACHING sched_max_new_reqs=$VLLM_DS4_SCHED_MAX_NEW_REQS_PER_STEP sched_max_new_prefill_tokens=$VLLM_DS4_SCHED_MAX_NEW_PREFILL_TOKENS_PER_STEP sched_kv_admission_max_usage=$VLLM_DS4_SCHED_KV_ADMISSION_MAX_USAGE sched_kv_hard_fail_usage=$VLLM_DS4_SCHED_KV_HARD_FAIL_USAGE kv_cache_memory_bytes_profile=$DSV4_KV_CACHE_MEMORY_BYTES_PROFILE kv_cache_memory_bytes_effective=$DSV4_KV_CACHE_MEMORY_BYTES_EFFECTIVE kv_cache_memory_bytes_min=${DSV4_MIN_KV_CACHE_MEMORY_BYTES:-0} kv_layer_scale=${DSV4_SCALE_KV_CACHE_BY_LOCAL_LAYERS:-1} local_layers=$DSV4_LOCAL_LAYER_COUNT max_stage_layers=$DSV4_MAX_LAYER_COUNT kv_offloading_size=$DSV4_KV_OFFLOADING_SIZE gpu_memory_utilization=$DSV4_GPU_MEMORY_UTILIZATION workspace_prealloc_bytes=$VLLM_WORKSPACE_PREALLOC_BYTES mq_max_chunks=$VLLM_MQ_MAX_CHUNKS triton_sparse_mla=$VLLM_TRITON_MLA_SPARSE sparse_mla_validate=$VLLM_DS4_DSV4_SPARSE_MLA_VALIDATE sparse_mla_trace=$VLLM_DS4_DSV4_SPARSE_MLA_TRACE sparse_mla_ref_check=$VLLM_DS4_DSV4_SPARSE_MLA_REF_CHECK sparse_mla_ref_max_tokens=$VLLM_DS4_DSV4_SPARSE_MLA_REF_MAX_TOKENS sparse_mla_selected_absmax=$VLLM_DS4_DSV4_SPARSE_MLA_SELECTED_ABSMAX sparse_mla_prefill_backend=$VLLM_DS4_DSV4_SPARSE_MLA_PREFILL_BACKEND hash_router_ref_check=$VLLM_DS4_DSV4_HASH_ROUTER_REF_CHECK hash_router_ref_max_tokens=$VLLM_DS4_DSV4_HASH_ROUTER_REF_MAX_TOKENS hash_router_ref_atol=$VLLM_DS4_DSV4_HASH_ROUTER_REF_ATOL mhc_tilelang_max_tokens=$VLLM_DS4_MHC_TILELANG_MAX_TOKENS mhc_triton_fallback=$VLLM_DS4_MHC_ALLOW_TRITON_SM12X_FALLBACK mhc_preflight_tokens=$VLLM_DS4_MHC_NATIVE_PREFLIGHT_TOKENS dsv4_layer_backend=$VLLM_DS4_DSV4_LAYER_BACKEND hc_head_backend=$VLLM_DS4_DSV4_HC_HEAD_BACKEND weight_audit=$VLLM_DS4_DSV4_WEIGHT_AUDIT pp_layer_partition=${DSV4_FLASH_PP_LAYER_PARTITION:-auto} pp_hc_boundary_flush=$VLLM_DS4_DSV4_PP_FLUSH_HC_BOUNDARY pp_transport=$DS4_PP_TRANSPORT pp_edge_rail=$VLLM_DS4_PP_EDGE_RAIL pp_pynccl=$VLLM_DS4_PP_PYNCCL_TENSOR_DICT pp_pynccl_pair=$VLLM_DS4_PP_PYNCCL_PAIR_COMMUNICATORS pp_pynccl_pair_ifname_mode=$VLLM_DS4_PP_PYNCCL_PAIR_IFNAME_MODE pp_cpu_staged=${VLLM_DS4_PP_CPU_STAGED_TENSOR_DICT:-0} pp_tcp=$VLLM_DS4_PP_TCP_TENSOR_DICT pp_tcp_stripes=$VLLM_DS4_PP_TCP_STRIPES pp_tcp_min_bytes=$VLLM_DS4_PP_TCP_MIN_BYTES pp_tcp_bind=${VLLM_DS4_PP_TCP_BIND_HOST:-none} pp_tcp_advertise=${VLLM_DS4_PP_TCP_ADVERTISE_HOST:-none} pp_direct_cuda=$VLLM_DS4_PP_DIRECT_CUDA_TENSOR_DICT pp_torch_pg=$VLLM_DS4_PP_TORCH_PG_TENSOR_DICT pp_torch_pair_groups=$VLLM_DS4_PP_TORCH_PAIR_GROUPS pp_torch_group_warmup=$VLLM_DS4_PP_TORCH_GROUP_WARMUP pp_prev_if=${VLLM_DS4_PP_PREV_SOCKET_IFNAME:-none} pp_next_if=${VLLM_DS4_PP_NEXT_SOCKET_IFNAME:-none} pp_socket_if=${VLLM_DS4_PP_SOCKET_IFNAME:-none} pp_device_metadata=$VLLM_DS4_PP_DEVICE_TENSOR_DICT_METADATA pp_send_backlog=$VLLM_DS4_PP_SEND_BACKLOG pp_overlap_send=$VLLM_DS4_PP_OVERLAP_SEND pp_send_buffer_slots=$VLLM_DS4_PP_SEND_BUFFER_SLOTS pp_send_buffer_max_bytes=$VLLM_DS4_PP_SEND_BUFFER_MAX_BYTES pp_boundary_trace=$VLLM_DS4_PP_BOUNDARY_TRACE pp_boundary_trace_every=$VLLM_DS4_PP_BOUNDARY_TRACE_EVERY pp_boundary_trace_max_elems=$VLLM_DS4_PP_BOUNDARY_TRACE_MAX_ELEMS pp_pynccl_stripes=$VLLM_DS4_PP_PYNCCL_TENSOR_DICT_STRIPES pp_pynccl_credit=$VLLM_DS4_PP_PYNCCL_P2P_CREDIT pp_striped_nccl=$VLLM_DS4_PP_STRIPED_NCCL_TENSOR_DICT pp_striped_nccl_stripes=$VLLM_DS4_PP_STRIPED_NCCL_STRIPES pp_striped_nccl_min_bytes=$VLLM_DS4_PP_STRIPED_NCCL_MIN_BYTES" >&2
 
