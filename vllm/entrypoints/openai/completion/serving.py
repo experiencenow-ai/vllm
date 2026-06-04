@@ -88,6 +88,7 @@ class OpenAIServingCompletion(OpenAIServing):
         self.enable_force_include_usage = enable_force_include_usage
 
         self.default_sampling_params = self.model_config.get_diff_sampling_param()
+        self._ds4_completion_cohort_admission_lock = asyncio.Lock()
         mc = self.model_config
         self.override_max_tokens = (
             self.default_sampling_params.get("max_tokens")
@@ -349,28 +350,36 @@ class OpenAIServingCompletion(OpenAIServing):
                 "fragments prefill/decode waves and invalidates throughput."
             )
 
-        paused = False
-        try:
-            await self.engine_client.pause_generation(mode="keep", clear_cache=False)
-            paused = True
-            for request_id_item, engine_input, sampling_params, trace_headers in items:
-                collector = await add_request(
+        async with self._ds4_completion_cohort_admission_lock:
+            paused = False
+            try:
+                await self.engine_client.pause_generation(
+                    mode="keep", clear_cache=False
+                )
+                paused = True
+                for (
                     request_id_item,
                     engine_input,
                     sampling_params,
-                    lora_request=lora_request,
-                    trace_headers=trace_headers,
-                    priority=priority,
-                    data_parallel_rank=data_parallel_rank,
-                )
-                collectors.append(collector)
-        except Exception:
-            if collectors:
-                await self._ds4_abort_collectors(collectors)
-            raise
-        finally:
-            if paused:
-                await self._ds4_wake_completion_cohort()
+                    trace_headers,
+                ) in items:
+                    collector = await add_request(
+                        request_id_item,
+                        engine_input,
+                        sampling_params,
+                        lora_request=lora_request,
+                        trace_headers=trace_headers,
+                        priority=priority,
+                        data_parallel_rank=data_parallel_rank,
+                    )
+                    collectors.append(collector)
+            except Exception:
+                if collectors:
+                    await self._ds4_abort_collectors(collectors)
+                raise
+            finally:
+                if paused:
+                    await self._ds4_wake_completion_cohort()
 
         logger.info(
             "DS4 admitted completion cohort: prompts=%d priority=%s pause=%s",
