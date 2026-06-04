@@ -19,6 +19,7 @@ started yet.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import datetime as dt
 import json
 import os
@@ -30,6 +31,29 @@ import time
 
 
 DEFAULT_NODES = [f"spark{i}" for i in range(8)]
+
+
+class LaunchTimer:
+    def __init__(self) -> None:
+        self._started = time.monotonic()
+        self._rows: list[tuple[str, float]] = []
+
+    @contextlib.contextmanager
+    def phase(self, name: str):
+        started = time.monotonic()
+        try:
+            yield
+        finally:
+            elapsed = time.monotonic() - started
+            self._rows.append((name, elapsed))
+            print(f"[launch-timer] {name}: {elapsed:.1f}s")
+
+    def summary(self) -> None:
+        total = time.monotonic() - self._started
+        print("[launch-timer] summary:")
+        for name, elapsed in self._rows:
+            print(f"[launch-timer]   {name}: {elapsed:.1f}s")
+        print(f"[launch-timer]   total: {total:.1f}s")
 
 
 def parse_args() -> argparse.Namespace:
@@ -545,31 +569,48 @@ def run_parallel_start(args: argparse.Namespace, nodes: list[str], log_tag: str)
 
 
 def main() -> int:
+    timer = LaunchTimer()
     args = parse_args()
-    cleanup_stale_local_controllers(args)
-    nodes = nodes_from_arg(args.nodes)
-    if len(nodes) != args.nnodes:
-        raise SystemExit(f"--nodes has {len(nodes)} entries but --nnodes={args.nnodes}")
-    log_tag = args.log_tag or (
-        "pr44_workspace_"
-        + args.profile.replace("-", "_")
-        + "_"
-        + dt.datetime.now(dt.UTC).strftime("%Y%m%dT%H%M%SZ")
-    )
-    if not args.skip_pull:
-        run_on_nodes(args, nodes, lambda _rank, _node: pull_command(args))
-    if not args.skip_build:
-        run_on_nodes(args, nodes, lambda _rank, _node: build_command(args))
-    run_static_fabric(args, nodes)
-    if args.setup_only:
-        print("setup-only complete: pull/build/static fabric finished; service was not stopped or launched")
-        return 0
-    if not args.skip_stop:
-        run_on_nodes(args, nodes, lambda _rank, _node: stop_command(args))
-    run_parallel_start(args, nodes, log_tag)
-    if args.dry_run:
-        return 0
-    return 0 if poll_health(args) else 1
+    try:
+        with timer.phase("cleanup_local_controllers"):
+            cleanup_stale_local_controllers(args)
+        with timer.phase("parse_nodes"):
+            nodes = nodes_from_arg(args.nodes)
+            if len(nodes) != args.nnodes:
+                raise SystemExit(
+                    f"--nodes has {len(nodes)} entries but --nnodes={args.nnodes}"
+                )
+            log_tag = args.log_tag or (
+                "pr44_workspace_"
+                + args.profile.replace("-", "_")
+                + "_"
+                + dt.datetime.now(dt.UTC).strftime("%Y%m%dT%H%M%SZ")
+            )
+        if not args.skip_pull:
+            with timer.phase("git_pull"):
+                run_on_nodes(args, nodes, lambda _rank, _node: pull_command(args))
+        if not args.skip_build:
+            with timer.phase("build_validate"):
+                run_on_nodes(args, nodes, lambda _rank, _node: build_command(args))
+        with timer.phase("static_fabric"):
+            run_static_fabric(args, nodes)
+        if args.setup_only:
+            print(
+                "setup-only complete: pull/build/static fabric finished; "
+                "service was not stopped or launched"
+            )
+            return 0
+        if not args.skip_stop:
+            with timer.phase("stop_old_service"):
+                run_on_nodes(args, nodes, lambda _rank, _node: stop_command(args))
+        with timer.phase("start_ranks"):
+            run_parallel_start(args, nodes, log_tag)
+        if args.dry_run:
+            return 0
+        with timer.phase("health_ready"):
+            return 0 if poll_health(args) else 1
+    finally:
+        timer.summary()
 
 
 if __name__ == "__main__":
