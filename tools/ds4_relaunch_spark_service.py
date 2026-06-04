@@ -306,6 +306,7 @@ def build_command(args: argparse.Namespace) -> str:
         "tools/ds4_dsv4_mxfp4_layout_audit.py "
         "tools/ds4_sparse_mla_correctness_audit.py "
         "tools/ds4_mhc_large_prefill_audit.py "
+        "tools/ds4_native_preflight_audit.py "
         "tools/ds4_nccl_p2p_bench_audit.py && "
         "bash -n tools/ds4_200g_guard.sh && "
         "bash -n tools/ds4_install_static_fabric_sudoers.sh && "
@@ -328,6 +329,7 @@ def build_command(args: argparse.Namespace) -> str:
         f"{py} tools/ds4_dsv4_mxfp4_layout_audit.py && "
         f"{py} tools/ds4_sparse_mla_correctness_audit.py && "
         f"{py} tools/ds4_mhc_large_prefill_audit.py && "
+        f"{py} tools/ds4_native_preflight_audit.py && "
         f"{py} tools/ds4_nccl_p2p_bench_audit.py && "
         f"{py} tools/ds4_no_marlin_static_audit.py; "
         "fi",

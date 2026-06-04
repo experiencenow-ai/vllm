@@ -988,8 +988,13 @@ ds4_run_native_blackwell_preflight()
 ds4_run_dsv4_native_preflight()
 {
   local args=()
-  echo "DS4 DSV4 native package preflight: active_probe=${DS4_NATIVE_PREFLIGHT_ACTIVE:-0}" >&2
-  if [[ "${DS4_NATIVE_PREFLIGHT_ACTIVE:-0}" == "1" ]]; then
+  local active_probe="${DS4_NATIVE_PREFLIGHT_ACTIVE:-0}"
+  local active_layout_probe="${DS4_NATIVE_PREFLIGHT_ACTIVE_LAYOUT:-$active_probe}"
+  echo "DS4 DSV4 native package preflight: active_probe=${active_probe} active_layout_probe=${active_layout_probe}" >&2
+  if [[ "$active_layout_probe" != "1" ]]; then
+    args+=(--skip-active-layout-probe)
+  fi
+  if [[ "$active_probe" == "1" ]]; then
     args+=(--active-kernel-probe)
   fi
   "$RUNTIME_PYTHON" "$SCRIPT_DIR/ds4_dsv4_native_preflight.py" "${args[@]}"
