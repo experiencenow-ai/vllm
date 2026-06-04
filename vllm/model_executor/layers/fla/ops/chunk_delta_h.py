@@ -14,7 +14,12 @@ from vllm.triton_utils import tl, triton
 
 from .index import prepare_chunk_indices, prepare_chunk_offsets
 from .op import exp, exp2
-from .utils import FLA_CHUNK_SIZE, use_cuda_graph
+from .utils import (
+    FLA_CHUNK_SIZE,
+    ds4_qwen_gdn_autotune,
+    ds4_qwen_gdn_kernel_kwargs,
+    use_cuda_graph,
+)
 
 NUM_WARPS = [2, 4, 8, 16]
 
@@ -29,7 +34,8 @@ NUM_WARPS = [2, 4, 8, 16]
         "IS_VARLEN": lambda args: args["cu_seqlens"] is not None,
     }
 )
-@triton.autotune(
+@ds4_qwen_gdn_autotune(
+    "chunk_delta_h",
     configs=[
         triton.Config({"BV": BV}, num_warps=num_warps, num_stages=num_stages)
         for num_warps in [2, 4]
@@ -376,5 +382,6 @@ def chunk_gated_delta_rule_fwd_h(
         V=V,
         BT=BT,
         USE_EXP2=use_exp2,
+        **ds4_qwen_gdn_kernel_kwargs("chunk_delta_h"),
     )
     return h, v_new, final_state

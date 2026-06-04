@@ -31,6 +31,7 @@ import time
 
 
 DEFAULT_NODES = [f"spark{i}" for i in range(8)]
+QWEN_BF16_SERVICE = "qwen27-bf16-pp8"
 
 
 class LaunchTimer:
@@ -60,7 +61,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--service",
-        choices=("dsv4-pp8", "dsv4-pp4-tp2-ep"),
+        choices=("dsv4-pp8", "dsv4-pp4-tp2-ep", QWEN_BF16_SERVICE),
         default="dsv4-pp8",
     )
     parser.add_argument("--nodes", default=os.getenv("DS4_SPARK_NODES", ",".join(DEFAULT_NODES)))
@@ -140,7 +141,25 @@ def parse_args() -> argparse.Namespace:
         help="extra environment variable passed to every service rank; repeatable",
     )
     parser.add_argument("--dry-run", action="store_true")
-    return parser.parse_args()
+    args = parser.parse_args()
+    normalize_service_defaults(args)
+    return args
+
+
+def argv_has_option(name: str) -> bool:
+    prefix = f"{name}="
+    return any(item == name or item.startswith(prefix) for item in sys.argv[1:])
+
+
+def normalize_service_defaults(args: argparse.Namespace) -> None:
+    if args.service != QWEN_BF16_SERVICE:
+        return
+    if not argv_has_option("--master-port") and "MASTER_PORT" not in os.environ:
+        args.master_port = "29527"
+    if not argv_has_option("--api-port") and "API_PORT" not in os.environ:
+        args.api_port = "8101"
+    if not argv_has_option("--profile"):
+        args.profile = os.getenv("DS4_QWEN_PIPELINE_RAM_PROFILE", "resident3")
 
 
 def nodes_from_arg(raw: str) -> list[str]:
@@ -312,6 +331,8 @@ def build_command(args: argparse.Namespace) -> str:
         "bash -n tools/ds4_install_static_fabric_sudoers.sh && "
         "bash -n tools/ds4_launch_dsv4_flash_pp8.sh && "
         "bash -n tools/ds4_launch_dsv4_flash_pp4_tp2_ep.sh && "
+        "bash -n tools/ds4_launch_qwen27_pp8.sh && "
+        "bash -n tools/ds4_launch_qwen27_nvfp4_pp8.sh && "
         f"{py} tools/ds4_workspace_prealloc_audit.py && "
         f"{py} tools/ds4_cudagraph_support_audit.py && "
         f"{py} tools/ds4_simple_kv_offload_audit.py && "
@@ -338,9 +359,10 @@ def build_command(args: argparse.Namespace) -> str:
 
 def stop_command(args: argparse.Namespace) -> str:
     py = shell_path(args.python)
+    stop_service = "qwen" if args.service == QWEN_BF16_SERVICE else "dsv4"
     return repo_command(
         args,
-        f"{py} tools/ds4_stop_spark_processes.py --local --service dsv4 "
+        f"{py} tools/ds4_stop_spark_processes.py --local --service {stop_service} "
         f"--term-timeout-s {args.stop_timeout_s:g} --kill-timeout-s 5",
     )
 
@@ -353,7 +375,6 @@ def launch_env(args: argparse.Namespace, rank: int) -> dict[str, str]:
         "NNODES": str(args.nnodes),
         "MASTER_PORT": args.master_port,
         "API_PORT": args.api_port,
-        "DS4_DSV4_PIPELINE_RAM_PROFILE": args.profile,
         "VLLM_DEBUG_WORKSPACE": os.getenv("VLLM_DEBUG_WORKSPACE", "0"),
         "DS4_VLLM_SOURCE_ROOT": args.source_root.replace("~", f"/home/{node_user(rank)}", 1)
         if args.source_root.startswith("~/")
@@ -367,6 +388,46 @@ def launch_env(args: argparse.Namespace, rank: int) -> dict[str, str]:
         "DS4_200G_ADVERTISE_LOOPBACK": "1",
         "DS4_200G_NCCL_TRANSPORT": "socket",
     }
+    if args.service == QWEN_BF16_SERVICE:
+        env.update(
+            {
+                "DS4_QWEN_PIPELINE_RAM_PROFILE": args.profile,
+                "QWEN27_KV_CACHE_DTYPE": os.getenv("QWEN27_KV_CACHE_DTYPE", "fp8"),
+                "QWEN27_ATTENTION_BACKEND": os.getenv(
+                    "QWEN27_ATTENTION_BACKEND", "TRITON_ATTN"
+                ),
+                "QWEN27_ENABLE_LMCACHE": os.getenv("QWEN27_ENABLE_LMCACHE", "0"),
+                "VLLM_QWEN_GDN_PROFILE_WARMUP": os.getenv(
+                    "VLLM_QWEN_GDN_PROFILE_WARMUP", "1"
+                ),
+                "VLLM_DS4_QWEN_GDN_FIXED_TRITON_CONFIGS": os.getenv(
+                    "VLLM_DS4_QWEN_GDN_FIXED_TRITON_CONFIGS", "1"
+                ),
+                "VLLM_DS4_PP_CPU_STAGED_TENSOR_DICT": os.getenv(
+                    "VLLM_DS4_PP_CPU_STAGED_TENSOR_DICT", "1"
+                ),
+                "VLLM_DS4_PP_DISABLE_DEVICE_COMMUNICATOR": os.getenv(
+                    "VLLM_DS4_PP_DISABLE_DEVICE_COMMUNICATOR", "1"
+                ),
+                "VLLM_DS4_PP_PYNCCL_PAIR_COMMUNICATORS": os.getenv(
+                    "VLLM_DS4_PP_PYNCCL_PAIR_COMMUNICATORS", "0"
+                ),
+                "VLLM_DS4_PP_PYNCCL_TENSOR_DICT": os.getenv(
+                    "VLLM_DS4_PP_PYNCCL_TENSOR_DICT", "0"
+                ),
+                "VLLM_DS4_PP_DIRECT_CUDA_TENSOR_DICT": os.getenv(
+                    "VLLM_DS4_PP_DIRECT_CUDA_TENSOR_DICT", "0"
+                ),
+                "VLLM_DS4_PP_TORCH_PG_TENSOR_DICT": os.getenv(
+                    "VLLM_DS4_PP_TORCH_PG_TENSOR_DICT", "0"
+                ),
+                "VLLM_DS4_PP_DEVICE_TENSOR_DICT_METADATA": os.getenv(
+                    "VLLM_DS4_PP_DEVICE_TENSOR_DICT_METADATA", "0"
+                ),
+            }
+        )
+    else:
+        env["DS4_DSV4_PIPELINE_RAM_PROFILE"] = args.profile
     for item in args.env:
         if "=" not in item:
             raise SystemExit(f"--env expects KEY=VALUE, got {item!r}")
@@ -411,7 +472,10 @@ def launch_command(args: argparse.Namespace, rank: int, log_tag: str) -> str:
         f"{shlex.quote(key)}={shlex.quote(value)}"
         for key, value in launch_env(args, rank).items()
     )
-    if args.service == "dsv4-pp4-tp2-ep":
+    if args.service == QWEN_BF16_SERVICE:
+        launch_script = "tools/ds4_launch_qwen27_pp8.sh"
+        log_prefix = "qwen27_bf16_pp8"
+    elif args.service == "dsv4-pp4-tp2-ep":
         launch_script = "tools/ds4_launch_dsv4_flash_pp4_tp2_ep.sh"
         log_prefix = "dsv4_pp4_tp2_ep"
     else:
@@ -480,10 +544,15 @@ def poll_health(args: argparse.Namespace) -> bool:
 
 
 def head_service_process_alive(args: argparse.Namespace) -> bool:
+    launch_script_pattern = (
+        "[d]s4_launch_qwen27_pp8.sh"
+        if args.service == QWEN_BF16_SERVICE
+        else "[d]s4_launch_dsv4_flash_"
+    )
     pattern = (
         "[v]llm.entrypoints.cli.main serve|"
         "[V]LLM::|"
-        "[d]s4_launch_dsv4_flash_|"
+        f"{launch_script_pattern}|"
         "[d]s4_nccl_preflight.py"
     )
     command = f"pgrep -af {shlex.quote(pattern)} >/dev/null"
@@ -495,11 +564,23 @@ def head_service_process_alive(args: argparse.Namespace) -> bool:
 
 
 def print_head_diagnostics(args: argparse.Namespace) -> None:
+    if args.service == QWEN_BF16_SERVICE:
+        launch_script_pattern = "[d]s4_launch_qwen27_pp8.sh"
+        log_globs = (
+            "~/ds4_logs/qwen27_bf16_pp8*_rank0.log "
+            "~/ds4_logs/qwen27_bf16_pp8*-rank0.log "
+            "~/ds4_logs/qwen_bf16_pp8*spark0*rank0.log"
+        )
+        log_title = "recent qwen logs"
+    else:
+        launch_script_pattern = "[d]s4_launch_dsv4_flash_"
+        log_globs = "~/ds4_logs/dsv4_pp*_rank0.log ~/ds4_logs/dsv4_pp*-rank0.log"
+        log_title = "recent dsv4 logs"
     command = (
         "printf 'processes:\\n'; "
-        "pgrep -af '[v]llm.entrypoints.cli.main serve|[V]LLM::|[d]s4_launch_dsv4_flash_|[d]s4_nccl_preflight.py' || true; "
-        "printf '\\nrecent dsv4 logs:\\n'; "
-        "ls -td ~/ds4_logs/dsv4_pp*_rank0.log ~/ds4_logs/dsv4_pp*-rank0.log 2>/dev/null | head -3 | "
+        f"pgrep -af '[v]llm.entrypoints.cli.main serve|[V]LLM::|{launch_script_pattern}|[d]s4_nccl_preflight.py' || true; "
+        f"printf '\\n{log_title}:\\n'; "
+        f"ls -td {log_globs} 2>/dev/null | head -3 | "
         "xargs -r -I{} sh -c 'echo ==== {}; tail -80 {}'"
     )
     try:

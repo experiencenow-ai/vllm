@@ -13,13 +13,19 @@ import torch
 from vllm.triton_utils import tl, triton
 
 from .index import prepare_chunk_indices
-from .utils import check_shared_mem, input_guard
+from .utils import (
+    check_shared_mem,
+    ds4_qwen_gdn_autotune,
+    ds4_qwen_gdn_kernel_kwargs,
+    input_guard,
+)
 
 BS_LIST = [32, 64] if check_shared_mem() else [16, 32]
 
 
 @triton.heuristics({"IS_VARLEN": lambda args: args["cu_seqlens"] is not None})
-@triton.autotune(
+@ds4_qwen_gdn_autotune(
+    "chunk_local_cumsum_scalar",
     configs=[triton.Config({}, num_warps=num_warps) for num_warps in [1, 2, 4, 8]],
     key=["B", "H", "BT", "IS_VARLEN", "REVERSE"],
 )
@@ -190,6 +196,7 @@ def chunk_local_cumsum_scalar(
         BT=BT,
         HEAD_FIRST=head_first,
         REVERSE=reverse,
+        **ds4_qwen_gdn_kernel_kwargs("chunk_local_cumsum_scalar"),
     )
     return g
 

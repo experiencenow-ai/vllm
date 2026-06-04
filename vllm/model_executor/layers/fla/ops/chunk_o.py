@@ -16,7 +16,13 @@ from vllm.triton_utils import tl, triton
 
 from .index import prepare_chunk_indices
 from .op import exp
-from .utils import FLA_CHUNK_SIZE, check_shared_mem, is_nvidia_hopper
+from .utils import (
+    FLA_CHUNK_SIZE,
+    check_shared_mem,
+    ds4_qwen_gdn_autotune,
+    ds4_qwen_gdn_kernel_kwargs,
+    is_nvidia_hopper,
+)
 
 BKV_LIST = [64, 128] if check_shared_mem() else [32, 64]
 NUM_WARPS = [2, 4] if is_nvidia_hopper else [2, 4, 8]
@@ -28,7 +34,8 @@ NUM_WARPS = [2, 4] if is_nvidia_hopper else [2, 4, 8]
         "IS_VARLEN": lambda args: args["cu_seqlens"] is not None,
     }
 )
-@triton.autotune(
+@ds4_qwen_gdn_autotune(
+    "chunk_o",
     configs=[
         triton.Config({"BK": BK, "BV": BV}, num_warps=num_warps, num_stages=num_stages)
         for BK in BKV_LIST
@@ -186,5 +193,6 @@ def chunk_fwd_o(
         K=K,
         V=V,
         BT=BT,
+        **ds4_qwen_gdn_kernel_kwargs("chunk_o"),
     )
     return o

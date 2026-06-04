@@ -14,10 +14,12 @@ import torch
 from vllm.triton_utils import tl, triton
 
 from .index import prepare_chunk_indices
+from .utils import ds4_qwen_gdn_autotune, ds4_qwen_gdn_kernel_kwargs
 
 
 @triton.heuristics({"IS_VARLEN": lambda args: args["cu_seqlens"] is not None})
-@triton.autotune(
+@ds4_qwen_gdn_autotune(
+    "recompute_w_u",
     configs=[
         triton.Config({}, num_warps=num_warps, num_stages=num_stages)
         for num_warps in [2, 4, 8]
@@ -154,5 +156,6 @@ def recompute_w_u_fwd(
         BT=BT,
         BK=BK,
         BV=BV,
+        **ds4_qwen_gdn_kernel_kwargs("recompute_w_u"),
     )
     return w, u

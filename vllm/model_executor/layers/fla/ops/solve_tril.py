@@ -16,7 +16,13 @@ from vllm.triton_utils import tl, triton
 
 from .index import prepare_chunk_indices
 from .op import make_tensor_descriptor
-from .utils import input_guard, is_amd, is_tma_supported
+from .utils import (
+    ds4_qwen_gdn_autotune,
+    ds4_qwen_gdn_kernel_kwargs,
+    input_guard,
+    is_amd,
+    is_tma_supported,
+)
 
 FLA_TRIL_PRECISION = os.environ.get("FLA_TRIL_PRECISION", "ieee")
 ALLOWED_TRIL_PRECISIONS = ["ieee", "tf32"] if is_amd else ["ieee", "tf32", "tf32x3"]
@@ -226,7 +232,8 @@ def merge_16x16_to_32x32_inverse_kernel(
 
 
 @triton.heuristics({"IS_VARLEN": lambda args: args["cu_seqlens"] is not None})
-@triton.autotune(
+@ds4_qwen_gdn_autotune(
+    "solve_tril_64",
     configs=[
         triton.Config({}, num_warps=num_warps, num_stages=num_stages)
         for num_warps in [2, 4, 8]
@@ -537,12 +544,14 @@ def solve_tril(
     NT = len(chunk_indices) if cu_seqlens is not None else triton.cdiv(T, BT)
 
     Ai = torch.zeros_like(A, dtype=output_dtype)
+    launch_kwargs = {}
     if BT == 16:
         merge_fn = solve_tril_16x16_kernel
     elif BT == 32:
         merge_fn = merge_16x16_to_32x32_inverse_kernel
     elif BT == 64:
         merge_fn = merge_16x16_to_64x64_inverse_kernel
+        launch_kwargs = ds4_qwen_gdn_kernel_kwargs("solve_tril_64")
 
     merge_fn[NT, B * H](
         A=A,
@@ -554,5 +563,6 @@ def solve_tril(
         BT=BT,
         USE_TMA=is_tma_supported,
         DOT_PRECISION=FLA_TRIL_PRECISION,
+        **launch_kwargs,
     )
     return Ai
