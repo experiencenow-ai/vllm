@@ -53,6 +53,23 @@ case "$DS4_DSV4_PIPELINE_RAM_PROFILE" in
     : "${DSV4_MAX_CUDAGRAPH_CAPTURE_SIZE:=8}"
     ds4_default_pp_partition
     ;;
+  resident128|RESIDENT128|resident-128|RESIDENT-128)
+    : "${DSV4_MAX_MODEL_LEN:=65536}"
+    : "${DSV4_MAX_NUM_SEQS:=128}"
+    : "${DSV4_MAX_NUM_BATCHED_TOKENS:=16384}"
+    : "${DSV4_KV_CACHE_MEMORY_BYTES:=8589934592}"
+    : "${DSV4_MIN_KV_CACHE_MEMORY_BYTES:=2147483648}"
+    : "${DSV4_KV_OFFLOADING_SIZE:=2}"
+    : "${DSV4_GPU_MEMORY_UTILIZATION:=0.30}"
+    : "${DSV4_WORKSPACE_PREALLOC_BYTES:=268435456}"
+    : "${DSV4_CUDAGRAPH_CAPTURE_SIZES:=1,2,4,8,16,32,64,128}"
+    : "${DSV4_MAX_CUDAGRAPH_CAPTURE_SIZE:=128}"
+    : "${DSV4_SCHED_MAX_NEW_REQS_PER_STEP:=128}"
+    : "${DSV4_SCHED_MAX_NEW_PREFILL_TOKENS_PER_STEP:=16384}"
+    : "${DSV4_SCHED_KV_ADMISSION_MAX_USAGE:=0.82}"
+    : "${DSV4_SCHED_KV_HARD_FAIL_USAGE:=0.95}"
+    ds4_default_pp_partition
+    ;;
   tight|TIGHT|resident3-tight)
     : "${DSV4_MAX_MODEL_LEN:=32768}"
     : "${DSV4_MAX_NUM_SEQS:=4}"
@@ -116,7 +133,7 @@ case "$DS4_DSV4_PIPELINE_RAM_PROFILE" in
     ds4_default_pp_partition
     ;;
   *)
-    echo "Unsupported DS4_DSV4_PIPELINE_RAM_PROFILE=$DS4_DSV4_PIPELINE_RAM_PROFILE; expected max-kv, max-length, max-throughput, throughput, resident3, tight, balanced, or perf" >&2
+    echo "Unsupported DS4_DSV4_PIPELINE_RAM_PROFILE=$DS4_DSV4_PIPELINE_RAM_PROFILE; expected max-kv, max-length, max-throughput, throughput, resident128, resident3, tight, balanced, or perf" >&2
     exit 1
     ;;
 esac

@@ -170,6 +170,21 @@ CHECKS = [
         "DSV4_KV_OFFLOADING_SIZE:=2",
     ),
     (
+        "DSV4 resident128 keeps compact KV while admitting eval-sized cohorts",
+        "tools/ds4_launch_dsv4_flash_pp8.sh",
+        "resident128|RESIDENT128|resident-128|RESIDENT-128",
+    ),
+    (
+        "DSV4 resident128 KV cap is bounded",
+        "tools/ds4_launch_dsv4_flash_pp8.sh",
+        "DSV4_KV_CACHE_MEMORY_BYTES:=8589934592",
+    ),
+    (
+        "DSV4 resident128 batched tokens are bounded",
+        "tools/ds4_launch_dsv4_flash_pp8.sh",
+        "DSV4_MAX_NUM_BATCHED_TOKENS:=16384",
+    ),
+    (
         "DSV4 PP default derives balanced layer partition",
         "tools/ds4_launch_dsv4_flash_pp8.sh",
         "base=$((43 / NNODES))",
