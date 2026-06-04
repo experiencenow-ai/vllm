@@ -152,6 +152,16 @@ def _positions_for_flat_hidden_rows(
     return _pad_positions_to_num_rows(positions, num_rows)
 
 
+def _reshape_attention_projection(
+    output: torch.Tensor,
+    leading_shape: torch.Size,
+    hidden_size: int,
+) -> torch.Tensor:
+    if len(leading_shape) == 1:
+        return output
+    return output.reshape(*leading_shape, hidden_size)
+
+
 def _slice_slot_mapping_to_q_rows(
     slot_mapping: torch.Tensor,
     q: torch.Tensor,
@@ -426,7 +436,11 @@ class DeepseekV4MultiHeadLatentAttentionWrapper(PluggableLayer):
                 self.o_lora_rank,
                 self.wo_a,
             )
-            return self.wo_b(z.flatten(1)).reshape(*leading_shape, hidden_size)
+            return _reshape_attention_projection(
+                self.wo_b(z.flatten(1)),
+                leading_shape,
+                hidden_size,
+            )
 
         # O projection: inverse RoPE + FP8 quant + einsum + wo_b
         o_fp8, o_scale = fused_inv_rope_fp8_quant(
@@ -458,7 +472,11 @@ class DeepseekV4MultiHeadLatentAttentionWrapper(PluggableLayer):
             list(self._einsum_recipe),
         )
 
-        return self.wo_b(z.flatten(1)).reshape(*leading_shape, hidden_size)
+        return _reshape_attention_projection(
+            self.wo_b(z.flatten(1)),
+            leading_shape,
+            hidden_size,
+        )
 
     def attn_gemm_parallel_execute(self, hidden_states) -> tuple[Any, ...]:
         aux_streams = self.aux_stream_list
