@@ -295,8 +295,9 @@ checks = [
         and "QWEN27_ENFORCE_EAGER" in qwen_nvfp4_pp8
         and "EAGER_ARGS=(--enforce-eager)" in qwen_pp8
         and "EAGER_ARGS=(--enforce-eager)" in qwen_nvfp4_pp8
-        and "VLLM_QWEN_GDN_PROFILE_WARMUP=\"${VLLM_QWEN_GDN_PROFILE_WARMUP:-0}\"" in qwen_pp8
+        and "VLLM_QWEN_GDN_PROFILE_WARMUP=\"${VLLM_QWEN_GDN_PROFILE_WARMUP:-1}\"" in qwen_pp8
         and "VLLM_QWEN_GDN_PROFILE_WARMUP=\"${VLLM_QWEN_GDN_PROFILE_WARMUP:-0}\"" in qwen_nvfp4_pp8
+        and "VLLM_DS4_QWEN_GDN_FIXED_TRITON_CONFIGS=\"${VLLM_DS4_QWEN_GDN_FIXED_TRITON_CONFIGS:-1}\"" in qwen_pp8
         and "--gdn-prefill-backend" in qwen_pp8
         and "--gdn-prefill-backend" in qwen_nvfp4_pp8
         and '--gpu-memory-utilization "${QWEN27_GPU_MEMORY_UTILIZATION:-0.24}"' in qwen_nvfp4_pp8
