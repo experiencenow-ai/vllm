@@ -25,8 +25,14 @@ require(
     "return output",
     "hidden_states = hidden_states.reshape(num_tokens, hidden_size)",
     "positions = _positions_for_flat_hidden_rows(",
-    "out.resize_(q.shape)",
+    "DS4 DSV4 attention output buffer shape mismatch",
+    "out_shape={tuple(out.shape)}",
     "return _reshape_attention_projection(",
 )
+
+if "out.resize_(q.shape)" in ATTENTION.read_text():
+    raise SystemExit(
+        "FAIL: vllm/models/deepseek_v4/nvidia/ops/attention.py still "
+        "silently resizes the DSV4 attention output buffer")
 
 print("PASS: DS4 DSV4 attention shape audit")
