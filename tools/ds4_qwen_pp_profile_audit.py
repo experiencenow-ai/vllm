@@ -69,9 +69,9 @@ CHECKS = [
         "VLLM_QWEN_GDN_PROFILE_WARMUP:-1",
     ),
     (
-        "BF16 Qwen PP pins fixed GDN Triton configs by default",
+        "BF16 Qwen PP does not force fixed GDN Triton configs by default",
         ROOT / "tools/ds4_launch_qwen27_pp8.sh",
-        "VLLM_DS4_QWEN_GDN_FIXED_TRITON_CONFIGS:-1",
+        "VLLM_DS4_QWEN_GDN_FIXED_TRITON_CONFIGS:-0",
     ),
     (
         "BF16 Qwen PP bounds profile run by default",
