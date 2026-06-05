@@ -401,7 +401,7 @@ def launch_env(args: argparse.Namespace, rank: int) -> dict[str, str]:
                     "VLLM_QWEN_GDN_PROFILE_WARMUP", "1"
                 ),
                 "VLLM_DS4_QWEN_GDN_FIXED_TRITON_CONFIGS": os.getenv(
-                    "VLLM_DS4_QWEN_GDN_FIXED_TRITON_CONFIGS", "1"
+                    "VLLM_DS4_QWEN_GDN_FIXED_TRITON_CONFIGS", "0"
                 ),
                 "VLLM_DS4_PP_CPU_STAGED_TENSOR_DICT": os.getenv(
                     "VLLM_DS4_PP_CPU_STAGED_TENSOR_DICT", "1"
