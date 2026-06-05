@@ -627,7 +627,14 @@ class DeepseekV4MultiHeadLatentAttentionWrapper(PluggableLayer):
             pad_size = self.padded_heads - self.n_local_heads
             q = F.pad(q, (0, 0, 0, pad_size), value=0.0)
         if out.shape != q.shape:
-            out.resize_(q.shape)
+            raise RuntimeError(
+                "DS4 DSV4 attention output buffer shape mismatch: "
+                f"out_shape={tuple(out.shape)} q_shape={tuple(q.shape)} "
+                f"n_local_heads={self.n_local_heads} "
+                f"padded_heads={self.padded_heads} "
+                f"head_dim={self.head_dim} "
+                f"positions_shape={tuple(positions.shape)}"
+            )
 
         # MLA attention writes into the pre-allocated `out` buffer
         # ([num_tokens, padded_heads, head_dim]).
