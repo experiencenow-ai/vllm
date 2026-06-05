@@ -31,13 +31,15 @@ require(
     "hidden_states = _pad_flat_attention_input(hidden_states, target_rows)",
     "leading_shape = torch.Size((target_rows,))",
     "positions = _positions_for_flat_hidden_rows(",
-    "o_padded = torch.ops.vllm.deepseek_v4_attention(",
-    "actual_rows = int(o_padded.shape[0])",
+    "o = torch.ops.vllm.deepseek_v4_attention(",
+    "self.n_local_heads,",
     "DS4 DSV4 attention q shape mismatch",
     "out = q.new_empty(q.shape)",
-    "return out",
+    "return out[:, : self.n_local_heads, :]",
     "DS4 DSV4 attention wrapper/op shape metadata mismatch",
+    "wrapper_n_local_heads={n_local_heads}",
     "return hidden_states.new_empty(",
+    "(hidden_states.shape[0], n_local_heads, head_dim)",
     "mutates_args=[]",
     "return _reshape_attention_projection(",
 )
@@ -53,5 +55,10 @@ if "mutates_args=[\"out\"]" in text:
     raise SystemExit(
         "FAIL: vllm/models/deepseek_v4/nvidia/ops/attention.py still "
         "registers DSV4 attention as an out-mutating custom op")
+
+if "o_padded[:, : self.n_local_heads, :]" in text:
+    raise SystemExit(
+        "FAIL: vllm/models/deepseek_v4/nvidia/ops/attention.py still "
+        "slices padded DSV4 attention output in the compiled wrapper")
 
 print("PASS: DS4 DSV4 attention shape audit")
