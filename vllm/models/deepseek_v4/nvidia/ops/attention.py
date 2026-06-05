@@ -454,22 +454,17 @@ class DeepseekV4MultiHeadLatentAttentionWrapper(PluggableLayer):
         )
         # Attention (inside custom op for torch.compile boundary). The custom
         # op owns output allocation because graph-padded runtime row counts can
-        # differ from the wrapper's compile-time allocation shape.
-        o_padded = torch.ops.vllm.deepseek_v4_attention(
+        # differ from the wrapper's compile-time allocation shape. It returns
+        # the unpadded local-head output so tensor slicing stays outside the
+        # compiled graph stitching path.
+        o = torch.ops.vllm.deepseek_v4_attention(
             hidden_states,
             positions,
             self.layer_name,
             self.padded_heads,
+            self.n_local_heads,
             self.head_dim,
         )
-        actual_rows = int(o_padded.shape[0])
-        if actual_rows != num_tokens:
-            num_tokens = actual_rows
-            leading_shape = torch.Size((actual_rows,))
-            positions = _positions_for_flat_hidden_rows(
-                positions, leading_shape, actual_rows
-            )
-        o = o_padded[:, : self.n_local_heads, :]
 
         # Keep ROCm on the BF16 reference wo_a path util kernel ready.
         if current_platform.is_rocm():
@@ -685,7 +680,7 @@ class DeepseekV4MultiHeadLatentAttentionWrapper(PluggableLayer):
         # derived from the actual runtime q rows inside the custom op.
         out = q.new_empty(q.shape)
         self.mla_attn(q, kv, positions, output=out)
-        return out
+        return out[:, : self.n_local_heads, :]
 
     def _fused_qnorm_rope_kv_insert(
         self,
@@ -732,15 +727,22 @@ def deepseek_v4_attention(
     positions: torch.Tensor,
     layer_name: str,
     padded_heads: int,
+    n_local_heads: int,
     head_dim: int,
 ) -> torch.Tensor:
     forward_context: ForwardContext = get_forward_context()
     self = forward_context.no_compile_layers[layer_name]
-    if self.padded_heads != padded_heads or self.head_dim != head_dim:
+    if (
+        self.padded_heads != padded_heads
+        or self.n_local_heads != n_local_heads
+        or self.head_dim != head_dim
+    ):
         raise RuntimeError(
             "DS4 DSV4 attention wrapper/op shape metadata mismatch: "
             f"wrapper_padded_heads={padded_heads} "
             f"op_padded_heads={self.padded_heads} "
+            f"wrapper_n_local_heads={n_local_heads} "
+            f"op_n_local_heads={self.n_local_heads} "
             f"wrapper_head_dim={head_dim} op_head_dim={self.head_dim}"
         )
     return self.attention_impl(hidden_states, positions)
@@ -751,10 +753,11 @@ def deepseek_v4_attention_fake(
     positions: torch.Tensor,
     layer_name: str,
     padded_heads: int,
+    n_local_heads: int,
     head_dim: int,
 ) -> torch.Tensor:
     return hidden_states.new_empty(
-        (hidden_states.shape[0], padded_heads, head_dim)
+        (hidden_states.shape[0], n_local_heads, head_dim)
     )
 
 
