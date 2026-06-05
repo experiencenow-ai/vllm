@@ -162,6 +162,43 @@ def _reshape_attention_projection(
     return output.reshape(*leading_shape, hidden_size)
 
 
+def _forward_context_batch_rows() -> int | None:
+    try:
+        forward_context = get_forward_context()
+    except AssertionError:
+        return None
+    batch_descriptor = forward_context.batch_descriptor
+    if batch_descriptor is not None:
+        return int(batch_descriptor.num_tokens)
+    return None
+
+
+def _attention_target_rows(
+    positions: torch.Tensor,
+    flat_rows: int,
+) -> int:
+    target_rows = flat_rows
+    if positions.dim() == 1:
+        target_rows = max(target_rows, int(positions.shape[0]))
+    context_rows = _forward_context_batch_rows()
+    if context_rows is not None:
+        target_rows = max(target_rows, context_rows)
+    return target_rows
+
+
+def _pad_flat_attention_input(
+    hidden_states: torch.Tensor,
+    target_rows: int,
+) -> torch.Tensor:
+    flat_rows = int(hidden_states.shape[0])
+    if flat_rows >= target_rows:
+        return hidden_states
+    padding = hidden_states.new_zeros(
+        (target_rows - flat_rows, hidden_states.shape[1])
+    )
+    return torch.cat((hidden_states, padding), dim=0)
+
+
 def _slice_slot_mapping_to_q_rows(
     slot_mapping: torch.Tensor,
     q: torch.Tensor,
@@ -403,10 +440,15 @@ class DeepseekV4MultiHeadLatentAttentionWrapper(PluggableLayer):
             hidden_states = hidden_states.reshape(num_tokens, hidden_size)
         # Pre-allocate attention output with FlashMLA-padded head count.
         # The op writes into `o_padded`; we slice to n_local_heads after.
-        # CUDA graph input padding can make hidden_states contain graph rows
-        # beyond the live scheduled tokens. The fused Q/KV insert kernel
-        # accepts shorter slot_mapping, but q, kv, and position_ids must have
-        # the same row count.
+        # vLLM may pad PP intermediate tensors and attention metadata to a
+        # graph/backend token count. Use that runtime row count consistently so
+        # q, kv, positions, output, and the O projection agree before the custom
+        # op runs.
+        target_rows = _attention_target_rows(positions, num_tokens)
+        if target_rows > num_tokens:
+            hidden_states = _pad_flat_attention_input(hidden_states, target_rows)
+            num_tokens = target_rows
+            leading_shape = torch.Size((target_rows,))
         positions = _positions_for_flat_hidden_rows(
             positions, leading_shape, num_tokens
         )
