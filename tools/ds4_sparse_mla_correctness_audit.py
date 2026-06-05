@@ -93,10 +93,10 @@ def main() -> int:
         and "VLLM_DS4_DSV4_SPARSE_MLA_PREFILL_BACKEND" in flashmla,
     )
     failures += check(
-        "gathered sparse prefill is the default",
-        'VLLM_DS4_DSV4_SPARSE_MLA_PREFILL_BACKEND: str = "gathered"' in envs
-        and '"VLLM_DS4_DSV4_SPARSE_MLA_PREFILL_BACKEND", "gathered"' in envs
-        and 'VLLM_DS4_DSV4_SPARSE_MLA_PREFILL_BACKEND:-gathered' in launcher,
+        "materialized sparse prefill is the default",
+        'VLLM_DS4_DSV4_SPARSE_MLA_PREFILL_BACKEND: str = "matmul-debug"' in envs
+        and '"VLLM_DS4_DSV4_SPARSE_MLA_PREFILL_BACKEND", "matmul-debug"' in envs
+        and 'VLLM_DS4_DSV4_SPARSE_MLA_PREFILL_BACKEND:-matmul-debug' in launcher,
     )
     failures += check(
         "gathered sparse prefill materializes selected KV before accumulation",
