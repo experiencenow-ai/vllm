@@ -2,7 +2,9 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 """Worker-side handler for SimpleCPUOffloadConnector."""
 
+from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import suppress
+import os
 from typing import TYPE_CHECKING
 
 import torch
@@ -24,6 +26,16 @@ if TYPE_CHECKING:
     from vllm.v1.kv_cache_interface import KVCacheConfig
 
 logger = init_logger(__name__)
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None or raw == "":
+        return int(default)
+    try:
+        return int(raw)
+    except ValueError:
+        return int(default)
 
 
 class SimpleCPUOffloadWorker:
@@ -70,6 +82,18 @@ class SimpleCPUOffloadWorker:
         self._persistent_known: dict[int, str] = {}
         self._pending_store_persist: dict[
             int, tuple[list[int], list[str], list[str | None]]
+        ] = {}
+        workers = _env_int("VLLM_SIMPLE_KV_OFFLOAD_MATERIALIZE_WORKERS", 2)
+        self._materialize_executor: ThreadPoolExecutor | None = (
+            ThreadPoolExecutor(
+                max_workers=max(1, workers),
+                thread_name_prefix="simple-kv-materialize",
+            )
+            if workers > 0
+            else None
+        )
+        self._pending_materialize: dict[
+            int, Future[dict[int, str]] | dict[int, str]
         ] = {}
         self._pin_memory: bool = False
 
@@ -296,20 +320,7 @@ class SimpleCPUOffloadWorker:
         if metadata.load_event >= 0:
             self._pending_load_event_indices.add(metadata.load_event)
             if metadata.load_cpu_blocks and self._persistent_store is not None:
-                assert self.cpu_kv_caches is not None
-                restored = self._persistent_store.ensure_worker_blocks(
-                    self.cpu_kv_caches,
-                    metadata.load_cpu_blocks,
-                    metadata.load_block_hashes,
-                    self._persistent_known,
-                    metadata.load_cache_refs,
-                )
-                self._persistent_known.update(restored)
-                self._persistent_store.validate_loaded_blocks(
-                    metadata.load_cpu_blocks,
-                    metadata.load_block_hashes,
-                    self._persistent_known,
-                )
+                self._start_persistent_materialize(metadata)
         if metadata.store_event >= 0:
             self._pending_store_event_indices.add(metadata.store_event)
             if metadata.store_cpu_blocks:
@@ -318,6 +329,53 @@ class SimpleCPUOffloadWorker:
                     list(metadata.store_block_hashes),
                     list(metadata.store_cache_refs),
                 )
+
+    def _start_persistent_materialize(
+        self, metadata: SimpleCPUOffloadMetadata
+    ) -> None:
+        if metadata.load_event < 0 or not metadata.load_cpu_blocks:
+            return
+        if metadata.load_event in self._pending_materialize:
+            return
+        if self._persistent_store is None:
+            return
+        assert self.cpu_kv_caches is not None
+        cpu_kv_caches = self.cpu_kv_caches
+        cpu_ids = list(metadata.load_cpu_blocks)
+        hashes = list(metadata.load_block_hashes)
+        cache_refs = list(metadata.load_cache_refs)
+        known_snapshot = dict(self._persistent_known)
+
+        def materialize() -> dict[int, str]:
+            assert self._persistent_store is not None
+            restored = self._persistent_store.ensure_worker_blocks(
+                cpu_kv_caches,
+                cpu_ids,
+                hashes,
+                known_snapshot,
+                cache_refs,
+            )
+            merged = dict(known_snapshot)
+            merged.update(restored)
+            self._persistent_store.validate_loaded_blocks(cpu_ids, hashes, merged)
+            return restored
+
+        if self._materialize_executor is None:
+            self._pending_materialize[metadata.load_event] = materialize()
+            return
+        self._pending_materialize[metadata.load_event] = (
+            self._materialize_executor.submit(materialize)
+        )
+
+    def _finish_persistent_materialize(self, load_event: int) -> None:
+        pending = self._pending_materialize.pop(load_event, None)
+        if pending is None:
+            return
+        if isinstance(pending, Future):
+            restored = pending.result()
+        else:
+            restored = pending
+        self._persistent_known.update(restored)
 
     def clear_connector_metadata(self) -> None:
         self._connector_metadata = None
@@ -351,8 +409,11 @@ class SimpleCPUOffloadWorker:
         if metadata is not None:
             if metadata.load_cpu_blocks or metadata.store_cpu_blocks:
                 self._allocate_cpu_kv_caches()
-            # Launch loads (CPU->GPU).
+            # Persistent NVMe/API materialization starts in
+            # bind_connector_metadata(), before model execution. The wait here
+            # normally only joins leftover I/O before CPU->GPU copy launch.
             if metadata.load_cpu_blocks:
+                self._finish_persistent_materialize(metadata.load_event)
                 self._backend.launch_copy(
                     metadata.load_cpu_blocks,
                     metadata.load_gpu_blocks,
@@ -420,6 +481,8 @@ class SimpleCPUOffloadWorker:
 
     def _flush_and_sync_all(self) -> None:
         """Synchronize all in-flight transfer events."""
+        for load_event in list(self._pending_materialize):
+            self._finish_persistent_materialize(load_event)
         for event_idx, event in self._load_events:
             event.synchronize()
             self._load_hwm = event_idx
@@ -477,6 +540,12 @@ class SimpleCPUOffloadWorker:
                 self.store_stream = None
                 self._persistent_store = None
                 self._persistent_known.clear()
+                if self._materialize_executor is not None:
+                    self._materialize_executor.shutdown(
+                        wait=True, cancel_futures=False
+                    )
+                    self._materialize_executor = None
+                self._pending_materialize.clear()
                 logger.info(
                     "SimpleCPUOffloadWorker: released %.2f GB of CPU KV offload memory",
                     released_cpu_bytes / (1024**3),

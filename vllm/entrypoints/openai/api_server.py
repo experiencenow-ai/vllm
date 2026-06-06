@@ -208,6 +208,12 @@ def build_app(
 
         attach_disagg_router(app)
 
+        from vllm.entrypoints.openai.ds4_kv_api_router import (
+            attach_router as attach_ds4_kv_router,
+        )
+
+        attach_ds4_kv_router(app)
+
         from vllm.entrypoints.serve.rlhf.api_router import (
             attach_router as attach_rlhf_router,
         )
