@@ -116,14 +116,12 @@ def main() -> int:
         and "selected_kv_buffer" in flashmla,
     )
     failures += check(
-        "materialized prefill diagnostic uses normal sparse MLA matmul path",
+        "materialized prefill diagnostic uses indexed-valid sparse MLA matmul path",
         "_forward_sparse_mla_prefill_matmul_debug(" in flashmla
         and "matmul_sparse_mla_attention_with_sink(" in flashmla
-        and (
-            "valid_tokens = (offsets < combined_lens.view(-1, 1)) "
-            "& (combined_indices >= 0)"
-        )
-        in flashmla
+        and "& (combined_indices >= 0)" in flashmla
+        and "& (combined_indices < kv_flat.shape[0])" in flashmla
+        and "safe_indices = torch.where(" in flashmla
         and "kv_flat.index_select" in flashmla,
     )
     failures += check(
@@ -152,6 +150,12 @@ def main() -> int:
     indexed_finish_body = sparse_kernels.split(
         "def _finish_indexed_scores_with_sink_candidate_block_kernel(", 1
     )[1].split("\n\ndef indexed_sparse_mla_attention_with_sink_two_pass", 1)[0]
+    indexed_accum_body = sparse_kernels.split(
+        "def _accumulate_indexed_attention_chunk_kernel(", 1
+    )[1].split("\n\ndef accumulate_indexed_sparse_mla_attention_chunk", 1)[0]
+    gather_indexed_body = sparse_kernels.split(
+        "def _gather_indexed_sparse_mla_kv_kernel(", 1
+    )[1].split("\n\ndef gather_indexed_sparse_mla_kv", 1)[0]
     failures += check(
         "indexed sparse prefill accepts caller-owned scratch buffers",
         "workspace_buffers:" in sparse_prefill_body
@@ -169,7 +173,26 @@ def main() -> int:
         and 'input_precision="tf32"' in indexed_score_body
         and "tl.dot(" in indexed_score_body
         and "tl.sum(q * kv" not in indexed_score_body
+        and "num_kv_rows" in indexed_score_body
+        and "kv_indices < num_kv_rows" in indexed_score_body
         and "safe_indices.to(tl.int64)" in indexed_finish_body,
+    )
+    failures += check(
+        "indexed sparse prefill kernels bound KV row loads",
+        "num_kv_rows" in indexed_accum_body
+        and "kv_index < num_kv_rows" in indexed_accum_body
+        and "safe_kv_index = tl.where(is_valid, kv_index, 0)" in indexed_accum_body
+        and "mask=is_valid & dim_mask" in indexed_accum_body
+        and "num_kv_rows" in indexed_finish_body
+        and "kv_indices < num_kv_rows" in indexed_finish_body
+        and "mask=is_valid[:, None] & dim_mask[None, :]" in indexed_finish_body
+        and "num_kv_rows" in gather_indexed_body
+        and "kv_indices < num_kv_rows" in gather_indexed_body,
+    )
+    failures += check(
+        "chunked unsafe prefill skips empty candidate tails",
+        "max_valid_candidates = int(lens_chunk.max().item())" in sparse_prefill_body
+        and "if index_start >= max_valid_candidates:" in sparse_prefill_body,
     )
     failures += check(
         "production indexed prefill chunks caller-owned score buffer rows",
