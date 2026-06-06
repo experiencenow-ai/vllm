@@ -1178,7 +1178,7 @@ class DeepseekV4FlashMLASparseImpl(DeepseekV4SparseMLAAttentionImpl):
         if num_tokens == 0:
             return
         offsets = torch.arange(num_candidates, device=combined_indices.device).view(1, -1)
-        valid_tokens = offsets < combined_lens.view(-1, 1)
+        valid_tokens = (offsets < combined_lens.view(-1, 1)) & (combined_indices >= 0)
         safe_indices = combined_indices.clamp_min(0).long()
         materialized = kv_flat.index_select(0, safe_indices.reshape(-1))
         materialized = materialized.reshape(num_tokens, num_candidates, q.shape[-1])
