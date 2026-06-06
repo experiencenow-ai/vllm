@@ -1252,6 +1252,46 @@ class DeepseekV4Model(nn.Module):
             }
         )
 
+    def _flatten_pp_hc_boundary_state(
+        self,
+        hidden_states: torch.Tensor,
+        residual: torch.Tensor,
+        post_mix: torch.Tensor,
+        res_mix: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        hidden_size = self.config.hidden_size
+        hc_mult = self.hc_mult
+        original_shapes = (
+            tuple(hidden_states.shape),
+            tuple(residual.shape),
+            tuple(post_mix.shape),
+            tuple(res_mix.shape),
+        )
+        try:
+            hidden_states = hidden_states.reshape(-1, hidden_size)
+            residual = residual.reshape(-1, hc_mult, hidden_size)
+            post_mix = post_mix.reshape(-1, hc_mult, 1)
+            res_mix = res_mix.reshape(-1, hc_mult, hc_mult)
+        except RuntimeError as exc:
+            raise RuntimeError(
+                "DeepSeek V4 PP boundary HC state has invalid shapes: "
+                f"hidden_states={original_shapes[0]} residual={original_shapes[1]} "
+                f"post_mix={original_shapes[2]} res_mix={original_shapes[3]}"
+            ) from exc
+        num_tokens = hidden_states.shape[0]
+        if (
+            residual.shape[0] != num_tokens
+            or post_mix.shape[0] != num_tokens
+            or res_mix.shape[0] != num_tokens
+        ):
+            raise RuntimeError(
+                "DeepSeek V4 PP boundary HC state token counts differ after "
+                f"flattening: hidden_states={tuple(hidden_states.shape)} "
+                f"residual={tuple(residual.shape)} post_mix={tuple(post_mix.shape)} "
+                f"res_mix={tuple(res_mix.shape)} original={original_shapes}"
+            )
+        return hidden_states, residual, post_mix, res_mix
+
     def forward(
         self,
         input_ids: torch.Tensor,
@@ -1288,6 +1328,14 @@ class DeepseekV4Model(nn.Module):
                 residual = intermediate_tensors["residual"]
                 post_mix = intermediate_tensors["post_mix"]
                 res_mix = intermediate_tensors["res_mix"]
+                (
+                    hidden_states,
+                    residual,
+                    post_mix,
+                    res_mix,
+                ) = self._flatten_pp_hc_boundary_state(
+                    hidden_states, residual, post_mix, res_mix
+                )
 
         if self.use_mega_moe:
             input_ids = input_ids.to(torch.int64)
