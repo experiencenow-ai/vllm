@@ -146,8 +146,13 @@ def main() -> int:
         and 'process_ifname = os.environ.get("NCCL_SOCKET_IFNAME"' in parallel,
     )
     failures += check(
-        "DSV4 PP launcher defaults to explicit CPU-staged PP transport",
-        'DS4_PP_TRANSPORT="${DS4_PP_TRANSPORT:-cpu-staged}"' in dsv4
+        "DSV4 PP launcher requires explicit PP transport",
+        "DS4_PP_TRANSPORT must be explicit for DSV4 PP8" in dsv4
+        and 'DS4_PP_TRANSPORT="${DS4_PP_TRANSPORT:-cpu-staged}"' not in dsv4,
+    )
+    failures += check(
+        "DSV4 PP launcher keeps CPU-staged PP transport diagnostic-only",
+        "cpu-staged|cpu_staged|gloo-cpu|gloo_cpu" in dsv4
         and 'VLLM_DS4_PP_CPU_STAGED_TENSOR_DICT="${VLLM_DS4_PP_CPU_STAGED_TENSOR_DICT:-1}"'
         in dsv4
         and 'VLLM_DS4_PP_OVERLAP_SEND="${VLLM_DS4_PP_OVERLAP_SEND:-0}"'

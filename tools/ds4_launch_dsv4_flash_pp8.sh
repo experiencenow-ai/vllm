@@ -272,7 +272,11 @@ export DS4_CONTROL_IFNAME="${DS4_CONTROL_IFNAME:-auto}"
 export DS4_200G_ADVERTISE_LOOPBACK="${DS4_200G_ADVERTISE_LOOPBACK:-1}"
 export DS4_200G_NCCL_TRANSPORT="${DS4_200G_NCCL_TRANSPORT:-socket}"
 export VLLM_DS4_PP_ONLY_GLOBAL_BACKEND="${VLLM_DS4_PP_ONLY_GLOBAL_BACKEND:-nccl}"
-export DS4_PP_TRANSPORT="${DS4_PP_TRANSPORT:-cpu-staged}"
+if [ -z "${DS4_PP_TRANSPORT:-}" ]; then
+  echo "ERROR: DS4_PP_TRANSPORT must be explicit for DSV4 PP8. Use tcp-staged for production resident/throughput launches; cpu-staged is diagnostic-only." >&2
+  exit 64
+fi
+export DS4_PP_TRANSPORT="$DS4_PP_TRANSPORT"
 case "$DS4_PP_TRANSPORT" in
   cpu-staged|cpu_staged|gloo-cpu|gloo_cpu)
     export DS4_PP_TRANSPORT="cpu-staged"

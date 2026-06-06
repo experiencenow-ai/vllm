@@ -78,6 +78,15 @@ def parse_args() -> argparse.Namespace:
         default=os.getenv("DS4_DSV4_PIPELINE_RAM_PROFILE", "resident3"),
         help="DS4_DSV4_PIPELINE_RAM_PROFILE for the selected DSV4 service",
     )
+    parser.add_argument(
+        "--pp-transport",
+        choices=("tcp-staged", "cpu-staged", "pynccl-pair", "torch-pair"),
+        default=os.getenv(
+            "DS4_DSV4_PP_TRANSPORT",
+            os.getenv("DS4_PP_TRANSPORT", "tcp-staged"),
+        ),
+        help="DSV4 PP8 tensor transport. Defaults to the production rail TCP path.",
+    )
     parser.add_argument("--nnodes", type=int, default=int(os.getenv("NNODES", "8")))
     parser.add_argument("--log-tag", default="")
     parser.add_argument("--skip-pull", action="store_true")
@@ -428,6 +437,8 @@ def launch_env(args: argparse.Namespace, rank: int) -> dict[str, str]:
         )
     else:
         env["DS4_DSV4_PIPELINE_RAM_PROFILE"] = args.profile
+        if args.service == "dsv4-pp8":
+            env["DS4_PP_TRANSPORT"] = args.pp_transport
     for item in args.env:
         if "=" not in item:
             raise SystemExit(f"--env expects KEY=VALUE, got {item!r}")
