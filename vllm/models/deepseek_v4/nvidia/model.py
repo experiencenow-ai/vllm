@@ -973,8 +973,6 @@ class DeepseekV4DecoderLayer(nn.Module):
         hidden_size = residual.shape[-1]
         outer_shape = residual.shape[:-2]
         target_shape = (*outer_shape, hidden_size)
-        if x.shape == target_shape:
-            return x
         target_numel = math.prod(target_shape)
         if x.numel() != target_numel:
             raise RuntimeError(
