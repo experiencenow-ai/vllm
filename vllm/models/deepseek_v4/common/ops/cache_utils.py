@@ -902,10 +902,13 @@ def _combine_topk_swa_indices_kernel(
         topk_indices = tl.load(
             topk_indices_ptr + token_idx * topk_indices_stride + offset,
             mask=mask,
+            other=-1,
         )
+        valid_topk = (topk_indices >= 0) & (topk_indices < N)
+        topk_indices = tl.where(valid_topk, topk_indices + M * batch_idx, -1)
         tl.store(
             combined_indices_ptr + token_idx * combined_indices_stride + offset,
-            topk_indices + M * batch_idx,
+            topk_indices,
             mask=mask,
         )
         offset = tl.arange(0, WINDOW_SIZE)

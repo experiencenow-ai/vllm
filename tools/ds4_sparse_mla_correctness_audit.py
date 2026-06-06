@@ -19,6 +19,7 @@ def check(name: str, ok: bool) -> int:
 def main() -> int:
     envs = read("vllm/envs.py")
     flashmla = read("vllm/models/deepseek_v4/nvidia/flashmla.py")
+    cache_utils = read("vllm/models/deepseek_v4/common/ops/cache_utils.py")
     indexer = read("vllm/model_executor/layers/sparse_attn_indexer.py")
     indexer_op = indexer.split("def sparse_attn_indexer(", 1)[1].split(
         "def sparse_attn_indexer_fake(", 1
@@ -113,8 +114,18 @@ def main() -> int:
         "materialized prefill diagnostic uses normal sparse MLA matmul path",
         "_forward_sparse_mla_prefill_matmul_debug(" in flashmla
         and "matmul_sparse_mla_attention_with_sink(" in flashmla
-        and "valid_tokens = offsets < combined_lens.view(-1, 1)" in flashmla
+        and (
+            "valid_tokens = (offsets < combined_lens.view(-1, 1)) "
+            "& (combined_indices >= 0)"
+        )
+        in flashmla
         and "kv_flat.index_select" in flashmla,
+    )
+    failures += check(
+        "prefill combiner preserves invalid topk sentinels across batch rebase",
+        "valid_topk = (topk_indices >= 0) & (topk_indices < N)" in cache_utils
+        and "tl.where(valid_topk, topk_indices + M * batch_idx, -1)"
+        in cache_utils,
     )
     matmul_debug_body = flashmla.split(
         "def _forward_sparse_mla_prefill_matmul_debug(", 1
