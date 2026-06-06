@@ -1377,13 +1377,12 @@ def accumulate_indexed_sparse_mla_attention_chunk(
 
 
 @triton.jit
-def _indexed_attention_with_sink_two_pass_kernel(
+def _indexed_sparse_mla_score_kernel(
     q_ptr,
     kv_flat_ptr,
     indices_ptr,
     lens_ptr,
-    sink_ptr,
-    output_ptr,
+    scores_ptr,
     stride_q_t: tl.constexpr,
     stride_q_h: tl.constexpr,
     stride_q_d: tl.constexpr,
@@ -1391,74 +1390,159 @@ def _indexed_attention_with_sink_two_pass_kernel(
     stride_kv_d: tl.constexpr,
     stride_indices_t: tl.constexpr,
     stride_indices_c: tl.constexpr,
-    stride_output_t: tl.constexpr,
-    stride_output_h: tl.constexpr,
-    stride_output_d: tl.constexpr,
+    stride_scores_t: tl.constexpr,
+    stride_scores_h: tl.constexpr,
+    stride_scores_c: tl.constexpr,
     num_heads: tl.constexpr,
     head_dim: tl.constexpr,
     num_candidates,
     scale: tl.constexpr,
+    HEAD_BLOCK: tl.constexpr,
+    BLOCK_C: tl.constexpr,
+    BLOCK_D: tl.constexpr,
+):
+    token_idx = tl.program_id(0)
+    head_block_idx = tl.program_id(1)
+    candidate_block_idx = tl.program_id(2)
+    head_offsets = head_block_idx * HEAD_BLOCK + tl.arange(0, HEAD_BLOCK)
+    candidate_offsets = candidate_block_idx * BLOCK_C + tl.arange(0, BLOCK_C)
+    dim_offsets = tl.arange(0, BLOCK_D)
+    head_mask = head_offsets < num_heads
+    candidate_mask = candidate_offsets < num_candidates
+    dim_mask = dim_offsets < head_dim
+    q = tl.load(
+        q_ptr
+        + token_idx * stride_q_t
+        + head_offsets[:, None] * stride_q_h
+        + dim_offsets[None, :] * stride_q_d,
+        mask=head_mask[:, None] & dim_mask[None, :],
+        other=0.0,
+    ).to(tl.float32)
+    valid_len = tl.load(lens_ptr + token_idx)
+    kv_indices = tl.load(
+        indices_ptr
+        + token_idx * stride_indices_t
+        + candidate_offsets * stride_indices_c,
+        mask=candidate_mask,
+        other=-1,
+    )
+    is_valid = candidate_mask & (candidate_offsets < valid_len) & (kv_indices >= 0)
+    safe_indices = tl.where(is_valid, kv_indices, 0)
+    kv = tl.load(
+        kv_flat_ptr
+        + safe_indices.to(tl.int64)[:, None] * stride_kv_t
+        + dim_offsets[None, :] * stride_kv_d,
+        mask=is_valid[:, None] & dim_mask[None, :],
+        other=0.0,
+    ).to(tl.float32)
+    scores = tl.dot(
+        q,
+        tl.trans(kv),
+        input_precision="tf32",
+        out_dtype=tl.float32,
+    ) * scale
+    scores = tl.where(head_mask[:, None] & is_valid[None, :], scores, -float("inf"))
+    tl.store(
+        scores_ptr
+        + token_idx * stride_scores_t
+        + head_offsets[:, None] * stride_scores_h
+        + candidate_offsets[None, :] * stride_scores_c,
+        scores,
+        mask=head_mask[:, None] & candidate_mask[None, :],
+    )
+
+
+@triton.jit
+def _finish_indexed_scores_with_sink_candidate_block_kernel(
+    scores_ptr,
+    kv_flat_ptr,
+    indices_ptr,
+    lens_ptr,
+    sink_ptr,
+    output_ptr,
+    stride_scores_t: tl.constexpr,
+    stride_scores_h: tl.constexpr,
+    stride_scores_c: tl.constexpr,
+    stride_kv_t,
+    stride_kv_d: tl.constexpr,
+    stride_indices_t: tl.constexpr,
+    stride_indices_c: tl.constexpr,
+    stride_output_t: tl.constexpr,
+    stride_output_h: tl.constexpr,
+    stride_output_d: tl.constexpr,
+    head_dim: tl.constexpr,
+    num_candidates,
+    BLOCK_K: tl.constexpr,
     BLOCK_D: tl.constexpr,
 ):
     token_idx = tl.program_id(0)
     head_idx = tl.program_id(1)
-    offsets = tl.arange(0, BLOCK_D)
-    dim_mask = offsets < head_dim
-
-    q = tl.load(
-        q_ptr + token_idx * stride_q_t + head_idx * stride_q_h + offsets * stride_q_d,
-        mask=dim_mask,
-        other=0.0,
-    ).to(tl.float32)
+    dim_block_idx = tl.program_id(2)
+    candidate_offsets = tl.arange(0, BLOCK_K)
+    dim_offsets = dim_block_idx * BLOCK_D + tl.arange(0, BLOCK_D)
+    dim_mask = dim_offsets < head_dim
     valid_len = tl.load(lens_ptr + token_idx)
-    sink = tl.load(sink_ptr + head_idx).to(tl.float32)
-    max_score = sink
 
-    for candidate_idx in range(0, num_candidates):
-        kv_index = tl.load(
+    max_score = tl.load(sink_ptr + head_idx).to(tl.float32)
+    for candidate_start in range(0, num_candidates, BLOCK_K):
+        candidates = candidate_start + candidate_offsets
+        candidate_mask = candidates < num_candidates
+        kv_indices = tl.load(
             indices_ptr
             + token_idx * stride_indices_t
-            + candidate_idx * stride_indices_c
+            + candidates * stride_indices_c,
+            mask=candidate_mask,
+            other=-1,
         )
-        is_valid = (candidate_idx < valid_len) & (kv_index >= 0)
-        if is_valid:
-            kv = tl.load(
-                kv_flat_ptr
-                + kv_index.to(tl.int64) * stride_kv_t
-                + offsets * stride_kv_d,
-                mask=dim_mask,
-                other=0.0,
-            ).to(tl.float32)
-            score = tl.sum(q * kv, axis=0) * scale
-            max_score = tl.maximum(max_score, score)
+        is_valid = candidate_mask & (candidates < valid_len) & (kv_indices >= 0)
+        scores = tl.load(
+            scores_ptr
+            + token_idx * stride_scores_t
+            + head_idx * stride_scores_h
+            + candidates * stride_scores_c,
+            mask=is_valid,
+            other=-float("inf"),
+        ).to(tl.float32)
+        max_score = tl.maximum(max_score, tl.max(scores, axis=0))
 
-    denom = tl.exp(sink - max_score)
+    denom = tl.exp(tl.load(sink_ptr + head_idx).to(tl.float32) - max_score)
     acc = tl.zeros((BLOCK_D,), tl.float32)
-    for candidate_idx in range(0, num_candidates):
-        kv_index = tl.load(
+    for candidate_start in range(0, num_candidates, BLOCK_K):
+        candidates = candidate_start + candidate_offsets
+        candidate_mask = candidates < num_candidates
+        kv_indices = tl.load(
             indices_ptr
             + token_idx * stride_indices_t
-            + candidate_idx * stride_indices_c
+            + candidates * stride_indices_c,
+            mask=candidate_mask,
+            other=-1,
         )
-        is_valid = (candidate_idx < valid_len) & (kv_index >= 0)
-        if is_valid:
-            kv = tl.load(
-                kv_flat_ptr
-                + kv_index.to(tl.int64) * stride_kv_t
-                + offsets * stride_kv_d,
-                mask=dim_mask,
-                other=0.0,
-            ).to(tl.float32)
-            score = tl.sum(q * kv, axis=0) * scale
-            weight = tl.exp(score - max_score)
-            denom += weight
-            acc += kv * weight
+        is_valid = candidate_mask & (candidates < valid_len) & (kv_indices >= 0)
+        safe_indices = tl.where(is_valid, kv_indices, 0)
+        scores = tl.load(
+            scores_ptr
+            + token_idx * stride_scores_t
+            + head_idx * stride_scores_h
+            + candidates * stride_scores_c,
+            mask=is_valid,
+            other=-float("inf"),
+        ).to(tl.float32)
+        weights = tl.exp(scores - max_score)
+        denom += tl.sum(weights, axis=0)
+        kv = tl.load(
+            kv_flat_ptr
+            + safe_indices.to(tl.int64)[:, None] * stride_kv_t
+            + dim_offsets[None, :] * stride_kv_d,
+            mask=is_valid[:, None] & dim_mask[None, :],
+            other=0.0,
+        )
+        acc += tl.sum(kv.to(tl.float32) * weights[:, None], axis=0)
 
     tl.store(
         output_ptr
         + token_idx * stride_output_t
         + head_idx * stride_output_h
-        + offsets * stride_output_d,
+        + dim_offsets * stride_output_d,
         acc / denom,
         mask=dim_mask,
     )
@@ -1472,6 +1556,7 @@ def indexed_sparse_mla_attention_with_sink_two_pass(
     scale: float,
     attn_sink: torch.Tensor,
     output: torch.Tensor,
+    score_buffer: torch.Tensor | None = None,
     num_heads: int | None = None,
 ) -> None:
     if q.dim() == 4:
@@ -1500,15 +1585,30 @@ def indexed_sparse_mla_attention_with_sink_two_pass(
 
     num_tokens, _, head_dim = q.shape
     num_candidates = indices.shape[1]
-    block_d = min(1024, triton.next_power_of_2(head_dim))
-    grid = (num_tokens, active_heads)
-    _indexed_attention_with_sink_two_pass_kernel[grid](
+    if score_buffer is None:
+        score_buffer = torch.empty(
+            (num_tokens, active_heads, num_candidates),
+            dtype=torch.float32,
+            device=q.device,
+        )
+    assert score_buffer.shape == (num_tokens, active_heads, num_candidates)
+    assert score_buffer.device == q.device
+    assert score_buffer.dtype == torch.float32
+
+    score_head_block = 8
+    score_candidate_block = 32
+    score_block_d = min(1024, triton.next_power_of_2(head_dim))
+    score_grid = (
+        num_tokens,
+        triton.cdiv(active_heads, score_head_block),
+        triton.cdiv(num_candidates, score_candidate_block),
+    )
+    _indexed_sparse_mla_score_kernel[score_grid](
         q,
         kv_flat,
         indices,
         lens,
-        attn_sink,
-        output,
+        score_buffer,
         q.stride(0),
         q.stride(1),
         q.stride(2),
@@ -1516,15 +1616,42 @@ def indexed_sparse_mla_attention_with_sink_two_pass(
         kv_flat.stride(1),
         indices.stride(0),
         indices.stride(1),
-        output.stride(0),
-        output.stride(1),
-        output.stride(2),
+        score_buffer.stride(0),
+        score_buffer.stride(1),
+        score_buffer.stride(2),
         active_heads,
         head_dim,
         num_candidates,
         scale,
-        BLOCK_D=block_d,
-        num_warps=8,
+        HEAD_BLOCK=score_head_block,
+        BLOCK_C=score_candidate_block,
+        BLOCK_D=score_block_d,
+        num_warps=4,
+    )
+    finish_block_d = min(512, triton.next_power_of_2(head_dim))
+    finish_grid = (num_tokens, active_heads, triton.cdiv(head_dim, finish_block_d))
+    _finish_indexed_scores_with_sink_candidate_block_kernel[finish_grid](
+        score_buffer,
+        kv_flat,
+        indices,
+        lens,
+        attn_sink,
+        output,
+        score_buffer.stride(0),
+        score_buffer.stride(1),
+        score_buffer.stride(2),
+        kv_flat.stride(0),
+        kv_flat.stride(1),
+        indices.stride(0),
+        indices.stride(1),
+        output.stride(0),
+        output.stride(1),
+        output.stride(2),
+        head_dim,
+        num_candidates,
+        BLOCK_K=128,
+        BLOCK_D=finish_block_d,
+        num_warps=4,
     )
 
 

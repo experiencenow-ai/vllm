@@ -145,6 +145,13 @@ def main() -> int:
     outer_prefill_body = flashmla.split(
         "def _forward_prefill(", 1
     )[1].split("\n    @classmethod", 1)[0]
+    sparse_kernels = read("vllm/v1/attention/backends/mla/sparse_mla_kernels.py")
+    indexed_score_body = sparse_kernels.split(
+        "def _indexed_sparse_mla_score_kernel(", 1
+    )[1].split("\n\n@triton.jit", 1)[0]
+    indexed_finish_body = sparse_kernels.split(
+        "def _finish_indexed_scores_with_sink_candidate_block_kernel(", 1
+    )[1].split("\n\ndef indexed_sparse_mla_attention_with_sink_two_pass", 1)[0]
     failures += check(
         "indexed sparse prefill accepts caller-owned scratch buffers",
         "workspace_buffers:" in sparse_prefill_body
@@ -152,13 +159,18 @@ def main() -> int:
         and "selected_kv_buffer" in sparse_prefill_body,
     )
     failures += check(
-        "production indexed prefill uses batch-safe two-pass Triton kernel",
+        "production indexed prefill uses batch-safe score-buffer Triton kernel",
         "indexed_sparse_mla_attention_with_sink_two_pass(" in flashmla
+        and "score_buffer=score_buffer" in sparse_prefill_body
+        and "score_buffer = workspace[workspace_idx]" in outer_prefill_body
         and 'if backend == "indexed":' in sparse_prefill_body
         and "return\n        topk_chunk_size" in sparse_prefill_body
-        and "_indexed_attention_with_sink_two_pass_kernel" in read(
-            "vllm/v1/attention/backends/mla/sparse_mla_kernels.py"
-        ),
+        and "_indexed_sparse_mla_score_kernel" in sparse_kernels
+        and "_finish_indexed_scores_with_sink_candidate_block_kernel" in sparse_kernels
+        and 'input_precision="tf32"' in indexed_score_body
+        and "tl.dot(" in indexed_score_body
+        and "tl.sum(q * kv" not in indexed_score_body
+        and "safe_indices.to(tl.int64)" in indexed_finish_body,
     )
     failures += check(
         "one-pass sparse prefill paths are explicitly unsafe",
@@ -182,7 +194,8 @@ def main() -> int:
     failures += check(
         "gathered selected-KV scratch shares the outer workspace reservation",
         "workspace_specs.append(" in outer_prefill_body
-        and "selected_kv_buffer = workspace[4]" in outer_prefill_body
+        and "selected_kv_buffer = workspace[workspace_idx]" in outer_prefill_body
+        and "workspace_idx += 1" in outer_prefill_body
         and "current_workspace_manager().get_simultaneous(*workspace_specs)"
         in outer_prefill_body,
     )

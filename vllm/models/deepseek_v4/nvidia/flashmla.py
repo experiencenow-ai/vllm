@@ -1011,6 +1011,9 @@ class DeepseekV4FlashMLASparseImpl(DeepseekV4SparseMLAAttentionImpl):
             max_index=kv_flat.shape[0],
         )
         if backend == "indexed":
+            score_buffer = None
+            if workspace_buffers is not None and len(workspace_buffers) >= 4:
+                score_buffer = workspace_buffers[3]
             indexed_sparse_mla_attention_with_sink_two_pass(
                 q=q,
                 kv_flat=kv_flat,
@@ -1019,6 +1022,7 @@ class DeepseekV4FlashMLASparseImpl(DeepseekV4SparseMLAAttentionImpl):
                 scale=layer.scale,
                 attn_sink=layer.attn_sink,
                 output=output,
+                score_buffer=score_buffer,
                 num_heads=layer.num_heads,
             )
             if output.shape[1] > layer.num_heads:
@@ -1055,6 +1059,7 @@ class DeepseekV4FlashMLASparseImpl(DeepseekV4SparseMLAAttentionImpl):
                 denom_buffer,
                 output_buffer,
                 selected_kv_buffer,
+                score_buffer,
             ) = (
                 torch.empty(
                     (query_chunk_size, layer.num_heads),
@@ -1076,18 +1081,24 @@ class DeepseekV4FlashMLASparseImpl(DeepseekV4SparseMLAAttentionImpl):
                     dtype=kv.dtype,
                     device=q.device,
                 ),
+                None,
             )
         else:
+            selected_kv_buffer = None
+            score_buffer = None
             if len(workspace_buffers) == 3:
                 max_score_buffer, denom_buffer, output_buffer = workspace_buffers
-                selected_kv_buffer = None
             elif len(workspace_buffers) == 4:
                 (
                     max_score_buffer,
                     denom_buffer,
                     output_buffer,
-                    selected_kv_buffer,
+                    extra_buffer,
                 ) = workspace_buffers
+                if backend == "indexed":
+                    score_buffer = extra_buffer
+                else:
+                    selected_kv_buffer = extra_buffer
             else:
                 raise RuntimeError(
                     f"DS4 sparse MLA expected 3 or 4 prefill workspace "
@@ -1535,12 +1546,30 @@ class DeepseekV4FlashMLASparseImpl(DeepseekV4SparseMLAAttentionImpl):
                         torch.bfloat16,
                     )
                 )
+            if prefill_backend == "indexed":
+                workspace_specs.append(
+                    (
+                        (
+                            sparse_query_chunk_size,
+                            layer.num_heads,
+                            combined_topk_width,
+                        ),
+                        torch.float32,
+                    )
+                )
             workspace = current_workspace_manager().get_simultaneous(*workspace_specs)
             kv = workspace[0]
             max_score_buffer = workspace[1]
             denom_buffer = workspace[2]
             output_buffer = workspace[3]
-            selected_kv_buffer = workspace[4] if prefill_backend == "gathered" else None
+            workspace_idx = 4
+            selected_kv_buffer = None
+            score_buffer = None
+            if prefill_backend == "gathered":
+                selected_kv_buffer = workspace[workspace_idx]
+                workspace_idx += 1
+            if prefill_backend == "indexed":
+                score_buffer = workspace[workspace_idx]
             if not swa_only:
                 # Gather compressed KV
                 assert attn_metadata is not None
@@ -1608,6 +1637,7 @@ class DeepseekV4FlashMLASparseImpl(DeepseekV4SparseMLAAttentionImpl):
                             denom_buffer,
                             output_buffer,
                             selected_kv_buffer,
+                            score_buffer,
                         )
                         if buffer is not None
                     ),
