@@ -161,16 +161,26 @@ def main() -> int:
     failures += check(
         "production indexed prefill uses batch-safe score-buffer Triton kernel",
         "indexed_sparse_mla_attention_with_sink_two_pass(" in flashmla
-        and "score_buffer=score_buffer" in sparse_prefill_body
+        and "score_buffer=indexed_score_buffer" in sparse_prefill_body
         and "score_buffer = workspace[workspace_idx]" in outer_prefill_body
         and 'if backend == "indexed":' in sparse_prefill_body
-        and "return\n        topk_chunk_size" in sparse_prefill_body
         and "_indexed_sparse_mla_score_kernel" in sparse_kernels
         and "_finish_indexed_scores_with_sink_candidate_block_kernel" in sparse_kernels
         and 'input_precision="tf32"' in indexed_score_body
         and "tl.dot(" in indexed_score_body
         and "tl.sum(q * kv" not in indexed_score_body
         and "safe_indices.to(tl.int64)" in indexed_finish_body,
+    )
+    failures += check(
+        "production indexed prefill chunks caller-owned score buffer rows",
+        "indexed_query_chunk_size = min(" in sparse_prefill_body
+        and "score_buffer.shape[0]" in sparse_prefill_body
+        and "for token_start in range(0, q.shape[0], indexed_query_chunk_size):"
+        in sparse_prefill_body
+        and "indexed_score_buffer = (" in sparse_prefill_body
+        and "score_buffer[:num_tokens]" in sparse_prefill_body
+        and "indices=combined_indices[token_start:token_end]" in sparse_prefill_body
+        and "output=output[token_start:token_end]" in sparse_prefill_body,
     )
     failures += check(
         "one-pass sparse prefill paths are explicitly unsafe",
