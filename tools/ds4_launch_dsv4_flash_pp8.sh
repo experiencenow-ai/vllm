@@ -240,7 +240,7 @@ export VLLM_DS4_DSV4_SPARSE_MLA_REF_MAX_TOKENS="${VLLM_DS4_DSV4_SPARSE_MLA_REF_M
 export VLLM_DS4_DSV4_SPARSE_MLA_REF_ATOL="${VLLM_DS4_DSV4_SPARSE_MLA_REF_ATOL:-0.5}"
 export VLLM_DS4_DSV4_SPARSE_MLA_SELECTED_ABSMAX="${VLLM_DS4_DSV4_SPARSE_MLA_SELECTED_ABSMAX:-10000.0}"
 if [ -z "${VLLM_DS4_DSV4_SPARSE_MLA_PREFILL_BACKEND:-}" ]; then
-    echo "ERROR: VLLM_DS4_DSV4_SPARSE_MLA_PREFILL_BACKEND must be explicit. gathered/indexed are not batch-qualified; matmul-debug is diagnostic-only." >&2
+    echo "ERROR: VLLM_DS4_DSV4_SPARSE_MLA_PREFILL_BACKEND must be explicit. indexed is the batch-qualified Triton path; matmul-debug is diagnostic-only." >&2
     exit 2
 fi
 export VLLM_DS4_DSV4_SPARSE_MLA_PREFILL_BACKEND="${VLLM_DS4_DSV4_SPARSE_MLA_PREFILL_BACKEND}"
