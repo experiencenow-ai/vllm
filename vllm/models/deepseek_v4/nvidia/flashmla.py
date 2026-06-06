@@ -1148,11 +1148,14 @@ class DeepseekV4FlashMLASparseImpl(DeepseekV4SparseMLAAttentionImpl):
             max_score = max_score_buffer[:num_tokens]
             denom = denom_buffer[:num_tokens]
             subset_acc = output_buffer[:num_tokens]
+            max_valid_candidates = int(lens_chunk.max().item())
             max_score.fill_(float("-inf"))
             denom.zero_()
             subset_acc.zero_()
 
             for index_start in range(0, combined_indices.shape[-1], topk_chunk_size):
+                if index_start >= max_valid_candidates:
+                    break
                 index_end = min(
                     index_start + topk_chunk_size,
                     combined_indices.shape[-1],
@@ -1264,8 +1267,16 @@ class DeepseekV4FlashMLASparseImpl(DeepseekV4SparseMLAAttentionImpl):
         if num_tokens == 0:
             return
         offsets = torch.arange(num_candidates, device=combined_indices.device).view(1, -1)
-        valid_tokens = (offsets < combined_lens.view(-1, 1)) & (combined_indices >= 0)
-        safe_indices = combined_indices.clamp_min(0).long()
+        valid_tokens = (
+            (offsets < combined_lens.view(-1, 1))
+            & (combined_indices >= 0)
+            & (combined_indices < kv_flat.shape[0])
+        )
+        safe_indices = torch.where(
+            valid_tokens,
+            combined_indices,
+            torch.zeros_like(combined_indices),
+        ).long()
         materialized = kv_flat.index_select(0, safe_indices.reshape(-1))
         materialized = materialized.reshape(num_tokens, num_candidates, q.shape[-1])
         materialized = materialized.masked_fill(~valid_tokens.unsqueeze(-1), 0)

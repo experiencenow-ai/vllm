@@ -1247,6 +1247,7 @@ def _accumulate_indexed_attention_chunk_kernel(
     stride_q_d: tl.constexpr,
     stride_kv_t,
     stride_kv_d: tl.constexpr,
+    num_kv_rows,
     stride_indices_t: tl.constexpr,
     stride_indices_c: tl.constexpr,
     stride_state_t: tl.constexpr,
@@ -1287,14 +1288,19 @@ def _accumulate_indexed_attention_chunk_kernel(
             + token_idx * stride_indices_t
             + candidate_idx * stride_indices_c
         )
-        is_valid = ((candidate_offset + candidate_idx) < valid_len) & (kv_index >= 0)
+        is_valid = (
+            ((candidate_offset + candidate_idx) < valid_len)
+            & (kv_index >= 0)
+            & (kv_index < num_kv_rows)
+        )
+        safe_kv_index = tl.where(is_valid, kv_index, 0)
 
         if is_valid:
             kv = tl.load(
                 kv_flat_ptr
-                + kv_index.to(tl.int64) * stride_kv_t
+                + safe_kv_index.to(tl.int64) * stride_kv_t
                 + offsets * stride_kv_d,
-                mask=dim_mask,
+                mask=is_valid & dim_mask,
                 other=0.0,
             ).to(tl.float32)
             score = tl.sum(q * kv, axis=0) * scale
@@ -1359,6 +1365,7 @@ def accumulate_indexed_sparse_mla_attention_chunk(
         q.stride(2),
         kv_flat.stride(0),
         kv_flat.stride(1),
+        kv_flat.shape[0],
         indices.stride(0),
         indices.stride(1),
         max_score.stride(0),
@@ -1388,6 +1395,7 @@ def _indexed_sparse_mla_score_kernel(
     stride_q_d: tl.constexpr,
     stride_kv_t,
     stride_kv_d: tl.constexpr,
+    num_kv_rows,
     stride_indices_t: tl.constexpr,
     stride_indices_c: tl.constexpr,
     stride_scores_t: tl.constexpr,
@@ -1426,7 +1434,12 @@ def _indexed_sparse_mla_score_kernel(
         mask=candidate_mask,
         other=-1,
     )
-    is_valid = candidate_mask & (candidate_offsets < valid_len) & (kv_indices >= 0)
+    is_valid = (
+        candidate_mask
+        & (candidate_offsets < valid_len)
+        & (kv_indices >= 0)
+        & (kv_indices < num_kv_rows)
+    )
     safe_indices = tl.where(is_valid, kv_indices, 0)
     kv = tl.load(
         kv_flat_ptr
@@ -1465,6 +1478,7 @@ def _finish_indexed_scores_with_sink_candidate_block_kernel(
     stride_scores_c: tl.constexpr,
     stride_kv_t,
     stride_kv_d: tl.constexpr,
+    num_kv_rows,
     stride_indices_t: tl.constexpr,
     stride_indices_c: tl.constexpr,
     stride_output_t: tl.constexpr,
@@ -1494,7 +1508,12 @@ def _finish_indexed_scores_with_sink_candidate_block_kernel(
             mask=candidate_mask,
             other=-1,
         )
-        is_valid = candidate_mask & (candidates < valid_len) & (kv_indices >= 0)
+        is_valid = (
+            candidate_mask
+            & (candidates < valid_len)
+            & (kv_indices >= 0)
+            & (kv_indices < num_kv_rows)
+        )
         scores = tl.load(
             scores_ptr
             + token_idx * stride_scores_t
@@ -1517,7 +1536,12 @@ def _finish_indexed_scores_with_sink_candidate_block_kernel(
             mask=candidate_mask,
             other=-1,
         )
-        is_valid = candidate_mask & (candidates < valid_len) & (kv_indices >= 0)
+        is_valid = (
+            candidate_mask
+            & (candidates < valid_len)
+            & (kv_indices >= 0)
+            & (kv_indices < num_kv_rows)
+        )
         safe_indices = tl.where(is_valid, kv_indices, 0)
         scores = tl.load(
             scores_ptr
@@ -1614,6 +1638,7 @@ def indexed_sparse_mla_attention_with_sink_two_pass(
         q.stride(2),
         kv_flat.stride(0),
         kv_flat.stride(1),
+        kv_flat.shape[0],
         indices.stride(0),
         indices.stride(1),
         score_buffer.stride(0),
@@ -1642,6 +1667,7 @@ def indexed_sparse_mla_attention_with_sink_two_pass(
         score_buffer.stride(2),
         kv_flat.stride(0),
         kv_flat.stride(1),
+        kv_flat.shape[0],
         indices.stride(0),
         indices.stride(1),
         output.stride(0),
@@ -1665,6 +1691,7 @@ def _gather_indexed_sparse_mla_kv_kernel(
     stride_out_d: tl.constexpr,
     stride_kv_t,
     stride_kv_d: tl.constexpr,
+    num_kv_rows,
     stride_indices_t: tl.constexpr,
     stride_indices_c: tl.constexpr,
     num_candidates: tl.constexpr,
@@ -1686,7 +1713,7 @@ def _gather_indexed_sparse_mla_kv_kernel(
         mask=candidate_mask,
         other=-1,
     )
-    valid = candidate_mask & (kv_indices >= 0)
+    valid = candidate_mask & (kv_indices >= 0) & (kv_indices < num_kv_rows)
     safe_indices = tl.where(valid, kv_indices, 0)
     values = tl.load(
         kv_flat_ptr
@@ -1732,6 +1759,7 @@ def gather_indexed_sparse_mla_kv(
         output.stride(2),
         kv_flat.stride(0),
         kv_flat.stride(1),
+        kv_flat.shape[0],
         indices.stride(0),
         indices.stride(1),
         num_candidates,
