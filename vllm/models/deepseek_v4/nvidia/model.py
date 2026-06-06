@@ -3,6 +3,7 @@
 import typing
 from collections.abc import Callable, Iterable
 from itertools import islice
+import math
 
 import regex as re
 import torch
@@ -963,6 +964,26 @@ class DeepseekV4DecoderLayer(nn.Module):
     ):
         return self.mhc_post(x, residual, post, comb)
 
+    def _flatten_mhc_x(
+        self,
+        x: torch.Tensor,
+        residual: torch.Tensor,
+        where: str,
+    ) -> torch.Tensor:
+        hidden_size = residual.shape[-1]
+        outer_shape = residual.shape[:-2]
+        target_shape = (*outer_shape, hidden_size)
+        if x.shape == target_shape:
+            return x
+        target_numel = math.prod(target_shape)
+        if x.numel() != target_numel:
+            raise RuntimeError(
+                "DeepSeek V4 MHC input shape does not match residual state "
+                f"at {where}: x={tuple(x.shape)} residual={tuple(residual.shape)} "
+                f"target={target_shape}"
+            )
+        return x.reshape(target_shape)
+
     def _forward_cuda(
         self,
         x: torch.Tensor,
@@ -986,6 +1007,7 @@ class DeepseekV4DecoderLayer(nn.Module):
                 norm_eps=attn_norm_eps,
             )
         else:
+            x = self._flatten_mhc_x(x, residual, "attn")
             residual, post_mix, res_mix, x = self.mhc_fused_post_pre(
                 x,
                 residual,
@@ -1007,6 +1029,7 @@ class DeepseekV4DecoderLayer(nn.Module):
 
         # attn_norm is fused into hc_pre / mhc_fused_post_pre above.
         x = self.attn(positions, x, None)
+        x = self._flatten_mhc_x(x, residual, "ffn")
 
         ffn_norm_weight = self.ffn_norm.weight.data
         ffn_norm_eps = self.ffn_norm.variance_epsilon
