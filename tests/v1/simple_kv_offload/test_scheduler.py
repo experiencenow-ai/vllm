@@ -1741,6 +1741,28 @@ def test_required_ds4_cache_miss_fails_before_scheduling() -> None:
         fix.scheduler.validate_new_request(req)
 
 
+def test_required_ds4_subblock_prefix_can_compute_cold() -> None:
+    fix = make_scheduler(num_cpu_blocks=8, num_gpu_blocks=16, lazy=False)
+    req = make_request(num_blocks=0, extra_tokens=BLOCK_SIZE - 1)
+    req.kv_transfer_params = {
+        "ds4_require_kv_transfer": True,
+        "cache_ref": "subblock-bundle",
+        "ds4_kv_cache": {
+            "format": "ds4-kv-cache-plan-v1",
+            "cache_id": "subblock-bundle",
+            "load": {
+                "mode": "require",
+                "transport": "local_store",
+                "cache_key": "subblock-bundle",
+            },
+            "store": {"mode": "skip", "transport": "none"},
+            "miss_policy": "fail",
+        },
+    }
+
+    fix.scheduler.validate_new_request(req)
+
+
 def test_persistent_scheduler_restore_uses_full_hits(tmp_path, monkeypatch) -> None:
     """Restored persistent CPU hits advertise the full contiguous hit."""
     monkeypatch.setenv("VLLM_SIMPLE_KV_OFFLOAD_PERSIST_ROOT", str(tmp_path))

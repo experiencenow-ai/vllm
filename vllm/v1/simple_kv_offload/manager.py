@@ -302,6 +302,17 @@ class SimpleCPUOffloadScheduler:
         _, hit_length, cache_ref = self._find_cpu_hit(request, 0)
         if hit_length > 0:
             return
+        if request.num_tokens < self.block_size:
+            logger.info(
+                "DS4 strict SimpleCPUOffload request is below one scheduler "
+                "block; serving cold without treating cache_ref=%r as a "
+                "cache-miss failure. request=%s tokens=%d block_size=%d",
+                cache_ref,
+                request.request_id,
+                request.num_tokens,
+                self.block_size,
+            )
+            return
         raise ValueError(
             "DS4 KV cache load was required, but SimpleCPUOffload found no "
             f"matching cache blocks for cache_ref={cache_ref!r}. Refusing to "
