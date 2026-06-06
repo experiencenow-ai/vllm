@@ -1014,17 +1014,51 @@ class DeepseekV4FlashMLASparseImpl(DeepseekV4SparseMLAAttentionImpl):
             score_buffer = None
             if workspace_buffers is not None and len(workspace_buffers) >= 4:
                 score_buffer = workspace_buffers[3]
-            indexed_sparse_mla_attention_with_sink_two_pass(
-                q=q,
-                kv_flat=kv_flat,
-                indices=combined_indices,
-                lens=combined_lens,
-                scale=layer.scale,
-                attn_sink=layer.attn_sink,
-                output=output,
-                score_buffer=score_buffer,
-                num_heads=layer.num_heads,
+            indexed_query_chunk_size = min(
+                q.shape[0],
+                triton_sparse_mla_query_chunk_size(),
             )
+            if score_buffer is not None:
+                expected_tail = (
+                    layer.num_heads,
+                    combined_indices.shape[1],
+                )
+                if tuple(score_buffer.shape[1:]) != expected_tail:
+                    raise RuntimeError(
+                        "DS4 indexed sparse MLA score buffer candidate/head "
+                        f"shape mismatch: got={tuple(score_buffer.shape)} "
+                        f"expected_tail={expected_tail}"
+                    )
+                indexed_query_chunk_size = min(
+                    indexed_query_chunk_size,
+                    score_buffer.shape[0],
+                )
+            if indexed_query_chunk_size <= 0:
+                raise RuntimeError(
+                    "DS4 indexed sparse MLA score buffer has no token rows"
+                )
+            for token_start in range(0, q.shape[0], indexed_query_chunk_size):
+                token_end = min(
+                    token_start + indexed_query_chunk_size,
+                    q.shape[0],
+                )
+                num_tokens = token_end - token_start
+                indexed_score_buffer = (
+                    score_buffer[:num_tokens]
+                    if score_buffer is not None
+                    else None
+                )
+                indexed_sparse_mla_attention_with_sink_two_pass(
+                    q=q[token_start:token_end],
+                    kv_flat=kv_flat,
+                    indices=combined_indices[token_start:token_end],
+                    lens=combined_lens[token_start:token_end],
+                    scale=layer.scale,
+                    attn_sink=layer.attn_sink,
+                    output=output[token_start:token_end],
+                    score_buffer=indexed_score_buffer,
+                    num_heads=layer.num_heads,
+                )
             if output.shape[1] > layer.num_heads:
                 output[:, layer.num_heads :].zero_()
             _ds4_check_sparse_mla_output(
