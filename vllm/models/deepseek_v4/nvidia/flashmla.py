@@ -205,6 +205,12 @@ def _ds4_check_sparse_mla_output(
 @torch.compiler.disable
 def _ds4_sparse_mla_prefill_backend() -> str:
     backend = envs.VLLM_DS4_DSV4_SPARSE_MLA_PREFILL_BACKEND
+    if backend in ("", "unset", "auto"):
+        raise RuntimeError(
+            "VLLM_DS4_DSV4_SPARSE_MLA_PREFILL_BACKEND must be set "
+            "explicitly for DSV4 sparse MLA prefill; gathered/indexed are "
+            "not batch-qualified and matmul-debug is diagnostic-only"
+        )
     if backend in ("gathered", "gathered-sparse"):
         return "gathered"
     if backend in ("indexed", "indexed-unsafe", "triton", "triton-indexed"):

@@ -87,16 +87,21 @@ def main() -> int:
     failures += check(
         "prefill backend selector fails closed",
         "_ds4_sparse_mla_prefill_backend(" in flashmla
+        and 'backend in ("", "unset", "auto")' in flashmla
+        and "must be set " in flashmla
+        and "explicitly for DSV4 sparse MLA prefill" in flashmla
+        and "matmul-debug is diagnostic-only" in flashmla
         and "expected gathered, indexed-unsafe, or matmul-debug" in flashmla
         and 'backend in ("gathered", "gathered-sparse")' in flashmla
         and '"indexed-unsafe"' in flashmla
         and "VLLM_DS4_DSV4_SPARSE_MLA_PREFILL_BACKEND" in flashmla,
     )
     failures += check(
-        "materialized sparse prefill is the default",
-        'VLLM_DS4_DSV4_SPARSE_MLA_PREFILL_BACKEND: str = "matmul-debug"' in envs
-        and '"VLLM_DS4_DSV4_SPARSE_MLA_PREFILL_BACKEND", "matmul-debug"' in envs
-        and 'VLLM_DS4_DSV4_SPARSE_MLA_PREFILL_BACKEND:-matmul-debug' in launcher,
+        "sparse prefill backend defaults fail closed",
+        'VLLM_DS4_DSV4_SPARSE_MLA_PREFILL_BACKEND: str = "unset"' in envs
+        and '"VLLM_DS4_DSV4_SPARSE_MLA_PREFILL_BACKEND", "unset"' in envs
+        and "VLLM_DS4_DSV4_SPARSE_MLA_PREFILL_BACKEND must be explicit" in launcher
+        and 'VLLM_DS4_DSV4_SPARSE_MLA_PREFILL_BACKEND="${VLLM_DS4_DSV4_SPARSE_MLA_PREFILL_BACKEND}"' in launcher,
     )
     failures += check(
         "gathered sparse prefill materializes selected KV before accumulation",
