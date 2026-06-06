@@ -91,10 +91,14 @@ def main() -> int:
         and 'backend in ("", "unset", "auto")' in flashmla
         and "must be set " in flashmla
         and "explicitly for DSV4 sparse MLA prefill" in flashmla
+        and "indexed is the " in flashmla
+        and "batch-qualified Triton path" in flashmla
         and "matmul-debug is diagnostic-only" in flashmla
-        and "expected gathered, indexed-unsafe, or matmul-debug" in flashmla
-        and 'backend in ("gathered", "gathered-sparse")' in flashmla
+        and "expected indexed, indexed-unsafe, gathered-unsafe, " in flashmla
+        and 'backend in ("gathered-unsafe", "gathered-sparse-unsafe")' in flashmla
         and '"indexed-unsafe"' in flashmla
+        and "VLLM_DS4_DSV4_SPARSE_MLA_PREFILL_BACKEND=gathered is retired"
+        in flashmla
         and "VLLM_DS4_DSV4_SPARSE_MLA_PREFILL_BACKEND" in flashmla,
     )
     failures += check(
@@ -102,6 +106,7 @@ def main() -> int:
         'VLLM_DS4_DSV4_SPARSE_MLA_PREFILL_BACKEND: str = "unset"' in envs
         and '"VLLM_DS4_DSV4_SPARSE_MLA_PREFILL_BACKEND", "unset"' in envs
         and "VLLM_DS4_DSV4_SPARSE_MLA_PREFILL_BACKEND must be explicit" in launcher
+        and "indexed is the batch-qualified Triton path" in launcher
         and 'VLLM_DS4_DSV4_SPARSE_MLA_PREFILL_BACKEND="${VLLM_DS4_DSV4_SPARSE_MLA_PREFILL_BACKEND}"' in launcher,
     )
     failures += check(
@@ -145,6 +150,21 @@ def main() -> int:
         "workspace_buffers:" in sparse_prefill_body
         and "len(workspace_buffers) == 4" in sparse_prefill_body
         and "selected_kv_buffer" in sparse_prefill_body,
+    )
+    failures += check(
+        "production indexed prefill uses batch-safe two-pass Triton kernel",
+        "indexed_sparse_mla_attention_with_sink_two_pass(" in flashmla
+        and 'if backend == "indexed":' in sparse_prefill_body
+        and "return\n        topk_chunk_size" in sparse_prefill_body
+        and "_indexed_attention_with_sink_two_pass_kernel" in read(
+            "vllm/v1/attention/backends/mla/sparse_mla_kernels.py"
+        ),
+    )
+    failures += check(
+        "one-pass sparse prefill paths are explicitly unsafe",
+        'if backend == "gathered-unsafe":' in sparse_prefill_body
+        and 'backend in ("indexed-unsafe", "triton-indexed-unsafe")' in flashmla
+        and "accumulate_indexed_sparse_mla_attention_chunk(" in sparse_prefill_body,
     )
     failures += check(
         "prefill gather KV and sparse scratch share one workspace reservation",

@@ -46,6 +46,7 @@ from vllm.v1.attention.backends.mla.sparse_mla_kernels import (
     gather_indexed_sparse_mla_kv,
     fp8ds_global_paged_sparse_mla_attention_with_sink_multihead,
     fp8ds_paged_sparse_mla_attention_with_sink_multihead,
+    indexed_sparse_mla_attention_with_sink_two_pass,
     matmul_sparse_mla_attention_with_sink,
     sparse_mla_decode_head_block_size,
     splitkv_sparse_mla_attention_with_sink,
@@ -208,18 +209,27 @@ def _ds4_sparse_mla_prefill_backend() -> str:
     if backend in ("", "unset", "auto"):
         raise RuntimeError(
             "VLLM_DS4_DSV4_SPARSE_MLA_PREFILL_BACKEND must be set "
-            "explicitly for DSV4 sparse MLA prefill; gathered/indexed are "
-            "not batch-qualified and matmul-debug is diagnostic-only"
+            "explicitly for DSV4 sparse MLA prefill; indexed is the "
+            "batch-qualified Triton path and matmul-debug is diagnostic-only"
         )
-    if backend in ("gathered", "gathered-sparse"):
-        return "gathered"
-    if backend in ("indexed", "indexed-unsafe", "triton", "triton-indexed"):
+    if backend in ("indexed", "triton", "triton-indexed"):
         return "indexed"
+    if backend in ("indexed-unsafe", "triton-indexed-unsafe"):
+        return "indexed-unsafe"
+    if backend in ("gathered-unsafe", "gathered-sparse-unsafe"):
+        return "gathered-unsafe"
+    if backend in ("gathered", "gathered-sparse"):
+        raise RuntimeError(
+            "VLLM_DS4_DSV4_SPARSE_MLA_PREFILL_BACKEND=gathered is retired "
+            "because the gathered one-pass accumulator is not batch-qualified; "
+            "use indexed for production or gathered-unsafe for diagnostics"
+        )
     if backend in ("matmul-debug", "materialized-debug"):
         return "matmul-debug"
     raise RuntimeError(
         "Invalid VLLM_DS4_DSV4_SPARSE_MLA_PREFILL_BACKEND="
-        f"{backend!r}; expected gathered, indexed-unsafe, or matmul-debug"
+        f"{backend!r}; expected indexed, indexed-unsafe, gathered-unsafe, "
+        "or matmul-debug"
     )
 
 
@@ -1000,6 +1010,37 @@ class DeepseekV4FlashMLASparseImpl(DeepseekV4SparseMLAAttentionImpl):
             lens=combined_lens,
             max_index=kv_flat.shape[0],
         )
+        if backend == "indexed":
+            indexed_sparse_mla_attention_with_sink_two_pass(
+                q=q,
+                kv_flat=kv_flat,
+                indices=combined_indices,
+                lens=combined_lens,
+                scale=layer.scale,
+                attn_sink=layer.attn_sink,
+                output=output,
+                num_heads=layer.num_heads,
+            )
+            if output.shape[1] > layer.num_heads:
+                output[:, layer.num_heads :].zero_()
+            _ds4_check_sparse_mla_output(
+                layer_prefix=layer.prefix,
+                stage="prefill",
+                output=output,
+                num_heads=layer.num_heads,
+            )
+            _ds4_reference_check_sparse_mla_prefill(
+                layer_prefix=layer.prefix,
+                q=q,
+                kv_flat=kv_flat,
+                combined_indices=combined_indices,
+                combined_lens=combined_lens,
+                attn_sink=layer.attn_sink,
+                scale=layer.scale,
+                output=output,
+                num_heads=layer.num_heads,
+            )
+            return
         topk_chunk_size = min(
             combined_indices.shape[-1],
             triton_sparse_mla_topk_chunk_size(),
@@ -1072,7 +1113,7 @@ class DeepseekV4FlashMLASparseImpl(DeepseekV4SparseMLAAttentionImpl):
                     combined_indices.shape[-1],
                 )
                 indices_chunk = indices_chunk_full[:, index_start:index_end]
-                if backend == "gathered":
+                if backend == "gathered-unsafe":
                     if selected_kv_buffer is None:
                         selected_kv_buffer = torch.empty(
                             (

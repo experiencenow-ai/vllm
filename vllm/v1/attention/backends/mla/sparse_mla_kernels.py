@@ -1377,6 +1377,158 @@ def accumulate_indexed_sparse_mla_attention_chunk(
 
 
 @triton.jit
+def _indexed_attention_with_sink_two_pass_kernel(
+    q_ptr,
+    kv_flat_ptr,
+    indices_ptr,
+    lens_ptr,
+    sink_ptr,
+    output_ptr,
+    stride_q_t: tl.constexpr,
+    stride_q_h: tl.constexpr,
+    stride_q_d: tl.constexpr,
+    stride_kv_t,
+    stride_kv_d: tl.constexpr,
+    stride_indices_t: tl.constexpr,
+    stride_indices_c: tl.constexpr,
+    stride_output_t: tl.constexpr,
+    stride_output_h: tl.constexpr,
+    stride_output_d: tl.constexpr,
+    num_heads: tl.constexpr,
+    head_dim: tl.constexpr,
+    num_candidates,
+    scale: tl.constexpr,
+    BLOCK_D: tl.constexpr,
+):
+    token_idx = tl.program_id(0)
+    head_idx = tl.program_id(1)
+    offsets = tl.arange(0, BLOCK_D)
+    dim_mask = offsets < head_dim
+
+    q = tl.load(
+        q_ptr + token_idx * stride_q_t + head_idx * stride_q_h + offsets * stride_q_d,
+        mask=dim_mask,
+        other=0.0,
+    ).to(tl.float32)
+    valid_len = tl.load(lens_ptr + token_idx)
+    sink = tl.load(sink_ptr + head_idx).to(tl.float32)
+    max_score = sink
+
+    for candidate_idx in range(0, num_candidates):
+        kv_index = tl.load(
+            indices_ptr
+            + token_idx * stride_indices_t
+            + candidate_idx * stride_indices_c
+        )
+        is_valid = (candidate_idx < valid_len) & (kv_index >= 0)
+        if is_valid:
+            kv = tl.load(
+                kv_flat_ptr
+                + kv_index.to(tl.int64) * stride_kv_t
+                + offsets * stride_kv_d,
+                mask=dim_mask,
+                other=0.0,
+            ).to(tl.float32)
+            score = tl.sum(q * kv, axis=0) * scale
+            max_score = tl.maximum(max_score, score)
+
+    denom = tl.exp(sink - max_score)
+    acc = tl.zeros((BLOCK_D,), tl.float32)
+    for candidate_idx in range(0, num_candidates):
+        kv_index = tl.load(
+            indices_ptr
+            + token_idx * stride_indices_t
+            + candidate_idx * stride_indices_c
+        )
+        is_valid = (candidate_idx < valid_len) & (kv_index >= 0)
+        if is_valid:
+            kv = tl.load(
+                kv_flat_ptr
+                + kv_index.to(tl.int64) * stride_kv_t
+                + offsets * stride_kv_d,
+                mask=dim_mask,
+                other=0.0,
+            ).to(tl.float32)
+            score = tl.sum(q * kv, axis=0) * scale
+            weight = tl.exp(score - max_score)
+            denom += weight
+            acc += kv * weight
+
+    tl.store(
+        output_ptr
+        + token_idx * stride_output_t
+        + head_idx * stride_output_h
+        + offsets * stride_output_d,
+        acc / denom,
+        mask=dim_mask,
+    )
+
+
+def indexed_sparse_mla_attention_with_sink_two_pass(
+    q: torch.Tensor,
+    kv_flat: torch.Tensor,
+    indices: torch.Tensor,
+    lens: torch.Tensor,
+    scale: float,
+    attn_sink: torch.Tensor,
+    output: torch.Tensor,
+    num_heads: int | None = None,
+) -> None:
+    if q.dim() == 4:
+        assert q.shape[1] == 1
+        q = q[:, 0]
+    if indices.dim() == 3:
+        assert indices.shape[1] == 1
+        indices = indices[:, 0]
+
+    assert q.dim() == 3, f"Expected q shape [T, H, D], got {q.shape}"
+    assert kv_flat.dim() == 2
+    assert indices.dim() == 2
+    assert indices.shape[0] == q.shape[0]
+    assert lens.shape[0] == q.shape[0]
+    assert kv_flat.shape[-1] == q.shape[-1]
+    assert output.shape[0] == q.shape[0]
+    assert output.shape[2] == q.shape[-1]
+    assert indices.dtype == torch.int32
+    assert q.is_cuda and kv_flat.is_cuda and indices.is_cuda and lens.is_cuda
+    assert attn_sink.is_cuda and output.is_cuda
+
+    active_heads = num_heads if num_heads is not None else output.shape[1]
+    assert active_heads <= q.shape[1]
+    assert active_heads <= output.shape[1]
+    assert active_heads <= attn_sink.shape[0]
+
+    num_tokens, _, head_dim = q.shape
+    num_candidates = indices.shape[1]
+    block_d = min(1024, triton.next_power_of_2(head_dim))
+    grid = (num_tokens, active_heads)
+    _indexed_attention_with_sink_two_pass_kernel[grid](
+        q,
+        kv_flat,
+        indices,
+        lens,
+        attn_sink,
+        output,
+        q.stride(0),
+        q.stride(1),
+        q.stride(2),
+        kv_flat.stride(0),
+        kv_flat.stride(1),
+        indices.stride(0),
+        indices.stride(1),
+        output.stride(0),
+        output.stride(1),
+        output.stride(2),
+        active_heads,
+        head_dim,
+        num_candidates,
+        scale,
+        BLOCK_D=block_d,
+        num_warps=8,
+    )
+
+
+@triton.jit
 def _gather_indexed_sparse_mla_kv_kernel(
     out_ptr,
     kv_flat_ptr,
