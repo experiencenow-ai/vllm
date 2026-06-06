@@ -1572,6 +1572,37 @@ def test_persistent_store_restores_cache_ref_bundle_without_block_files(tmp_path
     assert cpu_kv_caches["kv"][2].tolist() == [7.0, 8.0]
 
 
+def test_persistent_store_restores_cache_ref_bundle_into_inference_tensor(tmp_path) -> None:
+    """DS4 HMA restore must work when vLLM owns inference-mode tensors."""
+    store = PersistentSimpleOffloadStore(
+        root=tmp_path,
+        rank_key="rank0",
+        model_key="model",
+        num_cpu_blocks=4,
+        strict=True,
+        tensor_names=["kv"],
+    )
+    cpu_kv_caches = {"kv": torch.zeros((4, 2), dtype=torch.float16)}
+    hash_hex = "ab" * 32
+    cpu_kv_caches["kv"][1] = torch.tensor([3, 5], dtype=torch.float16)
+    store.persist_worker_blocks(cpu_kv_caches, [1], [hash_hex], ["cache-a"])
+    for path in store.blocks_dir.glob("*.pt"):
+        path.unlink()
+
+    with torch.inference_mode():
+        cpu_kv_caches = {"kv": torch.zeros((4, 2), dtype=torch.float16)}
+
+    restored = store.ensure_worker_blocks(
+        cpu_kv_caches,
+        [1],
+        [hash_hex],
+        {},
+        ["cache-a"],
+    )
+    assert restored == {1: hash_hex}
+    assert cpu_kv_caches["kv"][1].tolist() == [3.0, 5.0]
+
+
 def test_persistent_store_restores_worker_blocks_lazily(tmp_path) -> None:
     """Persistent worker data is indexed at startup, not copied wholesale."""
     store = PersistentSimpleOffloadStore(

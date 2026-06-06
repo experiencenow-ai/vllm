@@ -415,7 +415,8 @@ class PersistentSimpleOffloadStore:
                         f"tensor {name} shape mismatch "
                         f"{tuple(src.shape)} != {tuple(target.shape)}"
                     )
-                target.copy_(src)
+                with torch.inference_mode():
+                    target.copy_(src)
 
     def _restore_worker_block(
         self,
@@ -440,7 +441,8 @@ class PersistentSimpleOffloadStore:
                     f"tensor {name} shape mismatch "
                     f"{tuple(src.shape)} != {tuple(target.shape)}"
                 )
-            target.copy_(src)
+            with torch.inference_mode():
+                target.copy_(src)
 
     def validate_loaded_blocks(
         self,
