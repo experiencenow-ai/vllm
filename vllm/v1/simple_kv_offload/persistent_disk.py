@@ -232,6 +232,7 @@ class PersistentSimpleOffloadStore:
                 continue
             path = self._block_path(hash_hex)
             if not path.exists():
+                self._drop_index_hash(self.worker_index, hash_hex)
                 self._fail(
                     "persistent CPU offload block missing: "
                     f"{_short_hash(hash_hex)} at {path}"
@@ -615,6 +616,17 @@ class PersistentSimpleOffloadStore:
             self._block_path(hash_hex).unlink(missing_ok=True)
         except Exception as exc:
             self._fail(f"failed to remove stale CPU offload block {hash_hex}", exc)
+
+    def _drop_index_hash(self, path: Path, hash_hex: str) -> None:
+        data = self._read_json(path)
+        if not data:
+            return
+        blocks = data.get("blocks")
+        if not isinstance(blocks, dict) or hash_hex not in blocks:
+            return
+        blocks.pop(hash_hex, None)
+        data["updated_at"] = time.time()
+        self._write_json_atomic(path, data)
 
     def _fail(self, message: str, exc: Exception | None = None) -> None:
         if self.strict:

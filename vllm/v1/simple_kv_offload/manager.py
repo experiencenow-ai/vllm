@@ -146,6 +146,7 @@ class SimpleCPUOffloadScheduler:
             num_cpu_blocks=self.num_cpu_blocks,
         )
         self._cache_refs_by_block_hash: dict[bytes, set[str]] = {}
+        self._bad_persistent_block_hashes: set[str] = set()
         if self._persistent_store is not None and _startup_restore_enabled():
             restored = 0
             for entry in self._persistent_store.load_scheduler_entries(
@@ -365,8 +366,19 @@ class SimpleCPUOffloadScheduler:
         if num_free <= 0:
             return
 
-        candidates = self._persistent_lookup_candidates(remaining_hashes, max_hit_len)
+        candidates = [
+            hash_hex
+            for hash_hex in self._persistent_lookup_candidates(
+                remaining_hashes, max_hit_len
+            )
+            if hash_hex not in self._bad_persistent_block_hashes
+        ]
         hits = lookup(candidates, num_free, cache_ref=cache_ref)[:num_free]
+        hits = [
+            hash_hex
+            for hash_hex in hits
+            if hash_hex not in self._bad_persistent_block_hashes
+        ]
         if not hits:
             return
 
@@ -926,6 +938,8 @@ class SimpleCPUOffloadScheduler:
         per-event worker counts. We accumulate across steps and process
         a store event only when all workers have reported completion.
         """
+        self._mark_invalid_load_blocks(connector_output.invalid_block_ids)
+
         # --- Load completions ---
         for req_id in list(connector_output.finished_recving or []):
             self._cleanup_load_request(req_id)
@@ -957,6 +971,7 @@ class SimpleCPUOffloadScheduler:
                 transfer.cpu_block_ids, transfer.block_hashes, transfer.cache_refs
             )
             self._remember_cache_refs(transfer.block_hashes, transfer.cache_refs)
+            self._bad_persistent_block_hashes.difference_update(transfer.block_hashes)
         logger.debug(
             "Store event %d completed: cached %d blocks to CPU",
             event_idx,
@@ -1001,6 +1016,34 @@ class SimpleCPUOffloadScheduler:
         assert self._gpu_block_pool is not None
         self._gpu_block_pool.free_blocks(
             self._gpu_block_pool.blocks[bid] for bid in gpu_block_ids
+        )
+
+    def _mark_invalid_load_blocks(self, invalid_gpu_block_ids: set[int]) -> None:
+        if not invalid_gpu_block_ids:
+            return
+        bad_hashes: set[str] = set()
+        bad_cpu_block_ids: set[int] = set()
+        for state in self._reqs_to_load.values():
+            transfer = state.transfer_meta
+            for gpu_id, cpu_id, hash_hex in zip(
+                transfer.gpu_block_ids,
+                transfer.cpu_block_ids,
+                transfer.block_hashes,
+            ):
+                if int(gpu_id) not in invalid_gpu_block_ids:
+                    continue
+                bad_hashes.add(hash_hex)
+                bad_cpu_block_ids.add(int(cpu_id))
+        if not bad_hashes:
+            return
+        self._bad_persistent_block_hashes.update(bad_hashes)
+        for hash_hex in bad_hashes:
+            self._cache_refs_by_block_hash.pop(bytes.fromhex(hash_hex), None)
+        self.cpu_block_pool.evict_blocks(bad_cpu_block_ids)
+        logger.warning(
+            "SimpleCPUOffloadScheduler: blacklisted %d stale persistent "
+            "CPU block hashes after KV load failure",
+            len(bad_hashes),
         )
 
     def _cpu_block_hashes(self, cpu_block_ids: list[int]) -> list[str]:
