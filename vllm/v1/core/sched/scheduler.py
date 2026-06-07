@@ -2299,50 +2299,61 @@ class Scheduler(SchedulerInterface):
             is_affected = False
             marked_invalid_block = False
             req_id = request.request_id
-            # TODO (davidb): add support for hybrid memory allocator
-            (req_block_ids,) = self.kv_cache_manager.get_block_ids(req_id)
+            req_block_id_groups = self.kv_cache_manager.get_block_ids(req_id)
             # We iterate only over blocks that may contain externally computed
             # tokens
             req_num_computed_tokens = (
                 request.num_computed_tokens - num_scheduled_tokens.get(req_id, 0)
             )
+            first_invalid_token: int | None = None
 
-            req_num_computed_blocks = (
-                req_num_computed_tokens + self.block_size - 1
-            ) // self.block_size
-            for idx, block_id in zip(range(req_num_computed_blocks), req_block_ids):
-                if block_id not in invalid_block_ids:
-                    continue
+            for group_idx, req_block_ids in enumerate(req_block_id_groups):
+                group = self.kv_cache_config.kv_cache_groups[group_idx]
+                group_block_size = group.kv_cache_spec.block_size
+                req_num_computed_blocks = (
+                    req_num_computed_tokens + group_block_size - 1
+                ) // group_block_size
+                for idx, block_id in zip(
+                    range(req_num_computed_blocks), req_block_ids
+                ):
+                    if block_id not in invalid_block_ids:
+                        continue
 
-                is_affected = True
+                    is_affected = True
 
-                if block_id in marked_invalid_block_ids:
-                    # This invalid block is shared with a previous request
-                    # and was already marked for recomputation.
-                    # This means this request can still consider this block
-                    # as computed when rescheduled.
-                    # Currently this only applies to sync loading; Async
-                    # loading does not yet support block sharing
-                    continue
+                    if block_id in marked_invalid_block_ids:
+                        # This invalid block is shared with a previous request
+                        # and was already marked for recomputation.
+                        # This means this request can still consider this block
+                        # as computed when rescheduled.
+                        # Currently this only applies to sync loading; Async
+                        # loading does not yet support block sharing
+                        continue
 
-                marked_invalid_block_ids.add(block_id)
+                    marked_invalid_block_ids.add(block_id)
+                    marked_invalid_block = True
+                    invalid_token = idx * group_block_size
+                    if (
+                        first_invalid_token is None
+                        or invalid_token < first_invalid_token
+                    ):
+                        first_invalid_token = invalid_token
 
-                if marked_invalid_block:
-                    # This request has already marked an invalid block for
-                    # recomputation and updated its num_computed_tokens.
-                    continue
-
-                marked_invalid_block = True
-                # Truncate the computed tokens at the first failed block
-                request.num_computed_tokens = idx * self.block_size
-                num_affected_tokens = (
+            if marked_invalid_block and first_invalid_token is not None:
+                # Truncate the computed tokens at the earliest failed block
+                # across all KV groups. Hybrid allocators can use different
+                # group block sizes, so this cannot assume a single block table.
+                request.num_computed_tokens = first_invalid_token
+                total_affected_tokens += (
                     req_num_computed_tokens - request.num_computed_tokens
                 )
-                total_affected_tokens += num_affected_tokens
 
-                # collect invalid block and all downstream dependent blocks
                 if evict_blocks:
-                    blocks_to_evict.update(req_block_ids[idx:])
+                    for group_idx, req_block_ids in enumerate(req_block_id_groups):
+                        group = self.kv_cache_config.kv_cache_groups[group_idx]
+                        group_block_size = group.kv_cache_spec.block_size
+                        first_block_idx = first_invalid_token // group_block_size
+                        blocks_to_evict.update(req_block_ids[first_block_idx:])
 
             if is_affected:
                 if not marked_invalid_block:

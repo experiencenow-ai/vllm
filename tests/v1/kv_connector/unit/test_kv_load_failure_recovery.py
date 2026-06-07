@@ -5,8 +5,14 @@ from collections.abc import Callable
 from unittest.mock import Mock
 
 import pytest
+import torch
 
 from vllm.v1.core.sched.scheduler import Scheduler
+from vllm.v1.kv_cache_interface import (
+    FullAttentionSpec,
+    KVCacheConfig,
+    KVCacheGroupSpec,
+)
 from vllm.v1.request import Request, RequestStatus
 
 from .utils import (
@@ -185,6 +191,72 @@ def test_sync_load_failure(
     )
     assert scheduler.connector.get_num_new_matched_tokens.call_count == 3
     assert scheduler.connector.request_finished.call_count == 2
+
+
+def test_sync_load_failure_with_multi_group_block_ids() -> None:
+    vllm_config = create_vllm_config(kv_load_failure_policy="recompute")
+    kv_cache_config = KVCacheConfig(
+        num_blocks=10000,
+        kv_cache_tensors=[],
+        kv_cache_groups=[
+            KVCacheGroupSpec(
+                ["layer0"],
+                FullAttentionSpec(
+                    block_size=vllm_config.cache_config.block_size,
+                    num_kv_heads=1,
+                    head_size=1,
+                    dtype=torch.float32,
+                ),
+            ),
+            KVCacheGroupSpec(
+                ["layer1"],
+                FullAttentionSpec(
+                    block_size=vllm_config.cache_config.block_size,
+                    num_kv_heads=1,
+                    head_size=1,
+                    dtype=torch.float32,
+                ),
+            ),
+        ],
+    )
+    scheduler = create_scheduler(vllm_config, kv_cache_config=kv_cache_config)
+    num_prompt_blocks = 10
+    num_external_computed_blocks = 9
+    num_prompt_tokens = num_prompt_blocks * scheduler.block_size
+    num_external_computed_tokens = (
+        num_external_computed_blocks * scheduler.block_size
+    )
+    request = create_request(num_tokens=num_prompt_tokens)
+    scheduler.add_request(request=request)
+
+    scheduler.connector = Mock()
+    scheduler.connector.get_num_new_matched_tokens.side_effect = (
+        _make_get_num_new_matched_tokens(
+            {request.request_id: num_external_computed_tokens},
+            async_load=False,
+        )
+    )
+    scheduler.connector.request_finished.return_value = (False, None)
+    scheduler.connector.take_events.return_value = ()
+
+    scheduler_output = scheduler.schedule()
+    req_block_id_groups = scheduler_output.scheduled_new_reqs[0].block_ids
+    assert len(req_block_id_groups) == 2
+    invalid_block_idx = 3
+    invalid_block_ids = {req_block_id_groups[1][invalid_block_idx]}
+    model_runner_output = create_model_runner_output(
+        [request],
+        invalid_block_ids=invalid_block_ids,
+        use_eos=True,
+    )
+
+    scheduler.update_from_output(scheduler_output, model_runner_output)
+
+    assert len(scheduler.running) == 1
+    assert scheduler.running[0].request_id == request.request_id
+    assert scheduler.running[0].num_computed_tokens == (
+        invalid_block_idx * scheduler.block_size
+    )
 
 
 @pytest.mark.parametrize(
