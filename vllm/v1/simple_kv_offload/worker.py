@@ -20,7 +20,10 @@ from vllm.v1.simple_kv_offload.metadata import (
     SimpleCPUOffloadMetadata,
     SimpleCPUOffloadWorkerMetadata,
 )
-from vllm.v1.simple_kv_offload.persistent_disk import PersistentSimpleOffloadStore
+from vllm.v1.simple_kv_offload.persistent_disk import (
+    PersistentSimpleOffloadStore,
+    startup_restore_enabled,
+)
 
 if TYPE_CHECKING:
     from vllm.v1.kv_cache_interface import KVCacheConfig
@@ -250,12 +253,17 @@ class SimpleCPUOffloadWorker:
             num_cpu_blocks=self.num_cpu_blocks,
             tensor_names=list(self.cpu_kv_caches.keys()),
         )
-        if self._persistent_store is not None:
+        if self._persistent_store is not None and startup_restore_enabled():
             entries = self._persistent_store.load_worker_entries(self.num_cpu_blocks)
             logger.info(
                 "SimpleCPUOffloadWorker: indexed %d persistent CPU blocks "
                 "for lazy restore",
                 len(entries),
+            )
+        elif self._persistent_store is not None:
+            logger.info(
+                "SimpleCPUOffloadWorker: persistent startup restore disabled; "
+                "worker blocks will be materialized on demand by request cache_ref"
             )
 
     def _ensure_cpu_block_capacity(self, min_num_cpu_blocks: int) -> None:

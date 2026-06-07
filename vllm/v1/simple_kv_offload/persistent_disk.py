@@ -27,6 +27,7 @@ API_URL_ENV = "VLLM_SIMPLE_KV_OFFLOAD_PERSIST_API_URL"
 API_TOKEN_ENV = "VLLM_SIMPLE_KV_OFFLOAD_PERSIST_API_TOKEN"
 API_TIMEOUT_ENV = "VLLM_SIMPLE_KV_OFFLOAD_PERSIST_API_TIMEOUT"
 BUNDLES_ENV = "VLLM_DS4_SIMPLE_KV_BUNDLES"
+STARTUP_RESTORE_ENV = "VLLM_DS4_SIMPLE_KV_STARTUP_RESTORE"
 FORMAT_VERSION = 1
 
 
@@ -670,6 +671,10 @@ def _env_bool(name: str, default: bool) -> bool:
     if value is None:
         return default
     return value.strip().lower() not in ("0", "false", "no", "off")
+
+
+def startup_restore_enabled() -> bool:
+    return _env_bool(STARTUP_RESTORE_ENV, True)
 
 
 def _bundle_enabled() -> bool:
