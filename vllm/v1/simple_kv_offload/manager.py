@@ -34,7 +34,10 @@ from vllm.v1.simple_kv_offload.metadata import (
     SimpleCPUOffloadMetadata,
     SimpleCPUOffloadWorkerMetadata,
 )
-from vllm.v1.simple_kv_offload.persistent_disk import PersistentSimpleOffloadStore
+from vllm.v1.simple_kv_offload.persistent_disk import (
+    PersistentSimpleOffloadStore,
+    startup_restore_enabled,
+)
 
 if TYPE_CHECKING:
     from vllm.v1.core.kv_cache_manager import KVCacheBlocks
@@ -147,7 +150,7 @@ class SimpleCPUOffloadScheduler:
         )
         self._cache_refs_by_block_hash: dict[bytes, set[str]] = {}
         self._bad_persistent_block_hashes: set[str] = set()
-        if self._persistent_store is not None and _startup_restore_enabled():
+        if self._persistent_store is not None and startup_restore_enabled():
             restored = 0
             for entry in self._persistent_store.load_scheduler_entries(
                 self.num_cpu_blocks
@@ -1273,9 +1276,4 @@ def _read_unmarked_requests_enabled() -> bool:
     value = os.getenv("VLLM_DS4_SIMPLE_KV_READ_UNMARKED")
     if value is None:
         return _store_unmarked_requests_enabled()
-    return value.strip().lower() not in ("0", "false", "no", "off")
-
-
-def _startup_restore_enabled() -> bool:
-    value = os.getenv("VLLM_DS4_SIMPLE_KV_STARTUP_RESTORE", "1")
     return value.strip().lower() not in ("0", "false", "no", "off")
