@@ -95,6 +95,8 @@ class SimpleCPUOffloadWorker:
         self._pending_materialize: dict[
             int, Future[dict[int, str]] | dict[int, str]
         ] = {}
+        self._failed_load_events: set[int] = set()
+        self._load_error_block_ids: set[int] = set()
         self._pin_memory: bool = False
 
     def register_kv_caches(
@@ -367,15 +369,32 @@ class SimpleCPUOffloadWorker:
             self._materialize_executor.submit(materialize)
         )
 
-    def _finish_persistent_materialize(self, load_event: int) -> None:
+    def _finish_persistent_materialize(
+        self, load_event: int, metadata: SimpleCPUOffloadMetadata
+    ) -> bool:
         pending = self._pending_materialize.pop(load_event, None)
         if pending is None:
-            return
-        if isinstance(pending, Future):
-            restored = pending.result()
-        else:
-            restored = pending
+            return True
+        try:
+            if isinstance(pending, Future):
+                restored = pending.result()
+            else:
+                restored = pending
+        except Exception:
+            self._failed_load_events.add(load_event)
+            self._load_error_block_ids.update(
+                int(item) for item in metadata.load_gpu_blocks
+            )
+            logger.warning(
+                "SimpleCPUOffloadWorker: persistent materialize failed for "
+                "load_event=%d; reporting %d invalid GPU blocks for recompute",
+                load_event,
+                len(metadata.load_gpu_blocks),
+                exc_info=True,
+            )
+            return False
         self._persistent_known.update(restored)
+        return True
 
     def clear_connector_metadata(self) -> None:
         self._connector_metadata = None
@@ -413,14 +432,16 @@ class SimpleCPUOffloadWorker:
             # bind_connector_metadata(), before model execution. The wait here
             # normally only joins leftover I/O before CPU->GPU copy launch.
             if metadata.load_cpu_blocks:
-                self._finish_persistent_materialize(metadata.load_event)
-                self._backend.launch_copy(
-                    metadata.load_cpu_blocks,
-                    metadata.load_gpu_blocks,
-                    is_store=False,
-                    event_idx=metadata.load_event,
-                    events_list=self._load_events,
-                )
+                if self._finish_persistent_materialize(
+                    metadata.load_event, metadata
+                ):
+                    self._backend.launch_copy(
+                        metadata.load_cpu_blocks,
+                        metadata.load_gpu_blocks,
+                        is_store=False,
+                        event_idx=metadata.load_event,
+                        events_list=self._load_events,
+                    )
             # Launch stores (GPU->CPU).
             if metadata.store_gpu_blocks:
                 self._backend.launch_copy(
@@ -436,8 +457,13 @@ class SimpleCPUOffloadWorker:
 
         if self._pending_load_event_indices:
             load_wm = self._poll_stream_events(is_store=False)
-            for j in [j for j in self._pending_load_event_indices if j <= load_wm]:
+            for j in [
+                j
+                for j in self._pending_load_event_indices
+                if j <= load_wm or j in self._failed_load_events
+            ]:
                 self._pending_load_event_indices.discard(j)
+                self._failed_load_events.discard(j)
                 req_ids = (
                     metadata.load_event_to_reqs.get(j) if metadata is not None else None
                 )
@@ -460,6 +486,11 @@ class SimpleCPUOffloadWorker:
                 self._completed_store_events[j] = 1
 
         return None, finished_recving or None
+
+    def get_block_ids_with_load_errors(self) -> set[int]:
+        block_ids = set(self._load_error_block_ids)
+        self._load_error_block_ids.clear()
+        return block_ids
 
     def build_connector_worker_meta(self) -> SimpleCPUOffloadWorkerMetadata | None:
         """Return completed store events since the last call."""

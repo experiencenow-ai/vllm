@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+from concurrent.futures import Future
 from dataclasses import dataclass
 
 import pytest
@@ -40,7 +41,11 @@ from vllm.v1.kv_cache_interface import (
 from vllm.v1.outputs import KVConnectorOutput
 from vllm.v1.request import Request
 from vllm.v1.simple_kv_offload.capacity import derive_logical_cpu_block_count
-from vllm.v1.simple_kv_offload.manager import SimpleCPUOffloadScheduler
+from vllm.v1.simple_kv_offload.manager import (
+    LoadRequestState,
+    SimpleCPUOffloadScheduler,
+    TransferMeta,
+)
 from vllm.v1.simple_kv_offload.metadata import (
     SimpleCPUOffloadMetadata,
     SimpleCPUOffloadWorkerMetadata,
@@ -49,7 +54,10 @@ from vllm.v1.simple_kv_offload.persistent_api import (
     PersistentSimpleOffloadAPIClient,
 )
 from vllm.v1.simple_kv_offload.persistent_disk import PersistentSimpleOffloadStore
-from vllm.v1.simple_kv_offload.worker import _required_cpu_blocks
+from vllm.v1.simple_kv_offload.worker import (
+    SimpleCPUOffloadWorker,
+    _required_cpu_blocks,
+)
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -1633,6 +1641,48 @@ def test_persistent_store_restores_worker_blocks_lazily(tmp_path) -> None:
     assert cpu_kv_caches["kv"][2].tolist() == [7.0, 8.0]
 
 
+def test_persistent_store_drops_missing_worker_block_index(tmp_path) -> None:
+    """A stale index entry must not poison future persistent lookups."""
+    store = PersistentSimpleOffloadStore(
+        root=tmp_path,
+        rank_key="rank0",
+        model_key="model",
+        num_cpu_blocks=4,
+        strict=True,
+        tensor_names=["kv"],
+    )
+    cpu_kv_caches = {"kv": torch.zeros((4, 2), dtype=torch.float16)}
+    hash_hex = "ab" * 32
+    cpu_kv_caches["kv"][2] = torch.tensor([7, 8], dtype=torch.float16)
+    store.persist_worker_blocks(cpu_kv_caches, [2], [hash_hex])
+    store._block_path(hash_hex).unlink()
+
+    with pytest.raises(RuntimeError, match="persistent CPU offload block missing"):
+        store.ensure_worker_blocks(cpu_kv_caches, [2], [hash_hex], {})
+
+    assert store.load_worker_entries(4) == []
+
+
+def test_worker_persistent_materialize_failure_reports_invalid_blocks() -> None:
+    worker = object.__new__(SimpleCPUOffloadWorker)
+    failed = Future()
+    failed.set_exception(RuntimeError("missing block"))
+    worker._pending_materialize = {7: failed}
+    worker._failed_load_events = set()
+    worker._load_error_block_ids = set()
+    metadata = SimpleCPUOffloadMetadata(
+        load_event=7,
+        load_gpu_blocks=[11, 12],
+        load_cpu_blocks=[1, 2],
+        load_block_hashes=["ab" * 32, "cd" * 32],
+    )
+
+    assert worker._finish_persistent_materialize(7, metadata) is False
+    assert worker._failed_load_events == {7}
+    assert worker.get_block_ids_with_load_errors() == {11, 12}
+    assert worker.get_block_ids_with_load_errors() == set()
+
+
 def test_persistent_api_materializes_and_commits_payload_paths(tmp_path) -> None:
     """Cache API uses service-provided file handles for tensor payloads."""
 
@@ -1747,6 +1797,36 @@ def test_persistent_api_lookup_seeds_scheduler_hits(monkeypatch) -> None:
         make_scheduler_output({req.request_id: 1})
     )
     assert meta.load_cache_refs == ["bundle-1", "bundle-1"]
+
+
+def test_scheduler_blacklists_failed_persistent_load_hits() -> None:
+    fix = make_scheduler(num_cpu_blocks=8, num_gpu_blocks=16, lazy=False)
+    sched = fix.scheduler
+    req = make_request(num_blocks=1)
+    hash_hex = "ab" * 32
+    block_hash = make_block_hash_with_group_id(bytes.fromhex(hash_hex), 0)
+    cpu_block = sched.cpu_block_pool.blocks[2]
+    cpu_block.block_hash = block_hash
+    sched.cpu_block_pool.cached_block_hash_to_block.insert(block_hash, cpu_block)
+    sched._cache_refs_by_block_hash[bytes.fromhex(hash_hex)] = {"bundle-1"}
+    sched._reqs_to_load[req.request_id] = LoadRequestState(
+        request=req,
+        transfer_meta=TransferMeta(
+            gpu_block_ids=[5],
+            cpu_block_ids=[2],
+            block_hashes=[hash_hex],
+            cache_refs=["bundle-1"],
+        ),
+        load_event=3,
+    )
+
+    sched._mark_invalid_load_blocks({5})
+
+    assert hash_hex in sched._bad_persistent_block_hashes
+    assert sched.cpu_block_pool.cached_block_hash_to_block.get_one_block(
+        block_hash
+    ) is None
+    assert bytes.fromhex(hash_hex) not in sched._cache_refs_by_block_hash
 
 
 def test_required_ds4_cache_miss_fails_before_scheduling() -> None:
