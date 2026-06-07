@@ -334,6 +334,8 @@ class SimpleCPUOffloadScheduler:
         max_hit_len = request.num_tokens - num_computed_tokens
         if max_hit_len <= 0:
             return tuple(), 0, cache_ref
+        if not _request_can_read_cpu_cache(request, cache_ref):
+            return tuple(), 0, cache_ref
         self._seed_persistent_hits(remaining_hashes, max_hit_len, cache_ref)
         cpu_hit_blocks, hit_length = self.cpu_coordinator.find_longest_cache_hit(
             remaining_hashes, max_hit_len
@@ -1230,6 +1232,10 @@ def _request_cache_ref(request: "Request") -> str | None:
     return None
 
 
+def _request_can_read_cpu_cache(request: "Request", cache_ref: str | None) -> bool:
+    return cache_ref is not None or _read_unmarked_requests_enabled()
+
+
 def _request_requires_strict_load(request: "Request") -> bool:
     params = request.kv_transfer_params
     if not isinstance(params, dict):
@@ -1260,6 +1266,13 @@ def _request_wants_store(request: "Request") -> bool:
 
 def _store_unmarked_requests_enabled() -> bool:
     value = os.getenv("VLLM_DS4_SIMPLE_KV_STORE_UNMARKED", "1")
+    return value.strip().lower() not in ("0", "false", "no", "off")
+
+
+def _read_unmarked_requests_enabled() -> bool:
+    value = os.getenv("VLLM_DS4_SIMPLE_KV_READ_UNMARKED")
+    if value is None:
+        return _store_unmarked_requests_enabled()
     return value.strip().lower() not in ("0", "false", "no", "off")
 
 

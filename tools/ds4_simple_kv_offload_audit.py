@@ -82,6 +82,15 @@ def main() -> None:
         ],
     )
     _require(
+        "scheduler only reads unmarked CPU cache when explicitly enabled",
+        "vllm/v1/simple_kv_offload/manager.py",
+        [
+            "_request_can_read_cpu_cache",
+            "_read_unmarked_requests_enabled",
+            "VLLM_DS4_SIMPLE_KV_READ_UNMARKED",
+        ],
+    )
+    _require(
         "persistent cache startup restore can be disabled for DS4 services",
         "vllm/v1/simple_kv_offload/manager.py",
         [
