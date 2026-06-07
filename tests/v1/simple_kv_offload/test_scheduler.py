@@ -1799,6 +1799,33 @@ def test_persistent_api_lookup_seeds_scheduler_hits(monkeypatch) -> None:
     assert meta.load_cache_refs == ["bundle-1", "bundle-1"]
 
 
+def test_unmarked_requests_skip_cpu_cache_when_disabled(monkeypatch) -> None:
+    """DS4 can require cache refs before SimpleCPUOffload serves CPU hits."""
+    monkeypatch.setenv("VLLM_DS4_SIMPLE_KV_STORE_UNMARKED", "0")
+    monkeypatch.setenv("VLLM_DS4_SIMPLE_KV_READ_UNMARKED", "0")
+    fix = make_scheduler(num_cpu_blocks=8, num_gpu_blocks=16, lazy=False)
+    sched = fix.scheduler
+    req = make_request(num_blocks=2)
+    block_hash = make_block_hash_with_group_id(req.block_hashes[0], 0)
+    cpu_block = sched.cpu_block_pool.blocks[2]
+    cpu_block.block_hash = block_hash
+    sched.cpu_block_pool.cached_block_hash_to_block.insert(block_hash, cpu_block)
+    sched._cache_refs_by_block_hash[block_hash] = {"bundle-1"}
+
+    hit_tokens, is_async = sched.get_num_new_matched_tokens(
+        req, num_computed_tokens=0
+    )
+    assert hit_tokens == 0
+    assert is_async is False
+
+    req.kv_transfer_params = {"cache_ref": "bundle-1"}
+    hit_tokens, is_async = sched.get_num_new_matched_tokens(
+        req, num_computed_tokens=0
+    )
+    assert hit_tokens == BLOCK_SIZE
+    assert is_async is True
+
+
 def test_scheduler_blacklists_failed_persistent_load_hits() -> None:
     fix = make_scheduler(num_cpu_blocks=8, num_gpu_blocks=16, lazy=False)
     sched = fix.scheduler
