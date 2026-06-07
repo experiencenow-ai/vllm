@@ -467,6 +467,9 @@ def sparse_attn_indexer(
                     q_quant[:num_decode_tokens], decode_lens
                 )
                 padded_q_scale = None
+            padded_weights_decode_tokens = pack_seq_triton(
+                weights[:num_decode_tokens], decode_lens, pad_value=0
+            )
         else:
             padded_q_quant_decode_tokens = q_quant[:num_decode_tokens].reshape(
                 decode_lens.shape[0], -1, *q_quant.shape[1:]
@@ -477,6 +480,9 @@ def sparse_attn_indexer(
                 )
             else:
                 padded_q_scale = None
+            padded_weights_decode_tokens = weights[:num_decode_tokens].reshape(
+                decode_lens.shape[0], -1, weights.shape[-1]
+            )
         # TODO: move and optimize below logic with triton kernels
         batch_size = padded_q_quant_decode_tokens.shape[0]
         next_n = padded_q_quant_decode_tokens.shape[1]
@@ -498,6 +504,10 @@ def sparse_attn_indexer(
             else padded_q_quant_decode_tokens
         )
         topk_indices = topk_indices_buffer[:num_padded_tokens, :topk_tokens]
+        topk_indices.fill_(-1)
+        padded_weights = padded_weights_decode_tokens.reshape(
+            num_padded_tokens, weights.shape[-1]
+        )
         logits_width = _decode_topk_logits_width(
             max_model_len, attn_metadata_narrowed.max_seq_len, topk_tokens
         )
@@ -510,7 +520,7 @@ def sparse_attn_indexer(
             used_direct_topk = fp8_fp4_paged_mqa_topk_indices(
                 (padded_q_quant_cast, padded_q_scale),
                 kv_cache,
-                weights[:num_padded_tokens],
+                padded_weights,
                 seq_lens,
                 decode_metadata.block_table,
                 logits_width,
@@ -529,7 +539,7 @@ def sparse_attn_indexer(
                 logits = torch.ops.vllm.xpu_fp8_paged_mqa_logits(
                     padded_q_quant_cast,
                     kv_cache,
-                    weights[:num_padded_tokens],
+                    padded_weights,
                     seq_lens_xpu,
                     decode_metadata.block_table,
                     decode_metadata.schedule_metadata,
@@ -539,7 +549,7 @@ def sparse_attn_indexer(
                 logits = fp8_fp4_paged_mqa_logits(
                     (padded_q_quant_cast, padded_q_scale),
                     kv_cache,
-                    weights[:num_padded_tokens],
+                    padded_weights,
                     seq_lens,
                     decode_metadata.block_table,
                     decode_metadata.schedule_metadata,
