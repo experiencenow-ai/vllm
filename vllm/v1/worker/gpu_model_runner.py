@@ -4677,7 +4677,10 @@ class GPUModelRunner(
             "PP+async expects sampled_token_ids to have shape [num_reqs, 1]"
         )
         num_reqs = int(sampled_token_ids.shape[0])
-        has_payload = not self._is_all_reqs_chunked_prefill()
+        valid_rows_np = np.logical_not(
+            self.discard_request_mask.np[:num_reqs].astype(bool, copy=False)
+        )
+        has_payload = bool(valid_rows_np.any())
         meta = torch.tensor(
             [num_reqs, 1 if has_payload else 0],
             dtype=torch.int64,
@@ -4694,9 +4697,17 @@ class GPUModelRunner(
             dtype=torch.int64,
             device=self.device,
         )
+        broadcast_valid_rows = torch.tensor(
+            valid_rows_np.astype(np.int64, copy=False),
+            dtype=torch.int64,
+            device=self.device,
+        )
         broadcast_tokens = sampled_token_ids.to(dtype=torch.int32).contiguous().clone()
         torch.distributed.broadcast(
             broadcast_hashes, src=pp.rank, group=pp.device_group
+        )
+        torch.distributed.broadcast(
+            broadcast_valid_rows, src=pp.rank, group=pp.device_group
         )
         torch.distributed.broadcast(
             broadcast_tokens, src=pp.rank, group=pp.device_group
@@ -4724,9 +4735,15 @@ class GPUModelRunner(
         remote_hashes = torch.empty(
             (num_reqs, 2), dtype=torch.int64, device=self.device
         )
+        remote_valid_rows = torch.empty(
+            (num_reqs,), dtype=torch.int64, device=self.device
+        )
         recv = torch.empty((num_reqs, 1), dtype=torch.int32, device=self.device)
         torch.distributed.broadcast(
             remote_hashes, src=pp.last_rank, group=pp.device_group
+        )
+        torch.distributed.broadcast(
+            remote_valid_rows, src=pp.last_rank, group=pp.device_group
         )
         torch.distributed.broadcast(recv, src=pp.last_rank, group=pp.device_group)
         reorder_indices = self._pp_async_prev_sampled_token_reorder_indices(
@@ -4737,15 +4754,15 @@ class GPUModelRunner(
                 reorder_indices, dtype=torch.int64, device=self.device
             )
             recv = recv.index_select(0, reorder_tensor)
+            remote_valid_rows = remote_valid_rows.index_select(0, reorder_tensor)
         self.input_batch.prev_sampled_token_ids = recv
 
         # construct `prev_req_id_to_index` here so `_prepare_input_ids`
         # can map req_id -> previous batch row
-        discard_req_indices = np.nonzero(self.discard_request_mask.np[:num_reqs])[0]
-        discard_req_indices_set = set(discard_req_indices)
+        valid_rows = [bool(v) for v in remote_valid_rows.cpu().tolist()]
         prev_req_id_to_index: dict[str, int] = {}
         for i, req_id in enumerate(self.input_batch.req_ids[:num_reqs]):
-            if i in discard_req_indices_set:
+            if not valid_rows[i]:
                 continue
             prev_req_id_to_index[req_id] = i
             # PP+async scheduling: advance per-request local cached output length by
