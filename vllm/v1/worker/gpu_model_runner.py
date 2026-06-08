@@ -3,6 +3,7 @@
 
 import functools
 import gc
+import hashlib
 import itertools
 import os
 import threading
@@ -4685,7 +4686,18 @@ class GPUModelRunner(
         torch.distributed.broadcast(meta, src=pp.rank, group=pp.device_group)
         if not has_payload:
             return
+        req_id_hashes = self._pp_async_req_id_hashes(
+            self.input_batch.req_ids[:num_reqs]
+        )
+        broadcast_hashes = torch.tensor(
+            req_id_hashes,
+            dtype=torch.int64,
+            device=self.device,
+        )
         broadcast_tokens = sampled_token_ids.to(dtype=torch.int32).contiguous().clone()
+        torch.distributed.broadcast(
+            broadcast_hashes, src=pp.rank, group=pp.device_group
+        )
         torch.distributed.broadcast(
             broadcast_tokens, src=pp.rank, group=pp.device_group
         )
@@ -4709,8 +4721,22 @@ class GPUModelRunner(
             self.input_batch.prev_sampled_token_ids = None
             self.input_batch.prev_req_id_to_index = {}
             return
+        remote_hashes = torch.empty(
+            (num_reqs, 2), dtype=torch.int64, device=self.device
+        )
         recv = torch.empty((num_reqs, 1), dtype=torch.int32, device=self.device)
+        torch.distributed.broadcast(
+            remote_hashes, src=pp.last_rank, group=pp.device_group
+        )
         torch.distributed.broadcast(recv, src=pp.last_rank, group=pp.device_group)
+        reorder_indices = self._pp_async_prev_sampled_token_reorder_indices(
+            remote_hashes.cpu().tolist(), self.input_batch.req_ids[:num_reqs], pp.rank
+        )
+        if reorder_indices is not None:
+            reorder_tensor = torch.tensor(
+                reorder_indices, dtype=torch.int64, device=self.device
+            )
+            recv = recv.index_select(0, reorder_tensor)
         self.input_batch.prev_sampled_token_ids = recv
 
         # construct `prev_req_id_to_index` here so `_prepare_input_ids`
@@ -4718,7 +4744,7 @@ class GPUModelRunner(
         discard_req_indices = np.nonzero(self.discard_request_mask.np[:num_reqs])[0]
         discard_req_indices_set = set(discard_req_indices)
         prev_req_id_to_index: dict[str, int] = {}
-        for i, req_id in enumerate(self.input_batch.req_ids):
+        for i, req_id in enumerate(self.input_batch.req_ids[:num_reqs]):
             if i in discard_req_indices_set:
                 continue
             prev_req_id_to_index[req_id] = i
@@ -4730,6 +4756,50 @@ class GPUModelRunner(
             self.input_batch.is_token_ids[i, pos] = True
             self.input_batch.num_tokens_no_spec[i] = pos + 1
         self.input_batch.prev_req_id_to_index = prev_req_id_to_index
+
+    @staticmethod
+    @functools.lru_cache(maxsize=16384)
+    def _pp_async_req_id_hash(req_id: str) -> tuple[int, int]:
+        digest = hashlib.blake2b(req_id.encode("utf-8"), digest_size=16).digest()
+        return (
+            int.from_bytes(digest[:8], "little", signed=True),
+            int.from_bytes(digest[8:], "little", signed=True),
+        )
+
+    @classmethod
+    def _pp_async_req_id_hashes(cls, req_ids: Sequence[str]) -> list[tuple[int, int]]:
+        return [cls._pp_async_req_id_hash(req_id) for req_id in req_ids]
+
+    @classmethod
+    def _pp_async_prev_sampled_token_reorder_indices(
+        cls,
+        remote_hashes: list[list[int]],
+        local_req_ids: Sequence[str],
+        pp_rank: int,
+    ) -> list[int] | None:
+        local_hashes = cls._pp_async_req_id_hashes(local_req_ids)
+        remote_by_hash: dict[tuple[int, int], int] = {}
+        for index, raw_hash in enumerate(remote_hashes):
+            key = (int(raw_hash[0]), int(raw_hash[1]))
+            if key in remote_by_hash:
+                raise RuntimeError(
+                    "PP+async sampled-token broadcast duplicate request-id "
+                    f"fingerprint from last PP rank: {key}"
+                )
+            remote_by_hash[key] = index
+        reorder_indices: list[int] = []
+        for local_index, key in enumerate(local_hashes):
+            remote_index = remote_by_hash.get(key)
+            if remote_index is None:
+                raise RuntimeError(
+                    "PP+async sampled-token broadcast request-id mismatch: "
+                    f"rank {pp_rank} local request at row {local_index} is "
+                    "not present on the last PP rank"
+                )
+            reorder_indices.append(remote_index)
+        if all(index == expected for expected, index in enumerate(reorder_indices)):
+            return None
+        return reorder_indices
 
     def take_draft_token_ids(self) -> DraftTokenIds | None:
         if not self.num_spec_tokens or not self._draft_token_req_ids:
