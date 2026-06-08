@@ -2,6 +2,7 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
 import enum
+import os
 import time
 from collections import deque
 from collections.abc import Callable, Mapping
@@ -27,6 +28,13 @@ from vllm.v1.utils import ConstantList
 if TYPE_CHECKING:
     from vllm.lora.request import LoRARequest
     from vllm.v1.core.kv_cache_utils import BlockHash
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in ("1", "true", "yes", "on")
 
 
 @dataclass
@@ -266,6 +274,8 @@ class Request:
             and self.pooling_params.skip_reading_prefix_cache is not None
         ):
             return self.pooling_params.skip_reading_prefix_cache
+        if _env_bool("VLLM_DS4_SKIP_LOCAL_PREFIX_CACHE_READ"):
+            return True
         return False
 
     def is_finished(self) -> bool:
