@@ -264,6 +264,8 @@ class Request:
         return self.num_encoder_inputs > 0
 
     def get_skip_reading_prefix_cache(self) -> bool:
+        if _env_bool("VLLM_DS4_SKIP_LOCAL_PREFIX_CACHE_READ"):
+            return True
         if (
             self.sampling_params is not None
             and self.sampling_params.skip_reading_prefix_cache is not None
@@ -274,8 +276,6 @@ class Request:
             and self.pooling_params.skip_reading_prefix_cache is not None
         ):
             return self.pooling_params.skip_reading_prefix_cache
-        if _env_bool("VLLM_DS4_SKIP_LOCAL_PREFIX_CACHE_READ"):
-            return True
         return False
 
     def is_finished(self) -> bool:
