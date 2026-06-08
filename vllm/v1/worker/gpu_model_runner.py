@@ -3293,6 +3293,9 @@ class GPUModelRunner(
         # QKV + Attention needs the full residual before the SP split point.
         if sync_self:
             assert intermediate_tensors is not None
+            wait_for_comm = getattr(intermediate_tensors, "wait_for_comm", None)
+            if wait_for_comm is not None:
+                wait_for_comm()
             for k, v in intermediate_tensors.items():
                 is_scattered = k == "residual" and is_rs
                 if is_scattered:
