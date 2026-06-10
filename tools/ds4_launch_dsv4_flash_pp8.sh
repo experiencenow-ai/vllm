@@ -1,0 +1,687 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+NNODES="${NNODES:-8}"
+: "${NODE_RANK:?set NODE_RANK to the local pipeline rank}"
+: "${HEAD_ADDR:?set HEAD_ADDR to the rank-0 Spark private IP or hostname}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/ds4_200g_guard.sh"
+MASTER_PORT="${MASTER_PORT:-29544}"
+API_PORT="${API_PORT:-8102}"
+MODEL="${DSV4_FLASH_MODEL:-/home/$USER/models/hf/deepseek-ai/DeepSeek-V4-Flash}"
+DSV4_SERVED_MODEL_NAME="${DSV4_SERVED_MODEL_NAME:-deepseek-v4-flash-pp${NNODES}}"
+RUNTIME_PYTHON="${DS4_VLLM_PYTHON:-/home/$USER/ds4-vllm-local/bin/python}"
+SOURCE_ROOT="${DS4_VLLM_SOURCE_ROOT:-/home/$USER/src/vllm}"
+DS4_DSV4_PIPELINE_RAM_PROFILE="${DS4_DSV4_PIPELINE_RAM_PROFILE:-resident3}"
+DEFAULT_SPECULATIVE_CONFIG="{\"model\":\"$MODEL\",\"num_speculative_tokens\":2,\"method\":\"deepseek_mtp\"}"
+DSV4_LINEAR_BACKEND="${DSV4_LINEAR_BACKEND:-auto}"
+DSV4_MOE_BACKEND="${DSV4_MOE_BACKEND:-auto}"
+DSV4_MTP_MODE="${DSV4_MTP_MODE:-off}"
+ds4_default_pp_partition()
+{
+  if [[ -n "${DSV4_FLASH_PP_LAYER_PARTITION:-}" ]]; then
+    return
+  fi
+  if (( NNODES < 1 || NNODES > 43 )); then
+    echo "NNODES must be between 1 and 43 to derive a DSV4 PP layer partition, got $NNODES" >&2
+    exit 1
+  fi
+  local base=$((43 / NNODES))
+  local rem=$((43 % NNODES))
+  local parts=()
+  local i count
+  for ((i=0; i<NNODES; i++)); do
+    count="$base"
+    if (( i < rem )); then
+      count=$((count + 1))
+    fi
+    parts+=("$count")
+  done
+  DSV4_FLASH_PP_LAYER_PARTITION="$(IFS=,; echo "${parts[*]}")"
+}
+case "$DS4_DSV4_PIPELINE_RAM_PROFILE" in
+  resident3|compact|COMPACT)
+    : "${DSV4_MAX_MODEL_LEN:=65536}"
+    : "${DSV4_MAX_NUM_SEQS:=8}"
+    : "${DSV4_MAX_NUM_BATCHED_TOKENS:=4096}"
+    : "${DSV4_KV_CACHE_MEMORY_BYTES:=4294967296}"
+    : "${DSV4_MIN_KV_CACHE_MEMORY_BYTES:=1073741824}"
+    : "${DSV4_KV_OFFLOADING_SIZE:=2}"
+    : "${DSV4_GPU_MEMORY_UTILIZATION:=0.20}"
+    : "${DSV4_WORKSPACE_PREALLOC_BYTES:=536870912}"
+    : "${DSV4_CUDAGRAPH_CAPTURE_SIZES:=1,2,4,8}"
+    : "${DSV4_MAX_CUDAGRAPH_CAPTURE_SIZE:=8}"
+    ds4_default_pp_partition
+    ;;
+  resident128|RESIDENT128|resident-128|RESIDENT-128)
+    : "${DSV4_MAX_MODEL_LEN:=65536}"
+    : "${DSV4_MAX_NUM_SEQS:=128}"
+    : "${DSV4_MAX_NUM_BATCHED_TOKENS:=16384}"
+    : "${DSV4_KV_CACHE_MEMORY_BYTES:=8589934592}"
+    : "${DSV4_MIN_KV_CACHE_MEMORY_BYTES:=2147483648}"
+    : "${DSV4_KV_OFFLOADING_SIZE:=2}"
+    : "${DSV4_GPU_MEMORY_UTILIZATION:=0.30}"
+    : "${DSV4_WORKSPACE_PREALLOC_BYTES:=536870912}"
+    : "${DSV4_CUDAGRAPH_CAPTURE_SIZES:=1,2,4,8,16,32,64,128}"
+    : "${DSV4_MAX_CUDAGRAPH_CAPTURE_SIZE:=128}"
+    : "${DSV4_SCHED_MAX_NEW_REQS_PER_STEP:=128}"
+    : "${DSV4_SCHED_MAX_NEW_PREFILL_TOKENS_PER_STEP:=16384}"
+    : "${DSV4_SCHED_KV_ADMISSION_MAX_USAGE:=0.82}"
+    : "${DSV4_SCHED_KV_HARD_FAIL_USAGE:=0.95}"
+    ds4_default_pp_partition
+    ;;
+  tight|TIGHT|resident3-tight)
+    : "${DSV4_MAX_MODEL_LEN:=32768}"
+    : "${DSV4_MAX_NUM_SEQS:=4}"
+    : "${DSV4_MAX_NUM_BATCHED_TOKENS:=4096}"
+    : "${DSV4_KV_CACHE_MEMORY_BYTES:=3221225472}"
+    : "${DSV4_MIN_KV_CACHE_MEMORY_BYTES:=536870912}"
+    : "${DSV4_KV_OFFLOADING_SIZE:=1}"
+    : "${DSV4_GPU_MEMORY_UTILIZATION:=0.18}"
+    : "${DSV4_WORKSPACE_PREALLOC_BYTES:=134217728}"
+    : "${DSV4_CUDAGRAPH_CAPTURE_SIZES:=1,2,4}"
+    : "${DSV4_MAX_CUDAGRAPH_CAPTURE_SIZE:=4}"
+    ds4_default_pp_partition
+    ;;
+  balanced|BALANCED|perf|PERF|performance|PERFORMANCE)
+    : "${DSV4_MAX_MODEL_LEN:=65536}"
+    : "${DSV4_MAX_NUM_SEQS:=8}"
+    : "${DSV4_MAX_NUM_BATCHED_TOKENS:=8192}"
+    : "${DSV4_KV_CACHE_MEMORY_BYTES:=12884901888}"
+    : "${DSV4_MIN_KV_CACHE_MEMORY_BYTES:=2147483648}"
+    : "${DSV4_KV_OFFLOADING_SIZE:=8}"
+    : "${DSV4_GPU_MEMORY_UTILIZATION:=0.30}"
+    : "${DSV4_WORKSPACE_PREALLOC_BYTES:=536870912}"
+    : "${DSV4_CUDAGRAPH_CAPTURE_SIZES:=1,2,4,8}"
+    : "${DSV4_MAX_CUDAGRAPH_CAPTURE_SIZE:=8}"
+    ds4_default_pp_partition
+    ;;
+  throughput|THROUGHPUT|api-throughput|API-THROUGHPUT)
+    : "${DSV4_MAX_MODEL_LEN:=65536}"
+    : "${DSV4_MAX_NUM_SEQS:=128}"
+    : "${DSV4_MAX_NUM_BATCHED_TOKENS:=131072}"
+    : "${DSV4_KV_CACHE_MEMORY_BYTES:=34359738368}"
+    : "${DSV4_MIN_KV_CACHE_MEMORY_BYTES:=6442450944}"
+    : "${DSV4_KV_OFFLOADING_SIZE:=8}"
+    : "${DSV4_GPU_MEMORY_UTILIZATION:=0.60}"
+    : "${DSV4_WORKSPACE_PREALLOC_BYTES:=1610612736}"
+    : "${DSV4_CUDAGRAPH_CAPTURE_SIZES:=1,2,4,8,16,32,64,128}"
+    : "${DSV4_MAX_CUDAGRAPH_CAPTURE_SIZE:=128}"
+    : "${DSV4_SCHED_MAX_NEW_REQS_PER_STEP:=64}"
+    : "${DSV4_SCHED_MAX_NEW_PREFILL_TOKENS_PER_STEP:=65536}"
+    : "${DSV4_SCHED_KV_ADMISSION_MAX_USAGE:=0.82}"
+    : "${DSV4_SCHED_KV_HARD_FAIL_USAGE:=0.97}"
+    : "${DSV4_SKIP_LAST_RANK_SAMPLER_WARMUP:=0}"
+    ds4_default_pp_partition
+    ;;
+  max-kv|MAX-KV|max-length|MAX-LENGTH|max-throughput|MAX-THROUGHPUT|batch512|BATCH512)
+    : "${DSV4_MAX_MODEL_LEN:=262144}"
+    : "${DSV4_MAX_NUM_SEQS:=512}"
+    : "${DSV4_MAX_NUM_BATCHED_TOKENS:=262144}"
+    : "${DSV4_KV_CACHE_MEMORY_BYTES:=51539607552}"
+    : "${DSV4_MIN_KV_CACHE_MEMORY_BYTES:=6442450944}"
+    : "${DSV4_KV_OFFLOADING_SIZE:=8}"
+    : "${DSV4_GPU_MEMORY_UTILIZATION:=0.70}"
+    : "${DSV4_WORKSPACE_PREALLOC_BYTES:=2147483648}"
+    : "${DSV4_CUDAGRAPH_CAPTURE_SIZES:=1,2,4,8,16,32,64,128,256,512}"
+    : "${DSV4_MAX_CUDAGRAPH_CAPTURE_SIZE:=512}"
+    : "${DSV4_SCHED_MAX_NEW_REQS_PER_STEP:=64}"
+    : "${DSV4_SCHED_MAX_NEW_PREFILL_TOKENS_PER_STEP:=65536}"
+    : "${DSV4_SCHED_KV_ADMISSION_MAX_USAGE:=0.82}"
+    : "${DSV4_SCHED_KV_HARD_FAIL_USAGE:=0.95}"
+    : "${DSV4_SKIP_LAST_RANK_SAMPLER_WARMUP:=0}"
+    ds4_default_pp_partition
+    ;;
+  *)
+    echo "Unsupported DS4_DSV4_PIPELINE_RAM_PROFILE=$DS4_DSV4_PIPELINE_RAM_PROFILE; expected max-kv, max-length, max-throughput, throughput, resident128, resident3, tight, balanced, or perf" >&2
+    exit 1
+    ;;
+esac
+DEFAULT_COMPILATION_CONFIG="{\"cudagraph_mode\":\"FULL_AND_PIECEWISE\",\"custom_ops\":[\"all\"],\"cudagraph_capture_sizes\":[$DSV4_CUDAGRAPH_CAPTURE_SIZES],\"max_cudagraph_capture_size\":$DSV4_MAX_CUDAGRAPH_CAPTURE_SIZE,\"cudagraph_copy_inputs\":true}"
+DSV4_COMPILATION_CONFIG="${DSV4_COMPILATION_CONFIG:-$DEFAULT_COMPILATION_CONFIG}"
+ASYNC_SCHEDULING_ARGS=(--no-async-scheduling)
+PREFIX_CACHING_ARGS=()
+if [[ "${DSV4_ENABLE_ASYNC_SCHEDULING_EXPERIMENTAL:-0}" =~ ^(1|true|TRUE|yes|YES|on|ON)$ ]]; then
+  echo "DSV4 PP async scheduling is disabled until the sync PP pipeline is stable; unset DSV4_ENABLE_ASYNC_SCHEDULING_EXPERIMENTAL." >&2
+  exit 64
+fi
+case "${DSV4_ENABLE_PREFIX_CACHING:-1}" in
+  1|true|TRUE|yes|YES|on|ON)
+    export DSV4_ENABLE_PREFIX_CACHING=1
+    PREFIX_CACHING_ARGS=(--enable-prefix-caching)
+    ;;
+  0|false|FALSE|no|NO|off|OFF)
+    export DSV4_ENABLE_PREFIX_CACHING=0
+    PREFIX_CACHING_ARGS=(--no-enable-prefix-caching)
+    ;;
+  *)
+    echo "Unsupported DSV4_ENABLE_PREFIX_CACHING=${DSV4_ENABLE_PREFIX_CACHING}; expected 0/1 or true/false" >&2
+    exit 64
+    ;;
+esac
+SPECULATIVE_ARGS=()
+DSV4_MTP_REQUESTED=0
+if [[ "$DSV4_MTP_MODE" != "off" && "$DSV4_MTP_MODE" != "OFF" && "$DSV4_MTP_MODE" != "none" && "$DSV4_MTP_MODE" != "NONE" ]]; then
+  DSV4_MTP_REQUESTED=1
+fi
+if [[ "${DSV4_ENABLE_MTP:-0}" =~ ^(1|true|TRUE|yes|YES|on|ON)$ ]]; then
+  DSV4_MTP_REQUESTED=1
+fi
+if [[ "${DSV4_DISABLE_MTP:-0}" =~ ^(1|true|TRUE|yes|YES|on|ON)$ ]]; then
+  DSV4_MTP_REQUESTED=0
+fi
+if [[ "$DSV4_MTP_REQUESTED" == "1" ]]; then
+  case "$DSV4_MTP_MODE" in
+    chat_single|single_chat|latency_chat)
+      ;;
+    *)
+      echo "DSV4 MTP is reserved for single-request chat latency mode." >&2
+      echo "Set DSV4_MTP_MODE=chat_single and DSV4_MAX_NUM_SEQS=1 to enable it." >&2
+      exit 2
+      ;;
+  esac
+  if [[ "$DSV4_MAX_NUM_SEQS" != "1" ]]; then
+    echo "DSV4 MTP requires DSV4_MAX_NUM_SEQS=1; got $DSV4_MAX_NUM_SEQS." >&2
+    echo "Batch/throughput PP profiles must keep MTP off." >&2
+    exit 2
+  fi
+  SPECULATIVE_ARGS=(--speculative-config "${DSV4_SPECULATIVE_CONFIG:-$DEFAULT_SPECULATIVE_CONFIG}")
+fi
+ds4_set_flashinfer_autotune_args DS4_ENABLE_FLASHINFER_AUTOTUNE
+
+export PYTHONPATH="$SOURCE_ROOT${PYTHONPATH:+:$PYTHONPATH}"
+export PATH="$(dirname "$RUNTIME_PYTHON"):$PATH"
+DS4_VLLM_RUNNER="${DS4_VLLM_RUNNER:-$SOURCE_ROOT/tools/ds4_run_vllm_from_source.py}"
+
+export VLLM_DS4_PROFILE_DEBUG="${VLLM_DS4_PROFILE_DEBUG:-0}"
+export VLLM_DS4_PROFILE_WATCHDOG_SECONDS="${VLLM_DS4_PROFILE_WATCHDOG_SECONDS:-120}"
+export VLLM_DS4_PROFILE_ABORT_SECONDS="${VLLM_DS4_PROFILE_ABORT_SECONDS:-600}"
+export VLLM_DS4_PROFILE_RUN_MAX_TOKENS="${VLLM_DS4_PROFILE_RUN_MAX_TOKENS:-512}"
+export VLLM_DS4_SKIP_EXPLICIT_KV_PROFILE_RUN="${VLLM_DS4_SKIP_EXPLICIT_KV_PROFILE_RUN:-1}"
+export VLLM_DS4_PROFILE_SKIP_DUMMY_SAMPLER="${VLLM_DS4_PROFILE_SKIP_DUMMY_SAMPLER:-1}"
+export VLLM_DS4_SKIP_LAST_RANK_SAMPLER_WARMUP="${VLLM_DS4_SKIP_LAST_RANK_SAMPLER_WARMUP:-${DSV4_SKIP_LAST_RANK_SAMPLER_WARMUP:-1}}"
+export VLLM_WORKSPACE_PREALLOC_BYTES="${VLLM_WORKSPACE_PREALLOC_BYTES:-$DSV4_WORKSPACE_PREALLOC_BYTES}"
+export VLLM_DS4_COHORT_ADMISSION="${VLLM_DS4_COHORT_ADMISSION:-1}"
+export VLLM_DS4_COHORT_ADMISSION_MIN_PROMPTS="${VLLM_DS4_COHORT_ADMISSION_MIN_PROMPTS:-2}"
+export VLLM_DS4_COHORT_PAUSE_DURING_ADMISSION="${VLLM_DS4_COHORT_PAUSE_DURING_ADMISSION:-1}"
+export VLLM_DS4_FINAL_ONLY_NONSTREAMING="${VLLM_DS4_FINAL_ONLY_NONSTREAMING:-1}"
+export VLLM_DS4_VALIDATE_INPUT_IDS="${VLLM_DS4_VALIDATE_INPUT_IDS:-1}"
+export VLLM_DS4_DSV4_PP_FLUSH_HC_BOUNDARY="${VLLM_DS4_DSV4_PP_FLUSH_HC_BOUNDARY:-0}"
+export VLLM_DS4_SCHED_MAX_NEW_REQS_PER_STEP="${VLLM_DS4_SCHED_MAX_NEW_REQS_PER_STEP:-${DSV4_SCHED_MAX_NEW_REQS_PER_STEP:-32}}"
+export VLLM_DS4_SCHED_MAX_NEW_PREFILL_TOKENS_PER_STEP="${VLLM_DS4_SCHED_MAX_NEW_PREFILL_TOKENS_PER_STEP:-${DSV4_SCHED_MAX_NEW_PREFILL_TOKENS_PER_STEP:-$DSV4_MAX_NUM_BATCHED_TOKENS}}"
+export VLLM_DS4_SCHED_KV_ADMISSION_MAX_USAGE="${VLLM_DS4_SCHED_KV_ADMISSION_MAX_USAGE:-${DSV4_SCHED_KV_ADMISSION_MAX_USAGE:-0}}"
+export VLLM_DS4_SCHED_KV_HARD_FAIL_USAGE="${VLLM_DS4_SCHED_KV_HARD_FAIL_USAGE:-${DSV4_SCHED_KV_HARD_FAIL_USAGE:-0}}"
+export VLLM_DS4_SCHED_KV_PRESSURE_LOG_INTERVAL_S="${VLLM_DS4_SCHED_KV_PRESSURE_LOG_INTERVAL_S:-${DSV4_SCHED_KV_PRESSURE_LOG_INTERVAL_S:-5}}"
+export VLLM_DS4_FUSED_EXECUTE_SAMPLE="${VLLM_DS4_FUSED_EXECUTE_SAMPLE:-${DSV4_FUSED_EXECUTE_SAMPLE:-1}}"
+export TORCH_CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST:-12.1a}"
+export VLLM_TRITON_MLA_SPARSE="${VLLM_TRITON_MLA_SPARSE:-1}"
+export VLLM_DS4_SM12X_MQA_ROWWISE="${VLLM_DS4_SM12X_MQA_ROWWISE:-1}"
+export VLLM_DS4_SM12X_MQA_ROWWISE_MAX_ROWS="${VLLM_DS4_SM12X_MQA_ROWWISE_MAX_ROWS:-4}"
+export VLLM_DS4_SM12X_MQA_ROWWISE_MIN_TOKENS="${VLLM_DS4_SM12X_MQA_ROWWISE_MIN_TOKENS:-0}"
+export VLLM_DS4_SM12X_PAGED_MQA_TOPK_CHUNK_SIZE="${VLLM_DS4_SM12X_PAGED_MQA_TOPK_CHUNK_SIZE:-8192}"
+export VLLM_DS4_SM12X_MQA_TOPK_TRITON="${VLLM_DS4_SM12X_MQA_TOPK_TRITON:-1}"
+export VLLM_DS4_SM12X_MQA_TOPK_CUDA_SELECT="${VLLM_DS4_SM12X_MQA_TOPK_CUDA_SELECT:-1}"
+export VLLM_DS4_SM12X_MQA_TOPK_CHUNK_SIZE="${VLLM_DS4_SM12X_MQA_TOPK_CHUNK_SIZE:-8192}"
+export VLLM_DS4_SM12X_MQA_TOPK_MAX_LOGITS_BYTES="${VLLM_DS4_SM12X_MQA_TOPK_MAX_LOGITS_BYTES:-536870912}"
+export VLLM_DS4_ALLOW_SM12X_MQA_TOPK_TORCH_FALLBACK="${VLLM_DS4_ALLOW_SM12X_MQA_TOPK_TORCH_FALLBACK:-0}"
+export VLLM_DS4_MHC_TILELANG_MAX_TOKENS="${VLLM_DS4_MHC_TILELANG_MAX_TOKENS:-8192}"
+export VLLM_DS4_MHC_ALLOW_TRITON_SM12X_FALLBACK="${VLLM_DS4_MHC_ALLOW_TRITON_SM12X_FALLBACK:-0}"
+export VLLM_DS4_MHC_NATIVE_PREFLIGHT_TOKENS="${VLLM_DS4_MHC_NATIVE_PREFLIGHT_TOKENS:-8192}"
+export VLLM_DS4_DSV4_LAYER_BACKEND="${VLLM_DS4_DSV4_LAYER_BACKEND:-cuda}"
+export VLLM_DS4_DSV4_HC_HEAD_BACKEND="${VLLM_DS4_DSV4_HC_HEAD_BACKEND:-tilelang}"
+export VLLM_DS4_DSV4_CUTLASS_MXFP4_W13_LAYOUT="${VLLM_DS4_DSV4_CUTLASS_MXFP4_W13_LAYOUT:-swapped}"
+export VLLM_DS4_DSV4_WEIGHT_AUDIT="${VLLM_DS4_DSV4_WEIGHT_AUDIT:-0}"
+export VLLM_DS4_DSV4_HASH_ROUTER_REF_CHECK="${VLLM_DS4_DSV4_HASH_ROUTER_REF_CHECK:-0}"
+export VLLM_DS4_DSV4_HASH_ROUTER_REF_MAX_TOKENS="${VLLM_DS4_DSV4_HASH_ROUTER_REF_MAX_TOKENS:-16}"
+export VLLM_DS4_DSV4_HASH_ROUTER_REF_ATOL="${VLLM_DS4_DSV4_HASH_ROUTER_REF_ATOL:-0.025}"
+export VLLM_DS4_DSV4_SPARSE_MLA_VALIDATE="${VLLM_DS4_DSV4_SPARSE_MLA_VALIDATE:-0}"
+export VLLM_DS4_DSV4_SPARSE_MLA_TRACE="${VLLM_DS4_DSV4_SPARSE_MLA_TRACE:-0}"
+export VLLM_DS4_DSV4_SPARSE_MLA_REF_CHECK="${VLLM_DS4_DSV4_SPARSE_MLA_REF_CHECK:-0}"
+export VLLM_DS4_DSV4_SPARSE_MLA_REF_MAX_TOKENS="${VLLM_DS4_DSV4_SPARSE_MLA_REF_MAX_TOKENS:-8}"
+export VLLM_DS4_DSV4_SPARSE_MLA_REF_ATOL="${VLLM_DS4_DSV4_SPARSE_MLA_REF_ATOL:-0.5}"
+export VLLM_DS4_DSV4_SPARSE_MLA_SELECTED_ABSMAX="${VLLM_DS4_DSV4_SPARSE_MLA_SELECTED_ABSMAX:-10000.0}"
+export VLLM_DS4_DSV4_SPARSE_MLA_PREFILL_BACKEND="${VLLM_DS4_DSV4_SPARSE_MLA_PREFILL_BACKEND:-indexed}"
+export VLLM_DS4_DSV4_K_GATHER_BACKEND="${VLLM_DS4_DSV4_K_GATHER_BACKEND:-cutedsl}"
+export VLLM_DS4_DSV4_ALLOW_TRITON_GATHER_DEBUG="${VLLM_DS4_DSV4_ALLOW_TRITON_GATHER_DEBUG:-0}"
+if [[ "${DS4_ALLOW_DIAGNOSTIC_BACKENDS:-0}" != "1" ]]; then
+  if [[ "$VLLM_DS4_DSV4_SPARSE_MLA_PREFILL_BACKEND" == "matmul-debug" ]]; then
+    echo "DS4 production launch refuses matmul-debug sparse MLA backend; set DS4_ALLOW_DIAGNOSTIC_BACKENDS=1 for an intentional diagnostic run." >&2
+    exit 64
+  fi
+  if [[ "$VLLM_DS4_DSV4_K_GATHER_BACKEND" == "triton-debug" || "$VLLM_DS4_DSV4_ALLOW_TRITON_GATHER_DEBUG" == "1" ]]; then
+    echo "DS4 production launch refuses triton-debug K gather; set DS4_ALLOW_DIAGNOSTIC_BACKENDS=1 for an intentional diagnostic run." >&2
+    exit 64
+  fi
+fi
+export VLLM_DS4_DEQUANT_GATHER_K_CUTEDSL_MAX_ROWS="${VLLM_DS4_DEQUANT_GATHER_K_CUTEDSL_MAX_ROWS:--1}"
+export VLLM_MQ_MAX_CHUNKS="${VLLM_MQ_MAX_CHUNKS:-64}"
+export VLLM_USE_DEEP_GEMM="${VLLM_USE_DEEP_GEMM:-1}"
+export VLLM_USE_DEEP_GEMM_E8M0="${VLLM_USE_DEEP_GEMM_E8M0:-1}"
+export VLLM_DEEP_GEMM_WARMUP="${VLLM_DEEP_GEMM_WARMUP:-skip}"
+export VLLM_DS4_STRICT_NATIVE_FP4="${VLLM_DS4_STRICT_NATIVE_FP4:-1}"
+export VLLM_DS4_ENABLE_CACHE_ADMIN="${VLLM_DS4_ENABLE_CACHE_ADMIN:-1}"
+export VLLM_DS4_ALLOW_DEEPGEMM_MXFP4_SM12X="${VLLM_DS4_ALLOW_DEEPGEMM_MXFP4_SM12X:-0}"
+export VLLM_DS4_ALLOW_DEEPGEMM_FP8_LINEAR_SM12X="${VLLM_DS4_ALLOW_DEEPGEMM_FP8_LINEAR_SM12X:-0}"
+if [[ "${VLLM_MXFP4_USE_MARLIN:-}" =~ ^(1|true|TRUE|yes|YES)$ ]]; then
+  echo "DS4 strict native mode refuses VLLM_MXFP4_USE_MARLIN=$VLLM_MXFP4_USE_MARLIN" >&2
+  exit 64
+fi
+export VLLM_MXFP4_USE_MARLIN=0
+if [[ "${VLLM_TEST_FORCE_FP8_MARLIN:-}" =~ ^(1|true|TRUE|yes|YES)$ ]]; then
+  echo "DS4 strict native mode refuses VLLM_TEST_FORCE_FP8_MARLIN=$VLLM_TEST_FORCE_FP8_MARLIN" >&2
+  exit 64
+fi
+export VLLM_TEST_FORCE_FP8_MARLIN=0
+export VLLM_DISABLED_KERNELS="${VLLM_DISABLED_KERNELS:-MarlinNvFp4LinearKernel,EmulationNvFp4LinearKernel,MarlinMxFp4LinearKernel,MarlinMxfp8LinearKernel,EmulationMxfp8LinearKernel,MarlinFP8ScaledMMLinearKernel}"
+export DS4_200G_IFNAME="${DS4_200G_IFNAME:-enp1s0f0np0,enp1s0f1np1,enP2p1s0f0np0,enP2p1s0f1np1}"
+export DS4_200G_ALLOW_DEGRADED_LINKS="${DS4_200G_ALLOW_DEGRADED_LINKS:-1}"
+export DS4_CONTROL_IFNAME="${DS4_CONTROL_IFNAME:-auto}"
+export DS4_200G_ADVERTISE_LOOPBACK="${DS4_200G_ADVERTISE_LOOPBACK:-1}"
+export DS4_200G_NCCL_TRANSPORT="${DS4_200G_NCCL_TRANSPORT:-socket}"
+export VLLM_DS4_PP_ONLY_GLOBAL_BACKEND="${VLLM_DS4_PP_ONLY_GLOBAL_BACKEND:-nccl}"
+if [ -z "${DS4_PP_TRANSPORT:-}" ]; then
+  echo "ERROR: DS4_PP_TRANSPORT must be explicit for DSV4 PP8. Use tcp-staged for production resident/throughput launches; cpu-staged is diagnostic-only." >&2
+  exit 64
+fi
+export DS4_PP_TRANSPORT="$DS4_PP_TRANSPORT"
+case "$DS4_PP_TRANSPORT" in
+  cpu-staged|cpu_staged|gloo-cpu|gloo_cpu)
+    export DS4_PP_TRANSPORT="cpu-staged"
+    export VLLM_DS4_PP_DISABLE_DEVICE_COMMUNICATOR="${VLLM_DS4_PP_DISABLE_DEVICE_COMMUNICATOR:-1}"
+    export VLLM_DS4_PP_CPU_STAGED_TENSOR_DICT="${VLLM_DS4_PP_CPU_STAGED_TENSOR_DICT:-1}"
+    export VLLM_DS4_PP_TCP_TENSOR_DICT="${VLLM_DS4_PP_TCP_TENSOR_DICT:-0}"
+    export VLLM_DS4_PP_DEVICE_TENSOR_DICT_METADATA="${VLLM_DS4_PP_DEVICE_TENSOR_DICT_METADATA:-0}"
+    export VLLM_DS4_PP_PYNCCL_TENSOR_DICT="${VLLM_DS4_PP_PYNCCL_TENSOR_DICT:-0}"
+    export VLLM_DS4_PP_PYNCCL_PAIR_COMMUNICATORS="${VLLM_DS4_PP_PYNCCL_PAIR_COMMUNICATORS:-0}"
+    export VLLM_DS4_PP_DIRECT_CUDA_TENSOR_DICT="${VLLM_DS4_PP_DIRECT_CUDA_TENSOR_DICT:-0}"
+    export VLLM_DS4_PP_TORCH_PG_TENSOR_DICT="${VLLM_DS4_PP_TORCH_PG_TENSOR_DICT:-0}"
+    export VLLM_DS4_PP_TORCH_PAIR_GROUPS="${VLLM_DS4_PP_TORCH_PAIR_GROUPS:-0}"
+    export VLLM_DS4_PP_TORCH_GROUP_WARMUP="${VLLM_DS4_PP_TORCH_GROUP_WARMUP:-0}"
+    export VLLM_DS4_PP_OVERLAP_SEND="${VLLM_DS4_PP_OVERLAP_SEND:-0}"
+    export DS4_NCCL_PREFLIGHT_MODE="${DS4_NCCL_PREFLIGHT_MODE:-skip}"
+    ;;
+  tcp-staged|tcp_staged|rail-tcp|rail_tcp)
+    export DS4_PP_TRANSPORT="tcp-staged"
+    export VLLM_DS4_PP_DISABLE_DEVICE_COMMUNICATOR="${VLLM_DS4_PP_DISABLE_DEVICE_COMMUNICATOR:-1}"
+    export VLLM_DS4_PP_CPU_STAGED_TENSOR_DICT="${VLLM_DS4_PP_CPU_STAGED_TENSOR_DICT:-0}"
+    export VLLM_DS4_PP_TCP_TENSOR_DICT="${VLLM_DS4_PP_TCP_TENSOR_DICT:-1}"
+    export VLLM_DS4_PP_TCP_STRIPES="${VLLM_DS4_PP_TCP_STRIPES:-16}"
+    export VLLM_DS4_PP_TCP_MIN_BYTES="${VLLM_DS4_PP_TCP_MIN_BYTES:-1}"
+    export VLLM_DS4_PP_TCP_BIND_HOST="${VLLM_DS4_PP_TCP_BIND_HOST:-${VLLM_HOST_IP:-}}"
+    export VLLM_DS4_PP_TCP_ADVERTISE_HOST="${VLLM_DS4_PP_TCP_ADVERTISE_HOST:-${VLLM_HOST_IP:-}}"
+    export VLLM_DS4_PP_DEVICE_TENSOR_DICT_METADATA="${VLLM_DS4_PP_DEVICE_TENSOR_DICT_METADATA:-0}"
+    export VLLM_DS4_PP_PYNCCL_TENSOR_DICT="${VLLM_DS4_PP_PYNCCL_TENSOR_DICT:-0}"
+    export VLLM_DS4_PP_PYNCCL_PAIR_COMMUNICATORS="${VLLM_DS4_PP_PYNCCL_PAIR_COMMUNICATORS:-0}"
+    export VLLM_DS4_PP_DIRECT_CUDA_TENSOR_DICT="${VLLM_DS4_PP_DIRECT_CUDA_TENSOR_DICT:-0}"
+    export VLLM_DS4_PP_TORCH_PG_TENSOR_DICT="${VLLM_DS4_PP_TORCH_PG_TENSOR_DICT:-0}"
+    export VLLM_DS4_PP_TORCH_PAIR_GROUPS="${VLLM_DS4_PP_TORCH_PAIR_GROUPS:-0}"
+    export VLLM_DS4_PP_TORCH_GROUP_WARMUP="${VLLM_DS4_PP_TORCH_GROUP_WARMUP:-0}"
+    export VLLM_DS4_PP_OVERLAP_SEND="${VLLM_DS4_PP_OVERLAP_SEND:-1}"
+    export DS4_NCCL_PREFLIGHT_MODE="${DS4_NCCL_PREFLIGHT_MODE:-skip}"
+    ;;
+  pynccl-pair|pynccl_pair)
+    export DS4_PP_TRANSPORT="pynccl-pair"
+    export VLLM_DS4_PP_EDGE_RAIL="${VLLM_DS4_PP_EDGE_RAIL:-${DS4_PP_EDGE_RAIL:-route}}"
+    export VLLM_DS4_PP_DISABLE_DEVICE_COMMUNICATOR="${VLLM_DS4_PP_DISABLE_DEVICE_COMMUNICATOR:-1}"
+    export VLLM_DS4_PP_CPU_STAGED_TENSOR_DICT="${VLLM_DS4_PP_CPU_STAGED_TENSOR_DICT:-0}"
+    export VLLM_DS4_PP_TCP_TENSOR_DICT="${VLLM_DS4_PP_TCP_TENSOR_DICT:-0}"
+    export VLLM_DS4_PP_DEVICE_TENSOR_DICT_METADATA="${VLLM_DS4_PP_DEVICE_TENSOR_DICT_METADATA:-1}"
+    export VLLM_DS4_PP_PYNCCL_TENSOR_DICT="${VLLM_DS4_PP_PYNCCL_TENSOR_DICT:-1}"
+    export VLLM_DS4_PP_PYNCCL_PAIR_COMMUNICATORS="${VLLM_DS4_PP_PYNCCL_PAIR_COMMUNICATORS:-1}"
+    export VLLM_DS4_PP_PYNCCL_PAIR_IFNAME_MODE="${VLLM_DS4_PP_PYNCCL_PAIR_IFNAME_MODE:-process}"
+    export VLLM_DS4_PP_DIRECT_CUDA_TENSOR_DICT="${VLLM_DS4_PP_DIRECT_CUDA_TENSOR_DICT:-0}"
+    export VLLM_DS4_PP_TORCH_PG_TENSOR_DICT="${VLLM_DS4_PP_TORCH_PG_TENSOR_DICT:-0}"
+    export VLLM_DS4_PP_TORCH_PAIR_GROUPS="${VLLM_DS4_PP_TORCH_PAIR_GROUPS:-0}"
+    export VLLM_DS4_PP_TORCH_GROUP_WARMUP="${VLLM_DS4_PP_TORCH_GROUP_WARMUP:-0}"
+    export VLLM_DS4_PP_OVERLAP_SEND="${VLLM_DS4_PP_OVERLAP_SEND:-1}"
+    ;;
+  torch-pair|torch_pair)
+    export DS4_PP_TRANSPORT="torch-pair"
+    export VLLM_DS4_PP_EDGE_RAIL="${VLLM_DS4_PP_EDGE_RAIL:-${DS4_PP_EDGE_RAIL:-route}}"
+    export VLLM_DS4_PP_DISABLE_DEVICE_COMMUNICATOR="${VLLM_DS4_PP_DISABLE_DEVICE_COMMUNICATOR:-1}"
+    export VLLM_DS4_PP_CPU_STAGED_TENSOR_DICT="${VLLM_DS4_PP_CPU_STAGED_TENSOR_DICT:-0}"
+    export VLLM_DS4_PP_TCP_TENSOR_DICT="${VLLM_DS4_PP_TCP_TENSOR_DICT:-0}"
+    export VLLM_DS4_PP_DEVICE_TENSOR_DICT_METADATA="${VLLM_DS4_PP_DEVICE_TENSOR_DICT_METADATA:-1}"
+    export VLLM_DS4_PP_PYNCCL_TENSOR_DICT="${VLLM_DS4_PP_PYNCCL_TENSOR_DICT:-0}"
+    export VLLM_DS4_PP_PYNCCL_PAIR_COMMUNICATORS="${VLLM_DS4_PP_PYNCCL_PAIR_COMMUNICATORS:-0}"
+    export VLLM_DS4_PP_DIRECT_CUDA_TENSOR_DICT="${VLLM_DS4_PP_DIRECT_CUDA_TENSOR_DICT:-0}"
+    export VLLM_DS4_PP_TORCH_PG_TENSOR_DICT="${VLLM_DS4_PP_TORCH_PG_TENSOR_DICT:-1}"
+    export VLLM_DS4_PP_TORCH_PAIR_GROUPS="${VLLM_DS4_PP_TORCH_PAIR_GROUPS:-1}"
+    export VLLM_DS4_PP_TORCH_PAIR_IFNAME_MODE="${VLLM_DS4_PP_TORCH_PAIR_IFNAME_MODE:-process}"
+    export VLLM_DS4_PP_TORCH_GROUP_WARMUP="${VLLM_DS4_PP_TORCH_GROUP_WARMUP:-1}"
+    export VLLM_DS4_PP_OVERLAP_SEND="${VLLM_DS4_PP_OVERLAP_SEND:-0}"
+    export DS4_NCCL_PREFLIGHT_MODE="${DS4_NCCL_PREFLIGHT_MODE:-skip}"
+    ;;
+  *)
+    echo "DSV4 PP8 unsupported DS4_PP_TRANSPORT=$DS4_PP_TRANSPORT; expected cpu-staged, tcp-staged, pynccl-pair, or torch-pair" >&2
+    exit 64
+    ;;
+esac
+export VLLM_DS4_PP_EDGE_RAIL="${VLLM_DS4_PP_EDGE_RAIL:-}"
+export VLLM_DS4_PP_TCP_STRIPES="${VLLM_DS4_PP_TCP_STRIPES:-0}"
+export VLLM_DS4_PP_TCP_MIN_BYTES="${VLLM_DS4_PP_TCP_MIN_BYTES:-0}"
+export VLLM_DS4_PP_PYNCCL_PAIR_IFNAME_MODE="${VLLM_DS4_PP_PYNCCL_PAIR_IFNAME_MODE:-process}"
+export VLLM_DS4_PP_DIRECT_CUDA_MIN_BYTES="${VLLM_DS4_PP_DIRECT_CUDA_MIN_BYTES:-262144}"
+export VLLM_DS4_PP_SEND_BACKLOG="${VLLM_DS4_PP_SEND_BACKLOG:-${DSV4_PP_SEND_BACKLOG:-2}}"
+export VLLM_DS4_PP_OVERLAP_SEND="${VLLM_DS4_PP_OVERLAP_SEND:-1}"
+export VLLM_DS4_PP_SEND_BUFFER_SLOTS="${VLLM_DS4_PP_SEND_BUFFER_SLOTS:-4}"
+export VLLM_DS4_PP_SEND_BUFFER_MAX_BYTES="${VLLM_DS4_PP_SEND_BUFFER_MAX_BYTES:-1073741824}"
+export VLLM_DS4_PP_GANTT_TRACE="${VLLM_DS4_PP_GANTT_TRACE:-0}"
+export VLLM_DS4_PP_GANTT_TRACE_EVERY="${VLLM_DS4_PP_GANTT_TRACE_EVERY:-10}"
+export VLLM_DS4_PP_BOUNDARY_TRACE="${VLLM_DS4_PP_BOUNDARY_TRACE:-0}"
+export VLLM_DS4_PP_BOUNDARY_TRACE_EVERY="${VLLM_DS4_PP_BOUNDARY_TRACE_EVERY:-1}"
+export VLLM_DS4_PP_BOUNDARY_TRACE_MAX_ELEMS="${VLLM_DS4_PP_BOUNDARY_TRACE_MAX_ELEMS:-4096}"
+export VLLM_DS4_PP_BOUNDARY_TRACE_SYNC="${VLLM_DS4_PP_BOUNDARY_TRACE_SYNC:-1}"
+export VLLM_DS4_COMM_GROUP_TRACE="${VLLM_DS4_COMM_GROUP_TRACE:-1}"
+export VLLM_DS4_COMM_GROUP_TIMEOUT_SECONDS="${VLLM_DS4_COMM_GROUP_TIMEOUT_SECONDS:-180}"
+export VLLM_DS4_COMM_GROUP_WARN_SECONDS="${VLLM_DS4_COMM_GROUP_WARN_SECONDS:-10}"
+if [[ "$DS4_PP_TRANSPORT" != "cpu-staged" && "$DS4_PP_TRANSPORT" != "tcp-staged" && ! "$VLLM_DS4_PP_DEVICE_TENSOR_DICT_METADATA" =~ ^(1|true|TRUE|yes|YES|on|ON)$ ]]; then
+  echo "DSV4 PP8 requires VLLM_DS4_PP_DEVICE_TENSOR_DICT_METADATA=1. Pickled CPU PP metadata caused multi-second stage stalls and is not valid for performance runs." >&2
+  exit 64
+fi
+export VLLM_DS4_PP_PYNCCL_TENSOR_DICT_STRIPES="${VLLM_DS4_PP_PYNCCL_TENSOR_DICT_STRIPES:-8}"
+export VLLM_DS4_PP_PYNCCL_TENSOR_DICT_STRIPE_MIN_BYTES="${VLLM_DS4_PP_PYNCCL_TENSOR_DICT_STRIPE_MIN_BYTES:-1048576}"
+export VLLM_DS4_PP_PYNCCL_P2P_CREDIT="${VLLM_DS4_PP_PYNCCL_P2P_CREDIT:-1}"
+export VLLM_DS4_PP_STRIPED_NCCL_TENSOR_DICT="${VLLM_DS4_PP_STRIPED_NCCL_TENSOR_DICT:-0}"
+export VLLM_DS4_PP_STRIPED_NCCL_STRIPES="${VLLM_DS4_PP_STRIPED_NCCL_STRIPES:-$VLLM_DS4_PP_PYNCCL_TENSOR_DICT_STRIPES}"
+export VLLM_DS4_PP_STRIPED_NCCL_MIN_BYTES="${VLLM_DS4_PP_STRIPED_NCCL_MIN_BYTES:-262144}"
+export VLLM_DS4_PP_STRIPED_NCCL_STREAMS="${VLLM_DS4_PP_STRIPED_NCCL_STREAMS:-1}"
+export VLLM_DS4_SKIP_PYNCCL_WARMUP_ALLREDUCE="${VLLM_DS4_SKIP_PYNCCL_WARMUP_ALLREDUCE:-1}"
+export DS4_NCCL_PREFLIGHT_MODE="${DS4_NCCL_PREFLIGHT_MODE:-p2p_nccl}"
+export DS4_NCCL_PREFLIGHT_P2P_METHOD="${DS4_NCCL_PREFLIGHT_P2P_METHOD:-pynccl_pair}"
+export DS4_NCCL_PREFLIGHT_P2P_PAIR_IFNAME_MODE="${DS4_NCCL_PREFLIGHT_P2P_PAIR_IFNAME_MODE:-$VLLM_DS4_PP_PYNCCL_PAIR_IFNAME_MODE}"
+export DS4_NCCL_PREFLIGHT_P2P_SKIP_WORLD_ALLREDUCE="${DS4_NCCL_PREFLIGHT_P2P_SKIP_WORLD_ALLREDUCE:-1}"
+export DS4_NCCL_PREFLIGHT_TORCH_WORLD_WARMUP="${DS4_NCCL_PREFLIGHT_TORCH_WORLD_WARMUP:-0}"
+export DS4_NCCL_PREFLIGHT_P2P_STRIPES="${DS4_NCCL_PREFLIGHT_P2P_STRIPES:-$VLLM_DS4_PP_PYNCCL_TENSOR_DICT_STRIPES}"
+export DS4_NCCL_PREFLIGHT_P2P_CREDIT="${DS4_NCCL_PREFLIGHT_P2P_CREDIT:-$VLLM_DS4_PP_PYNCCL_P2P_CREDIT}"
+export DS4_NCCL_PREFLIGHT_P2P_DIRECTION="${DS4_NCCL_PREFLIGHT_P2P_DIRECTION:-unidirectional}"
+if [[ -z "${DS4_NCCL_PREFLIGHT_P2P_PAIRS:-}" && "$NNODES" == "8" ]]; then
+  export DS4_NCCL_PREFLIGHT_P2P_PAIRS="0-1;1-2;2-3;3-4;4-5;5-6;6-7"
+fi
+export DS4_NCCL_PREFLIGHT_MIN_P2P_GBPS="${DS4_NCCL_PREFLIGHT_MIN_P2P_GBPS:-0.25}"
+export DS4_NCCL_PREFLIGHT_WARN_P2P_GBPS="${DS4_NCCL_PREFLIGHT_WARN_P2P_GBPS:-1}"
+export DS4_RAIL_TCP_PREFLIGHT_ACTIVE="${DS4_RAIL_TCP_PREFLIGHT_ACTIVE:-1}"
+export DS4_RAIL_TCP_PREFLIGHT_STREAMS="${DS4_RAIL_TCP_PREFLIGHT_STREAMS:-16}"
+export DS4_RAIL_TCP_PREFLIGHT_BYTES="${DS4_RAIL_TCP_PREFLIGHT_BYTES:-268435456}"
+export DS4_RAIL_TCP_PREFLIGHT_MIN_GBIT_S="${DS4_RAIL_TCP_PREFLIGHT_MIN_GBIT_S:-10}"
+export DS4_RAIL_TCP_PREFLIGHT_WARN_GBIT_S="${DS4_RAIL_TCP_PREFLIGHT_WARN_GBIT_S:-64}"
+if [[ -z "${DS4_RAIL_TCP_PREFLIGHT_PAIRS:-}" && "$NNODES" == "8" ]]; then
+  export DS4_RAIL_TCP_PREFLIGHT_PAIRS="0-1;1-2;2-3;3-4;4-5;5-6;6-7"
+fi
+if [[ "$NODE_RANK" == "0" ]]; then
+  export DS4_200G_ALLOW_LOOPBACK_HEAD="${DS4_200G_ALLOW_LOOPBACK_HEAD:-1}"
+fi
+export NCCL_IGNORE_CPU_AFFINITY="${NCCL_IGNORE_CPU_AFFINITY:-1}"
+export NCCL_DEBUG="${NCCL_DEBUG:-INFO}"
+export NCCL_DEBUG_SUBSYS="${NCCL_DEBUG_SUBSYS:-INIT,NET}"
+export DS4_NATIVE_PREFLIGHT_ACTIVE="${DS4_NATIVE_PREFLIGHT_ACTIVE:-1}"
+ds4_prepare_triton_jit_environment "dsv4-flash-pp${NNODES}"
+ds4_prepare_flashinfer_jit_environment
+if [[ "${DS4_PATCH_FLASHINFER_SM12X_FUSED_MOE_JIT:-1}" =~ ^(1|true|TRUE|yes|YES|on|ON)$ ]]; then
+  "$RUNTIME_PYTHON" "$SCRIPT_DIR/ds4_patch_flashinfer_sm12x_fused_moe_jit.py"
+fi
+ds4_require_200g_fabric
+ds4_pp_edge_ifname()
+{
+  local rank="$1"
+  local peer="$2"
+  local rail="${VLLM_DS4_PP_EDGE_RAIL:-${DS4_PP_EDGE_RAIL:-enp}}"
+  if [[ "$rail" == "route" || "$rail" == "routed" || "$rail" == "loopback" ]]; then
+    ds4_200g_route_dev "10.10.100.$((10 + peer))"
+    return
+  fi
+  if [[ "$peer" -gt "$rank" ]]; then
+    case "$rail" in
+      enp|rail0|lower|odd)
+        echo "enp1s0f1np1"
+        ;;
+      enP2p|enp2p|rail1|upper|even)
+        echo "enP2p1s0f1np1"
+        ;;
+      *)
+        echo "$rail"
+        ;;
+    esac
+  else
+    case "$rail" in
+      enp|rail0|lower|odd)
+        echo "enp1s0f0np0"
+        ;;
+      enP2p|enp2p|rail1|upper|even)
+        echo "enP2p1s0f0np0"
+        ;;
+      *)
+        echo "$rail"
+        ;;
+    esac
+  fi
+}
+
+ds4_pp_edge_ifname_is_verified()
+{
+  local ifname="$1"
+  local verified_fabric="${DS4_200G_EFFECTIVE_IFNAME:-$DS4_200G_IFNAME}"
+  local verified_control="${DS4_200G_EFFECTIVE_CONTROL_IFNAME:-}"
+  if ds4_200g_csv_contains "$verified_fabric" "$ifname"; then
+    return 0
+  fi
+  if [[ "${DS4_200G_ADVERTISE_LOOPBACK:-0}" =~ ^(1|true|TRUE|yes|YES|on|ON)$ ]] \
+    && ds4_200g_is_gloo_loopback_like_ifname "$ifname" \
+    && ds4_200g_csv_contains "$verified_control" "$ifname"; then
+    echo "WARNING: DSV4 PP${NNODES} PP edge socket identity uses routed loopback interface '$ifname'; physical routes were validated against fabric ${verified_fabric}" >&2
+    return 0
+  fi
+  return 1
+}
+
+ds4_pp_edge_ifname_verified_label()
+{
+  printf "%s" "${DS4_200G_EFFECTIVE_IFNAME:-$DS4_200G_IFNAME}"
+  if [[ -n "${DS4_200G_EFFECTIVE_CONTROL_IFNAME:-}" ]]; then
+    printf " or routed control %s" "$DS4_200G_EFFECTIVE_CONTROL_IFNAME"
+  fi
+}
+
+export VLLM_DS4_PP_EDGE_RAIL="${VLLM_DS4_PP_EDGE_RAIL:-${DS4_PP_EDGE_RAIL:-enp}}"
+export DS4_NCCL_PREFLIGHT_PP_EDGE_RAIL="${DS4_NCCL_PREFLIGHT_PP_EDGE_RAIL:-$VLLM_DS4_PP_EDGE_RAIL}"
+if [[ "$NNODES" -gt 1 ]]; then
+  if [[ "$NODE_RANK" -gt 0 ]]; then
+    DS4_PP_PREV_IP="10.10.100.$((10 + NODE_RANK - 1))"
+    VLLM_DS4_PP_PREV_SOCKET_IFNAME="${VLLM_DS4_PP_PREV_SOCKET_IFNAME:-$(ds4_pp_edge_ifname "$NODE_RANK" "$((NODE_RANK - 1))")}"
+    [[ -n "$VLLM_DS4_PP_PREV_SOCKET_IFNAME" ]] || { echo "DSV4 PP${NNODES} could not derive PP edge interface to previous PP rank at $DS4_PP_PREV_IP" >&2; exit 64; }
+    ds4_pp_edge_ifname_is_verified "$VLLM_DS4_PP_PREV_SOCKET_IFNAME" || { echo "DSV4 PP${NNODES} PP edge to previous PP rank at $DS4_PP_PREV_IP uses $VLLM_DS4_PP_PREV_SOCKET_IFNAME, not the verified fabric $(ds4_pp_edge_ifname_verified_label)" >&2; exit 64; }
+    export VLLM_DS4_PP_PREV_SOCKET_IFNAME
+  fi
+  if [[ "$NODE_RANK" -lt $((NNODES - 1)) ]]; then
+    DS4_PP_NEXT_IP="10.10.100.$((10 + NODE_RANK + 1))"
+    VLLM_DS4_PP_NEXT_SOCKET_IFNAME="${VLLM_DS4_PP_NEXT_SOCKET_IFNAME:-$(ds4_pp_edge_ifname "$NODE_RANK" "$((NODE_RANK + 1))")}"
+    [[ -n "$VLLM_DS4_PP_NEXT_SOCKET_IFNAME" ]] || { echo "DSV4 PP${NNODES} could not derive PP edge interface to next PP rank at $DS4_PP_NEXT_IP" >&2; exit 64; }
+    ds4_pp_edge_ifname_is_verified "$VLLM_DS4_PP_NEXT_SOCKET_IFNAME" || { echo "DSV4 PP${NNODES} PP edge to next PP rank at $DS4_PP_NEXT_IP uses $VLLM_DS4_PP_NEXT_SOCKET_IFNAME, not the verified fabric $(ds4_pp_edge_ifname_verified_label)" >&2; exit 64; }
+    export VLLM_DS4_PP_NEXT_SOCKET_IFNAME
+  fi
+  DS4_PP_SOCKET_IFNAMES=""
+  if [[ -n "${VLLM_DS4_PP_PREV_SOCKET_IFNAME:-}" ]]; then
+    DS4_PP_SOCKET_IFNAMES="$VLLM_DS4_PP_PREV_SOCKET_IFNAME"
+  fi
+  if [[ -n "${VLLM_DS4_PP_NEXT_SOCKET_IFNAME:-}" ]]; then
+    if [[ -z "$DS4_PP_SOCKET_IFNAMES" ]]; then
+      DS4_PP_SOCKET_IFNAMES="$VLLM_DS4_PP_NEXT_SOCKET_IFNAME"
+    elif [[ ",$DS4_PP_SOCKET_IFNAMES," != *",$VLLM_DS4_PP_NEXT_SOCKET_IFNAME,"* ]]; then
+      DS4_PP_SOCKET_IFNAMES="$DS4_PP_SOCKET_IFNAMES,$VLLM_DS4_PP_NEXT_SOCKET_IFNAME"
+    fi
+  fi
+  export VLLM_DS4_PP_SOCKET_IFNAME="${VLLM_DS4_PP_SOCKET_IFNAME:-$DS4_PP_SOCKET_IFNAMES}"
+fi
+ds4_run_rail_tcp_preflight "$NNODES"
+ds4_run_nccl_preflight "$NNODES"
+ds4_run_dsv4_native_preflight
+ds4_run_native_blackwell_preflight
+ds4_run_triton_jit_preflight
+
+KV_OFFLOAD_ARGS=()
+DSV4_OFFLOAD_PARTITION_KEY="${DSV4_FLASH_PP_LAYER_PARTITION:-auto}"
+DSV4_OFFLOAD_PARTITION_KEY="${DSV4_OFFLOAD_PARTITION_KEY//,/x}"
+DSV4_OFFLOAD_PARTITION_KEY="${DSV4_OFFLOAD_PARTITION_KEY//[^A-Za-z0-9_.-]/_}"
+case "$DSV4_KV_OFFLOADING_SIZE" in
+  ""|0|0.0|off|OFF|none|NONE|false|FALSE)
+    export VLLM_USE_SIMPLE_KV_OFFLOAD=0
+    unset VLLM_SIMPLE_KV_OFFLOAD_PERSIST_ROOT
+    unset VLLM_SIMPLE_KV_OFFLOAD_PERSIST_STRICT
+    unset VLLM_SIMPLE_KV_OFFLOAD_PERSIST_RANK
+    unset VLLM_SIMPLE_KV_OFFLOAD_PERSIST_NAMESPACE
+    unset VLLM_DS4_SIMPLE_KV_BUNDLES
+    ;;
+  *)
+    export VLLM_USE_SIMPLE_KV_OFFLOAD="${VLLM_USE_SIMPLE_KV_OFFLOAD:-1}"
+    export VLLM_SIMPLE_KV_OFFLOAD_PERSIST_ROOT="${VLLM_SIMPLE_KV_OFFLOAD_PERSIST_ROOT:-$HOME/ds4_hma_store/dsv4_flash_pp8/part_${DSV4_OFFLOAD_PARTITION_KEY}/simple_cpu_offload}"
+    export VLLM_SIMPLE_KV_OFFLOAD_PERSIST_STRICT="${VLLM_SIMPLE_KV_OFFLOAD_PERSIST_STRICT:-1}"
+    export VLLM_SIMPLE_KV_OFFLOAD_PERSIST_NAMESPACE="${VLLM_SIMPLE_KV_OFFLOAD_PERSIST_NAMESPACE:-dsv4-pp${NNODES}-part-${DSV4_OFFLOAD_PARTITION_KEY}}"
+    export VLLM_SIMPLE_KV_OFFLOAD_PERSIST_RANK="${VLLM_SIMPLE_KV_OFFLOAD_PERSIST_RANK:-$(hostname)-dsv4-pp8-r${NODE_RANK}}"
+    export VLLM_DS4_SIMPLE_KV_BUNDLES="${VLLM_DS4_SIMPLE_KV_BUNDLES:-1}"
+    export VLLM_DS4_SIMPLE_KV_STARTUP_RESTORE="${VLLM_DS4_SIMPLE_KV_STARTUP_RESTORE:-0}"
+    export VLLM_DS4_SIMPLE_KV_STORE_UNMARKED="${VLLM_DS4_SIMPLE_KV_STORE_UNMARKED:-0}"
+    mkdir -p "$VLLM_SIMPLE_KV_OFFLOAD_PERSIST_ROOT"
+    KV_OFFLOAD_ARGS=(--kv-offloading-size "$DSV4_KV_OFFLOADING_SIZE" --kv-offloading-backend native)
+    ;;
+esac
+
+if [[ -n "${DSV4_FLASH_PP_LAYER_PARTITION:-}" ]]; then
+  "$RUNTIME_PYTHON" - "$NNODES" "$DSV4_FLASH_PP_LAYER_PARTITION" <<'PY'
+import sys
+stages = int(sys.argv[1])
+raw = sys.argv[2]
+parts = [int(item) for item in raw.split(",") if item.strip()]
+if len(parts) != stages:
+    raise SystemExit(f"DSV4_FLASH_PP_LAYER_PARTITION has {len(parts)} stages but NNODES={stages}: {raw}")
+if sum(parts) != 43:
+    raise SystemExit(f"DSV4_FLASH_PP_LAYER_PARTITION must sum to 43 DSV4 decoder layers, got {sum(parts)}: {raw}")
+if any(part <= 0 for part in parts):
+    raise SystemExit(f"DSV4_FLASH_PP_LAYER_PARTITION stages must all be positive: {raw}")
+PY
+  export VLLM_PP_LAYER_PARTITION="$DSV4_FLASH_PP_LAYER_PARTITION"
+else
+  unset VLLM_PP_LAYER_PARTITION
+fi
+
+DSV4_KV_CACHE_MEMORY_BYTES_PROFILE="$DSV4_KV_CACHE_MEMORY_BYTES"
+DSV4_KV_CACHE_MEMORY_BYTES_EFFECTIVE="$DSV4_KV_CACHE_MEMORY_BYTES"
+DSV4_LOCAL_LAYER_COUNT="unknown"
+DSV4_MAX_LAYER_COUNT="unknown"
+if [[ "${DSV4_SCALE_KV_CACHE_BY_LOCAL_LAYERS:-1}" =~ ^(1|true|TRUE|yes|YES|on|ON)$ ]]; then
+  case "$DSV4_KV_CACHE_MEMORY_BYTES" in
+    ""|0|auto|AUTO|none|NONE)
+      ;;
+    *)
+      read -r DSV4_LOCAL_LAYER_COUNT DSV4_MAX_LAYER_COUNT DSV4_KV_CACHE_MEMORY_BYTES_EFFECTIVE < <("$RUNTIME_PYTHON" - "$NNODES" "$NODE_RANK" "${DSV4_FLASH_PP_LAYER_PARTITION:-}" "$DSV4_KV_CACHE_MEMORY_BYTES" "${DSV4_MIN_KV_CACHE_MEMORY_BYTES:-0}" <<'PY'
+import sys
+stages = int(sys.argv[1])
+rank = int(sys.argv[2])
+raw = sys.argv[3]
+base = int(sys.argv[4])
+floor = max(0, int(sys.argv[5]))
+if rank < 0 or rank >= stages:
+    raise SystemExit(f"NODE_RANK={rank} is outside NNODES={stages}")
+if raw:
+    parts = [int(item) for item in raw.split(",") if item.strip()]
+else:
+    q, r = divmod(43, stages)
+    parts = [q + (1 if idx < r else 0) for idx in range(stages)]
+if len(parts) != stages:
+    raise SystemExit(f"partition has {len(parts)} entries but NNODES={stages}: {raw}")
+if sum(parts) != 43:
+    raise SystemExit(f"partition must sum to 43 DSV4 decoder layers, got {sum(parts)}: {raw}")
+if any(part <= 0 for part in parts):
+    raise SystemExit(f"partition stages must all be positive: {raw}")
+local = parts[rank]
+max_layers = max(parts)
+scaled = ((base * local) + max_layers - 1) // max_layers
+print(local, max_layers, max(floor, scaled))
+PY
+)
+      ;;
+  esac
+fi
+
+case "$DSV4_KV_CACHE_MEMORY_BYTES_EFFECTIVE" in
+  ""|0|auto|AUTO|none|NONE)
+    ;;
+  *)
+    "$RUNTIME_PYTHON" - "$DSV4_KV_CACHE_MEMORY_BYTES_EFFECTIVE" "$VLLM_WORKSPACE_PREALLOC_BYTES" "${DSV4_MAX_EXPLICIT_GPU_RESERVATION_BYTES:-55834574848}" <<'PY'
+import sys
+kv = int(sys.argv[1])
+workspace = int(sys.argv[2])
+limit = int(sys.argv[3])
+total = kv + workspace
+if total > limit:
+    raise SystemExit(
+        "DSV4 explicit GPU reservation is too high: "
+        f"kv_cache_memory_bytes_effective={kv} + workspace_prealloc_bytes={workspace} "
+        f"= {total}, limit={limit}. Lower DSV4_KV_CACHE_MEMORY_BYTES or "
+        "DSV4_WORKSPACE_PREALLOC_BYTES, or explicitly raise "
+        "DSV4_MAX_EXPLICIT_GPU_RESERVATION_BYTES for a controlled stress run."
+    )
+PY
+    ;;
+esac
+
+echo "DSV4 PP${NNODES} profile=$DS4_DSV4_PIPELINE_RAM_PROFILE served_model=$DSV4_SERVED_MODEL_NAME max_model_len=$DSV4_MAX_MODEL_LEN max_num_seqs=$DSV4_MAX_NUM_SEQS max_num_batched_tokens=$DSV4_MAX_NUM_BATCHED_TOKENS prefix_caching=$DSV4_ENABLE_PREFIX_CACHING sched_max_new_reqs=$VLLM_DS4_SCHED_MAX_NEW_REQS_PER_STEP sched_max_new_prefill_tokens=$VLLM_DS4_SCHED_MAX_NEW_PREFILL_TOKENS_PER_STEP sched_kv_admission_max_usage=$VLLM_DS4_SCHED_KV_ADMISSION_MAX_USAGE sched_kv_hard_fail_usage=$VLLM_DS4_SCHED_KV_HARD_FAIL_USAGE kv_cache_memory_bytes_profile=$DSV4_KV_CACHE_MEMORY_BYTES_PROFILE kv_cache_memory_bytes_effective=$DSV4_KV_CACHE_MEMORY_BYTES_EFFECTIVE kv_cache_memory_bytes_min=${DSV4_MIN_KV_CACHE_MEMORY_BYTES:-0} kv_layer_scale=${DSV4_SCALE_KV_CACHE_BY_LOCAL_LAYERS:-1} local_layers=$DSV4_LOCAL_LAYER_COUNT max_stage_layers=$DSV4_MAX_LAYER_COUNT kv_offloading_size=$DSV4_KV_OFFLOADING_SIZE gpu_memory_utilization=$DSV4_GPU_MEMORY_UTILIZATION workspace_prealloc_bytes=$VLLM_WORKSPACE_PREALLOC_BYTES mq_max_chunks=$VLLM_MQ_MAX_CHUNKS triton_sparse_mla=$VLLM_TRITON_MLA_SPARSE sparse_mla_validate=$VLLM_DS4_DSV4_SPARSE_MLA_VALIDATE sparse_mla_trace=$VLLM_DS4_DSV4_SPARSE_MLA_TRACE sparse_mla_ref_check=$VLLM_DS4_DSV4_SPARSE_MLA_REF_CHECK sparse_mla_ref_max_tokens=$VLLM_DS4_DSV4_SPARSE_MLA_REF_MAX_TOKENS sparse_mla_selected_absmax=$VLLM_DS4_DSV4_SPARSE_MLA_SELECTED_ABSMAX sparse_mla_prefill_backend=$VLLM_DS4_DSV4_SPARSE_MLA_PREFILL_BACKEND hash_router_ref_check=$VLLM_DS4_DSV4_HASH_ROUTER_REF_CHECK hash_router_ref_max_tokens=$VLLM_DS4_DSV4_HASH_ROUTER_REF_MAX_TOKENS hash_router_ref_atol=$VLLM_DS4_DSV4_HASH_ROUTER_REF_ATOL mhc_tilelang_max_tokens=$VLLM_DS4_MHC_TILELANG_MAX_TOKENS mhc_triton_fallback=$VLLM_DS4_MHC_ALLOW_TRITON_SM12X_FALLBACK mhc_preflight_tokens=$VLLM_DS4_MHC_NATIVE_PREFLIGHT_TOKENS dsv4_layer_backend=$VLLM_DS4_DSV4_LAYER_BACKEND hc_head_backend=$VLLM_DS4_DSV4_HC_HEAD_BACKEND weight_audit=$VLLM_DS4_DSV4_WEIGHT_AUDIT pp_layer_partition=${DSV4_FLASH_PP_LAYER_PARTITION:-auto} pp_hc_boundary_flush=$VLLM_DS4_DSV4_PP_FLUSH_HC_BOUNDARY pp_transport=$DS4_PP_TRANSPORT pp_edge_rail=$VLLM_DS4_PP_EDGE_RAIL pp_pynccl=$VLLM_DS4_PP_PYNCCL_TENSOR_DICT pp_pynccl_pair=$VLLM_DS4_PP_PYNCCL_PAIR_COMMUNICATORS pp_pynccl_pair_ifname_mode=$VLLM_DS4_PP_PYNCCL_PAIR_IFNAME_MODE pp_cpu_staged=${VLLM_DS4_PP_CPU_STAGED_TENSOR_DICT:-0} pp_tcp=$VLLM_DS4_PP_TCP_TENSOR_DICT pp_tcp_stripes=$VLLM_DS4_PP_TCP_STRIPES pp_tcp_min_bytes=$VLLM_DS4_PP_TCP_MIN_BYTES pp_tcp_bind=${VLLM_DS4_PP_TCP_BIND_HOST:-none} pp_tcp_advertise=${VLLM_DS4_PP_TCP_ADVERTISE_HOST:-none} pp_direct_cuda=$VLLM_DS4_PP_DIRECT_CUDA_TENSOR_DICT pp_torch_pg=$VLLM_DS4_PP_TORCH_PG_TENSOR_DICT pp_torch_pair_groups=$VLLM_DS4_PP_TORCH_PAIR_GROUPS pp_torch_pair_ifname_mode=${VLLM_DS4_PP_TORCH_PAIR_IFNAME_MODE:-process} pp_torch_group_warmup=$VLLM_DS4_PP_TORCH_GROUP_WARMUP pp_prev_if=${VLLM_DS4_PP_PREV_SOCKET_IFNAME:-none} pp_next_if=${VLLM_DS4_PP_NEXT_SOCKET_IFNAME:-none} pp_socket_if=${VLLM_DS4_PP_SOCKET_IFNAME:-none} pp_device_metadata=$VLLM_DS4_PP_DEVICE_TENSOR_DICT_METADATA pp_send_backlog=$VLLM_DS4_PP_SEND_BACKLOG pp_overlap_send=$VLLM_DS4_PP_OVERLAP_SEND pp_send_buffer_slots=$VLLM_DS4_PP_SEND_BUFFER_SLOTS pp_send_buffer_max_bytes=$VLLM_DS4_PP_SEND_BUFFER_MAX_BYTES pp_boundary_trace=$VLLM_DS4_PP_BOUNDARY_TRACE pp_boundary_trace_every=$VLLM_DS4_PP_BOUNDARY_TRACE_EVERY pp_boundary_trace_max_elems=$VLLM_DS4_PP_BOUNDARY_TRACE_MAX_ELEMS pp_pynccl_stripes=$VLLM_DS4_PP_PYNCCL_TENSOR_DICT_STRIPES pp_pynccl_credit=$VLLM_DS4_PP_PYNCCL_P2P_CREDIT pp_striped_nccl=$VLLM_DS4_PP_STRIPED_NCCL_TENSOR_DICT pp_striped_nccl_stripes=$VLLM_DS4_PP_STRIPED_NCCL_STRIPES pp_striped_nccl_min_bytes=$VLLM_DS4_PP_STRIPED_NCCL_MIN_BYTES" >&2
+
+KV_CACHE_MEMORY_ARGS=()
+case "$DSV4_KV_CACHE_MEMORY_BYTES_EFFECTIVE" in
+  ""|0|auto|AUTO|none|NONE)
+    ;;
+  *)
+    KV_CACHE_MEMORY_ARGS=(--kv-cache-memory-bytes "$DSV4_KV_CACHE_MEMORY_BYTES_EFFECTIVE")
+    ;;
+esac
+
+LOGGING_ITERATION_ARGS=()
+if [[ "${DSV4_ENABLE_LOGGING_ITERATION_DETAILS:-0}" =~ ^(1|true|TRUE|yes|YES|on|ON)$ ]]; then
+  LOGGING_ITERATION_ARGS=(--enable-logging-iteration-details)
+fi
+
+COMMON_ARGS=(
+  serve "$MODEL"
+  --served-model-name "$DSV4_SERVED_MODEL_NAME"
+  --tensor-parallel-size 1
+  --pipeline-parallel-size "$NNODES"
+  --nnodes "$NNODES"
+  --node-rank "$NODE_RANK"
+  --master-addr "$HEAD_ADDR"
+  --master-port "$MASTER_PORT"
+  --distributed-executor-backend mp
+  --max-model-len "$DSV4_MAX_MODEL_LEN"
+  --max-num-seqs "$DSV4_MAX_NUM_SEQS"
+  --max-num-batched-tokens "$DSV4_MAX_NUM_BATCHED_TOKENS"
+  --gpu-memory-utilization "$DSV4_GPU_MEMORY_UTILIZATION"
+  "${KV_CACHE_MEMORY_ARGS[@]}"
+  "${FLASHINFER_AUTOTUNE_ARGS[@]}"
+  --block-size 256
+  --kv-cache-dtype fp8
+  "${PREFIX_CACHING_ARGS[@]}"
+  "${ASYNC_SCHEDULING_ARGS[@]}"
+  "${KV_OFFLOAD_ARGS[@]}"
+  --kv-cache-metrics
+  "${LOGGING_ITERATION_ARGS[@]}"
+  "${SPECULATIVE_ARGS[@]}"
+  --compilation-config "$DSV4_COMPILATION_CONFIG"
+  --tokenizer-mode deepseek_v4
+  --load-format safetensors
+  --no-disable-hybrid-kv-cache-manager
+)
+
+if [[ "$DSV4_LINEAR_BACKEND" != "auto" ]]; then
+  COMMON_ARGS+=(--linear-backend "$DSV4_LINEAR_BACKEND")
+fi
+
+if [[ "$DSV4_MOE_BACKEND" != "auto" ]]; then
+  COMMON_ARGS+=(--moe-backend "$DSV4_MOE_BACKEND")
+fi
+
+if [[ "$NODE_RANK" == "0" ]]; then
+  exec "$RUNTIME_PYTHON" "$DS4_VLLM_RUNNER" --source-root "$SOURCE_ROOT" --module vllm.entrypoints.cli.main -- "${COMMON_ARGS[@]}" \
+    --host "${API_HOST:-0.0.0.0}" \
+    --port "$API_PORT"
+fi
+
+exec "$RUNTIME_PYTHON" "$DS4_VLLM_RUNNER" --source-root "$SOURCE_ROOT" --module vllm.entrypoints.cli.main -- "${COMMON_ARGS[@]}" --headless

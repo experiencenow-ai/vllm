@@ -1,0 +1,147 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+: "${NODE_RANK:?set NODE_RANK to 0 on head or 1 on worker}"
+: "${HEAD_ADDR:?set HEAD_ADDR to the rank-0 Spark private IP or hostname}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/ds4_200g_guard.sh"
+
+MASTER_PORT="${MASTER_PORT:-29501}"
+API_PORT="${API_PORT:-8000}"
+MODEL="${DSV4_FLASH_MODEL:-/home/$USER/models/hf/deepseek-ai/DeepSeek-V4-Flash}"
+RUNTIME_PYTHON="${DS4_VLLM_PYTHON:-/home/$USER/ds4-vllm-local/bin/python}"
+SOURCE_ROOT="${DS4_VLLM_SOURCE_ROOT:-/home/$USER/src/vllm}"
+DEFAULT_SPECULATIVE_CONFIG="{\"model\":\"$MODEL\",\"num_speculative_tokens\":2,\"method\":\"deepseek_mtp\"}"
+DEFAULT_COMPILATION_CONFIG='{"cudagraph_mode":"FULL_AND_PIECEWISE","custom_ops":["all"]}'
+DSV4_LINEAR_BACKEND="${DSV4_LINEAR_BACKEND:-auto}"
+DSV4_MOE_BACKEND="${DSV4_MOE_BACKEND:-auto}"
+DSV4_COMPILATION_CONFIG="${DSV4_COMPILATION_CONFIG:-$DEFAULT_COMPILATION_CONFIG}"
+DSV4_KV_CACHE_MEMORY_BYTES="${DSV4_KV_CACHE_MEMORY_BYTES:-12884901888}"
+DSV4_WORKSPACE_PREALLOC_BYTES="${DSV4_WORKSPACE_PREALLOC_BYTES:-536870912}"
+DSV4_MTP_MODE="${DSV4_MTP_MODE:-off}"
+SPECULATIVE_ARGS=()
+DSV4_MTP_REQUESTED=0
+if [[ "$DSV4_MTP_MODE" != "off" && "$DSV4_MTP_MODE" != "OFF" && "$DSV4_MTP_MODE" != "none" && "$DSV4_MTP_MODE" != "NONE" ]]; then
+  DSV4_MTP_REQUESTED=1
+fi
+if [[ "${DSV4_ENABLE_MTP:-0}" =~ ^(1|true|TRUE|yes|YES|on|ON)$ ]]; then
+  DSV4_MTP_REQUESTED=1
+fi
+if [[ "${DSV4_DISABLE_MTP:-0}" =~ ^(1|true|TRUE|yes|YES|on|ON)$ ]]; then
+  DSV4_MTP_REQUESTED=0
+fi
+if [[ "$DSV4_MTP_REQUESTED" == "1" ]]; then
+  case "$DSV4_MTP_MODE" in
+    chat_single|single_chat|latency_chat)
+      ;;
+    *)
+      echo "DSV4 MTP is reserved for single-request chat latency mode." >&2
+      echo "Set DSV4_MTP_MODE=chat_single and DSV4_MAX_NUM_SEQS=1 to enable it." >&2
+      exit 2
+      ;;
+  esac
+  if [[ "${DSV4_MAX_NUM_SEQS:-2}" != "1" ]]; then
+    echo "DSV4 MTP requires DSV4_MAX_NUM_SEQS=1; got ${DSV4_MAX_NUM_SEQS:-2}." >&2
+    echo "Batch/throughput benchmark profiles must keep MTP off." >&2
+    exit 2
+  fi
+  SPECULATIVE_ARGS=(--speculative-config "${DSV4_SPECULATIVE_CONFIG:-$DEFAULT_SPECULATIVE_CONFIG}")
+fi
+ds4_set_flashinfer_autotune_args DS4_ENABLE_FLASHINFER_AUTOTUNE
+
+export PYTHONPATH="$SOURCE_ROOT${PYTHONPATH:+:$PYTHONPATH}"
+export PATH="$(dirname "$RUNTIME_PYTHON"):$PATH"
+DS4_VLLM_RUNNER="${DS4_VLLM_RUNNER:-$SOURCE_ROOT/tools/ds4_run_vllm_from_source.py}"
+
+export TORCH_CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST:-12.1a}"
+export VLLM_WORKSPACE_PREALLOC_BYTES="${VLLM_WORKSPACE_PREALLOC_BYTES:-$DSV4_WORKSPACE_PREALLOC_BYTES}"
+export VLLM_TRITON_MLA_SPARSE="${VLLM_TRITON_MLA_SPARSE:-1}"
+export VLLM_DS4_SM12X_MQA_ROWWISE="${VLLM_DS4_SM12X_MQA_ROWWISE:-1}"
+export VLLM_DS4_SM12X_MQA_ROWWISE_MAX_ROWS="${VLLM_DS4_SM12X_MQA_ROWWISE_MAX_ROWS:-4}"
+export VLLM_DS4_SM12X_MQA_ROWWISE_MIN_TOKENS="${VLLM_DS4_SM12X_MQA_ROWWISE_MIN_TOKENS:-0}"
+export VLLM_DS4_SM12X_PAGED_MQA_TOPK_CHUNK_SIZE="${VLLM_DS4_SM12X_PAGED_MQA_TOPK_CHUNK_SIZE:-8192}"
+export VLLM_DS4_SM12X_MQA_TOPK_TRITON="${VLLM_DS4_SM12X_MQA_TOPK_TRITON:-1}"
+export VLLM_DS4_SM12X_MQA_TOPK_CUDA_SELECT="${VLLM_DS4_SM12X_MQA_TOPK_CUDA_SELECT:-1}"
+export VLLM_DS4_SM12X_MQA_TOPK_CHUNK_SIZE="${VLLM_DS4_SM12X_MQA_TOPK_CHUNK_SIZE:-8192}"
+export VLLM_DS4_SM12X_MQA_TOPK_MAX_LOGITS_BYTES="${VLLM_DS4_SM12X_MQA_TOPK_MAX_LOGITS_BYTES:-536870912}"
+export VLLM_DS4_ALLOW_SM12X_MQA_TOPK_TORCH_FALLBACK="${VLLM_DS4_ALLOW_SM12X_MQA_TOPK_TORCH_FALLBACK:-0}"
+export VLLM_DS4_MHC_TILELANG_MAX_TOKENS="${VLLM_DS4_MHC_TILELANG_MAX_TOKENS:-8192}"
+export VLLM_DS4_MHC_ALLOW_TRITON_SM12X_FALLBACK="${VLLM_DS4_MHC_ALLOW_TRITON_SM12X_FALLBACK:-0}"
+export VLLM_DS4_MHC_NATIVE_PREFLIGHT_TOKENS="${VLLM_DS4_MHC_NATIVE_PREFLIGHT_TOKENS:-8192}"
+export VLLM_DS4_DSV4_K_GATHER_BACKEND="${VLLM_DS4_DSV4_K_GATHER_BACKEND:-cutedsl}"
+export VLLM_DS4_DSV4_ALLOW_TRITON_GATHER_DEBUG="${VLLM_DS4_DSV4_ALLOW_TRITON_GATHER_DEBUG:-0}"
+export VLLM_DS4_DEQUANT_GATHER_K_CUTEDSL_MAX_ROWS="${VLLM_DS4_DEQUANT_GATHER_K_CUTEDSL_MAX_ROWS:--1}"
+export VLLM_USE_DEEP_GEMM="${VLLM_USE_DEEP_GEMM:-1}"
+export VLLM_USE_DEEP_GEMM_E8M0="${VLLM_USE_DEEP_GEMM_E8M0:-1}"
+export VLLM_DEEP_GEMM_WARMUP="${VLLM_DEEP_GEMM_WARMUP:-skip}"
+export VLLM_DS4_STRICT_NATIVE_FP4="${VLLM_DS4_STRICT_NATIVE_FP4:-1}"
+export VLLM_DS4_ALLOW_DEEPGEMM_MXFP4_SM12X="${VLLM_DS4_ALLOW_DEEPGEMM_MXFP4_SM12X:-0}"
+export VLLM_DS4_ALLOW_DEEPGEMM_FP8_LINEAR_SM12X="${VLLM_DS4_ALLOW_DEEPGEMM_FP8_LINEAR_SM12X:-0}"
+if [[ "${VLLM_MXFP4_USE_MARLIN:-}" =~ ^(1|true|TRUE|yes|YES)$ ]]; then
+  echo "DS4 strict native mode refuses VLLM_MXFP4_USE_MARLIN=$VLLM_MXFP4_USE_MARLIN" >&2
+  exit 64
+fi
+export VLLM_MXFP4_USE_MARLIN=0
+if [[ "${VLLM_TEST_FORCE_FP8_MARLIN:-}" =~ ^(1|true|TRUE|yes|YES)$ ]]; then
+  echo "DS4 strict native mode refuses VLLM_TEST_FORCE_FP8_MARLIN=$VLLM_TEST_FORCE_FP8_MARLIN" >&2
+  exit 64
+fi
+export VLLM_TEST_FORCE_FP8_MARLIN=0
+export VLLM_DISABLED_KERNELS="${VLLM_DISABLED_KERNELS:-MarlinNvFp4LinearKernel,EmulationNvFp4LinearKernel,MarlinMxFp4LinearKernel,MarlinMxfp8LinearKernel,EmulationMxfp8LinearKernel,MarlinFP8ScaledMMLinearKernel}"
+export NCCL_IB_DISABLE="${NCCL_IB_DISABLE:-0}"
+export NCCL_NET="${NCCL_NET:-IB}"
+export NCCL_IGNORE_CPU_AFFINITY="${NCCL_IGNORE_CPU_AFFINITY:-1}"
+export NCCL_DEBUG="${NCCL_DEBUG:-INFO}"
+export NCCL_DEBUG_SUBSYS="${NCCL_DEBUG_SUBSYS:-INIT,NET}"
+export VLLM_ALLOW_LONG_MAX_MODEL_LEN="${VLLM_ALLOW_LONG_MAX_MODEL_LEN:-1}"
+export VLLM_MQ_MAX_CHUNKS="${VLLM_MQ_MAX_CHUNKS:-64}"
+export DS4_NATIVE_PREFLIGHT_ACTIVE="${DS4_NATIVE_PREFLIGHT_ACTIVE:-1}"
+ds4_prepare_triton_jit_environment "dsv4-flash-tp2-native"
+ds4_prepare_flashinfer_jit_environment
+ds4_require_200g_fabric
+ds4_run_nccl_preflight 2
+ds4_run_dsv4_native_preflight
+ds4_run_native_blackwell_preflight
+ds4_run_triton_jit_preflight
+
+COMMON_ARGS=(
+  serve "$MODEL"
+  --served-model-name deepseek-v4-flash-tp2-native
+  --trust-remote-code
+  --tensor-parallel-size 2
+  --enable-expert-parallel
+  --nnodes 2
+  --node-rank "$NODE_RANK"
+  --master-addr "$HEAD_ADDR"
+  --master-port "$MASTER_PORT"
+  --distributed-executor-backend mp
+  --kv-cache-dtype fp8
+  --kv-cache-memory-bytes "$DSV4_KV_CACHE_MEMORY_BYTES"
+  --block-size 256
+  --enable-prefix-caching
+  --max-model-len "${DSV4_MAX_MODEL_LEN:-65000}"
+  --max-num-seqs "${DSV4_MAX_NUM_SEQS:-2}"
+  --max-num-batched-tokens "${DSV4_MAX_NUM_BATCHED_TOKENS:-4096}"
+  --gpu-memory-utilization "${DSV4_GPU_MEMORY_UTILIZATION:-0.85}"
+  "${FLASHINFER_AUTOTUNE_ARGS[@]}"
+  "${SPECULATIVE_ARGS[@]}"
+  --compilation-config "$DSV4_COMPILATION_CONFIG"
+  --tokenizer-mode deepseek_v4
+  --load-format safetensors
+)
+
+if [[ "$DSV4_LINEAR_BACKEND" != "auto" ]]; then
+  COMMON_ARGS+=(--linear-backend "$DSV4_LINEAR_BACKEND")
+fi
+
+if [[ "$DSV4_MOE_BACKEND" != "auto" ]]; then
+  COMMON_ARGS+=(--moe-backend "$DSV4_MOE_BACKEND")
+fi
+
+if [[ "$NODE_RANK" == "0" ]]; then
+  exec "$RUNTIME_PYTHON" "$DS4_VLLM_RUNNER" --source-root "$SOURCE_ROOT" --module vllm.entrypoints.cli.main -- "${COMMON_ARGS[@]}" \
+    --host "${API_HOST:-0.0.0.0}" \
+    --port "$API_PORT"
+fi
+
+exec "$RUNTIME_PYTHON" "$DS4_VLLM_RUNNER" --source-root "$SOURCE_ROOT" --module vllm.entrypoints.cli.main -- "${COMMON_ARGS[@]}" --headless
