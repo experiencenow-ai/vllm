@@ -150,10 +150,14 @@ def main(argv: list[str] | None = None) -> int:
     os.chdir(source_root)
     sys.path[:] = _sanitize_sys_path(source_root, sys.path)
     removed_meta_path = _sanitize_meta_path()
-    os.environ["PYTHONPATH"] = str(source_root)
+    sitecustomize_root = (source_root / "tools" / "ds4_source_root_sitecustomize").resolve()
+    os.environ["PYTHONPATH"] = os.pathsep.join(
+        [str(source_root), str(sitecustomize_root)])
+    os.environ["DS4_VLLM_SOURCE_ROOT"] = str(source_root)
 
     proof = _proof(source_root, args.module)
     proof["removed_meta_path"] = removed_meta_path
+    proof["sitecustomize_root"] = str(sitecustomize_root)
     if Path(str(proof["vllm_root"])) != source_root:
         print("DS4 source-root guard: vLLM import drift detected", file=sys.stderr)
         print(json.dumps(proof, indent=2, sort_keys=True), file=sys.stderr)
