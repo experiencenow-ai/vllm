@@ -68,7 +68,9 @@ def _sanitize_meta_path() -> list[str]:
     kept = []
     for finder in sys.meta_path:
         finder_type = type(finder)
-        marker = f"{finder_type.__module__}.{finder_type.__name__}"
+        finder_module = getattr(finder, "__module__", finder_type.__module__)
+        finder_name = getattr(finder, "__name__", finder_type.__name__)
+        marker = f"{finder_module}.{finder_name}"
         if "__editable___vllm" in marker or "__editable__.vllm" in marker:
             removed.append(marker)
             continue
