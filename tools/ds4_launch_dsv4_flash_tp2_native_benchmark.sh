@@ -49,6 +49,22 @@ if [[ "$DSV4_MTP_REQUESTED" == "1" ]]; then
 fi
 ds4_set_flashinfer_autotune_args DS4_ENABLE_FLASHINFER_AUTOTUNE
 
+PREFIX_CACHING_ARGS=()
+case "${DSV4_ENABLE_PREFIX_CACHING:-1}" in
+  1|true|TRUE|yes|YES|on|ON)
+    export DSV4_ENABLE_PREFIX_CACHING=1
+    PREFIX_CACHING_ARGS=(--enable-prefix-caching)
+    ;;
+  0|false|FALSE|no|NO|off|OFF)
+    export DSV4_ENABLE_PREFIX_CACHING=0
+    PREFIX_CACHING_ARGS=(--no-enable-prefix-caching)
+    ;;
+  *)
+    echo "Unsupported DSV4_ENABLE_PREFIX_CACHING=${DSV4_ENABLE_PREFIX_CACHING}; expected 0/1 or true/false" >&2
+    exit 2
+    ;;
+esac
+
 export PYTHONPATH="$SOURCE_ROOT${PYTHONPATH:+:$PYTHONPATH}"
 export PATH="$(dirname "$RUNTIME_PYTHON"):$PATH"
 DS4_VLLM_RUNNER="${DS4_VLLM_RUNNER:-$SOURCE_ROOT/tools/ds4_run_vllm_from_source.py}"
@@ -118,7 +134,7 @@ COMMON_ARGS=(
   --kv-cache-dtype fp8
   --kv-cache-memory-bytes "$DSV4_KV_CACHE_MEMORY_BYTES"
   --block-size 256
-  --enable-prefix-caching
+  "${PREFIX_CACHING_ARGS[@]}"
   --max-model-len "${DSV4_MAX_MODEL_LEN:-65000}"
   --max-num-seqs "${DSV4_MAX_NUM_SEQS:-2}"
   --max-num-batched-tokens "${DSV4_MAX_NUM_BATCHED_TOKENS:-4096}"

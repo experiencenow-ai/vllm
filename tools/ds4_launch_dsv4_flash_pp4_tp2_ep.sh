@@ -331,6 +331,22 @@ if [[ "${DSV4_ENABLE_LOGGING_ITERATION_DETAILS:-0}" =~ ^(1|true|TRUE|yes|YES|on|
   LOGGING_ITERATION_ARGS=(--enable-logging-iteration-details)
 fi
 
+PREFIX_CACHING_ARGS=()
+case "${DSV4_ENABLE_PREFIX_CACHING:-1}" in
+  1|true|TRUE|yes|YES|on|ON)
+    export DSV4_ENABLE_PREFIX_CACHING=1
+    PREFIX_CACHING_ARGS=(--enable-prefix-caching)
+    ;;
+  0|false|FALSE|no|NO|off|OFF)
+    export DSV4_ENABLE_PREFIX_CACHING=0
+    PREFIX_CACHING_ARGS=(--no-enable-prefix-caching)
+    ;;
+  *)
+    echo "Unsupported DSV4_ENABLE_PREFIX_CACHING=${DSV4_ENABLE_PREFIX_CACHING}; expected 0/1 or true/false" >&2
+    exit 2
+    ;;
+esac
+
 COMMON_ARGS=(
   serve "$MODEL"
   --served-model-name "${DSV4_SERVED_MODEL_NAME:-deepseek-v4-flash-pp8}"
@@ -350,7 +366,7 @@ COMMON_ARGS=(
   "${FLASHINFER_AUTOTUNE_ARGS[@]}"
   --block-size 256
   --kv-cache-dtype fp8
-  --enable-prefix-caching
+  "${PREFIX_CACHING_ARGS[@]}"
   "${ASYNC_SCHEDULING_ARGS[@]}"
   "${KV_OFFLOAD_ARGS[@]}"
   --kv-cache-metrics
