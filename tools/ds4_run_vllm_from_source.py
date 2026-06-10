@@ -69,14 +69,29 @@ def _package_root(module_file: str) -> Path:
     return init_path.parent.parent
 
 
+def _constrain_vllm_package_path(vllm_module: object, source_root: Path) -> tuple[list[str], list[str]]:
+    expected = str((source_root / "vllm").resolve())
+    package_path = getattr(vllm_module, "__path__", None)
+    original = [str(Path(p).resolve()) for p in package_path] if package_path is not None else []
+    if package_path is not None:
+        setattr(vllm_module, "__path__", [expected])
+    current_path = getattr(vllm_module, "__path__", [])
+    current = [str(Path(p).resolve()) for p in current_path]
+    return original, current
+
+
 def _proof(source_root: Path, module: str) -> dict[str, object]:
     vllm_module = importlib.import_module("vllm")
+    original_package_path, constrained_package_path = _constrain_vllm_package_path(
+        vllm_module, source_root)
     actual_root = _package_root(str(vllm_module.__file__))
     return {
         "source_root": str(source_root),
         "module": module,
         "vllm_file": str(Path(str(vllm_module.__file__)).resolve()),
         "vllm_root": str(actual_root),
+        "vllm_package_path_original": original_package_path,
+        "vllm_package_path": constrained_package_path,
         "cwd": os.getcwd(),
         "sys_path_first": sys.path[:8],
         "python": sys.executable,
