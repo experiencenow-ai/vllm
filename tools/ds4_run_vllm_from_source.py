@@ -63,6 +63,20 @@ def _sanitize_sys_path(source_root: Path, original: Iterable[str]) -> list[str]:
     return sanitized
 
 
+def _sanitize_meta_path() -> list[str]:
+    removed: list[str] = []
+    kept = []
+    for finder in sys.meta_path:
+        finder_type = type(finder)
+        marker = f"{finder_type.__module__}.{finder_type.__name__}"
+        if "__editable___vllm" in marker or "__editable__.vllm" in marker:
+            removed.append(marker)
+            continue
+        kept.append(finder)
+    sys.meta_path[:] = kept
+    return removed
+
+
 def _package_root(module_file: str) -> Path:
     init_path = Path(module_file).resolve()
     # .../<source>/vllm/__init__.py -> .../<source>
@@ -75,6 +89,9 @@ def _constrain_vllm_package_path(vllm_module: object, source_root: Path) -> tupl
     original = [str(Path(p).resolve()) for p in package_path] if package_path is not None else []
     if package_path is not None:
         setattr(vllm_module, "__path__", [expected])
+    module_spec = getattr(vllm_module, "__spec__", None)
+    if module_spec is not None and getattr(module_spec, "submodule_search_locations", None) is not None:
+        module_spec.submodule_search_locations = [expected]
     current_path = getattr(vllm_module, "__path__", [])
     current = [str(Path(p).resolve()) for p in current_path]
     return original, current
@@ -130,9 +147,11 @@ def main(argv: list[str] | None = None) -> int:
 
     os.chdir(source_root)
     sys.path[:] = _sanitize_sys_path(source_root, sys.path)
+    removed_meta_path = _sanitize_meta_path()
     os.environ["PYTHONPATH"] = str(source_root)
 
     proof = _proof(source_root, args.module)
+    proof["removed_meta_path"] = removed_meta_path
     if Path(str(proof["vllm_root"])) != source_root:
         print("DS4 source-root guard: vLLM import drift detected", file=sys.stderr)
         print(json.dumps(proof, indent=2, sort_keys=True), file=sys.stderr)
