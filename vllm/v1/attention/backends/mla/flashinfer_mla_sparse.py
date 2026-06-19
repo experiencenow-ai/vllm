@@ -98,8 +98,8 @@ class FlashInferMLASparseBackend(AttentionBackend):
 
     @classmethod
     def supports_compute_capability(cls, capability: DeviceCapability) -> bool:
-        # FlashInfer sparse MLA targets Blackwell (SM 10.x)
-        return capability.major == 10
+        # FlashInfer sparse MLA targets Blackwell (SM 10.x) and Spark SM12.
+        return capability.major in (10, 12)
 
     @classmethod
     def supports_combination(
@@ -348,6 +348,14 @@ class FlashInferMLASparseImpl(SparseMLAAttentionImpl[FlashInferMLASparseMetadata
             if is_quantized_kv_cache(self.kv_cache_dtype):
                 self.bmm2_scale *= layer._k_scale_float
 
+        actual_num_heads = q.shape[1]
+        padded_num_heads = actual_num_heads
+        if actual_num_heads < 128:
+            padded_num_heads = 128
+            q_padded = q.new_zeros((q.shape[0], padded_num_heads, q.shape[2]))
+            q_padded[:, :actual_num_heads, :] = q
+            q = q_padded
+
         o = trtllm_batch_decode_with_kv_cache_mla(
             query=q.unsqueeze(1),
             kv_cache=kv_c_and_k_pe_cache.unsqueeze(1),
@@ -355,11 +363,13 @@ class FlashInferMLASparseImpl(SparseMLAAttentionImpl[FlashInferMLASparseMetadata
             qk_nope_head_dim=self.qk_nope_head_dim,
             kv_lora_rank=self.kv_lora_rank,
             qk_rope_head_dim=self.qk_rope_head_dim,
-            block_tables=topk_indices_physical.unsqueeze(1),
+            block_tables=topk_indices_physical,
             seq_lens=seq_lens,
             max_seq_len=attn_metadata.topk_tokens,
             bmm1_scale=self.bmm1_scale,
             bmm2_scale=self.bmm2_scale,
             sparse_mla_top_k=attn_metadata.topk_tokens,
         )
+        if actual_num_heads < padded_num_heads:
+            o = o[:, :, :actual_num_heads, :]
         return o.view(-1, o.shape[-2], o.shape[-1]), None
